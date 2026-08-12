@@ -1,73 +1,107 @@
-//! Differential test of the ACTUAL path `crates/gc-wasm/src/session.rs`'s
-//! `Session` now runs for an ordinary (non-rollback, non-online) browser
-//! match, against reference vectors captured from real Lua `sim/match.lua`,
-//! per `tools/lua_reference/README.md`.
+//! Determinism regression for the ACTUAL path `crates/gc-wasm/src/session.rs`'s
+//! `Session` runs for an ordinary (non-rollback, non-online) browser match,
+//! against a baseline recorded from THIS implementation.
 //!
-//! `match_differential.rs` (in this same directory) already proves
-//! `gc_sim::r#match::step`'s legacy branch is bit-exact against Lua for
-//! 7,201 ticks -- but it does so with `human_controlled: Some(false)` (no
-//! player takes the human-input branch at all) and steps with
-//! `StepInput::Legacy(MatchInput::default())` constructed directly in Rust.
-//! Neither of those is quite what the browser does: `Session::new` builds
-//! `human_controlled: None` (defaults `true` -- one player, `controlled`,
-//! DOES take the human-input branch), and `Session::step` does not
-//! construct a `MatchInput` directly -- it decodes a canonical
-//! `gc_sim::input_frame` wire string, reads the single `home_1` sample out
-//! of it, and dequantizes THAT into a `MatchInput` via
+//! WHAT THIS PROVES.
+//!
+//! `Session::step` does not hand a `MatchInput` to `match::step`. It encodes a
+//! canonical `gc_sim::input_frame` wire string, decodes it, validates it, and
+//! dequantizes the single `home_1` sample back into a `MatchInput` via
 //! `gc_sim::slot_input::to_match_input`, exactly as documented in
 //! `crates/gc-wasm/src/session.rs`'s module doc ("An ordinary session is
 //! LEGACY mode"). That wire round trip
 //! (`input_frame::encode`/`::decode`/`::validate` plus
-//! `slot_input::to_match_input`) is a real, additional layer
-//! `match_differential.rs` does not exercise at all, and it is exactly the
-//! layer this wave's bug (browser matches diverging from Lua) turned out to
-//! matter for: a structurally different path can be fully deterministic and
-//! still not be Lua.
+//! `slot_input::to_match_input`) is a real, additional layer that
+//! `match_differential.rs` -- which steps
+//! `StepInput::Legacy(MatchInput::default())` constructed directly in Rust,
+//! with `human_controlled: Some(false)` so no player takes the human-input
+//! branch at all -- does not exercise at ALL. This test is the only thing in
+//! the workspace that covers it under an ordinary match, and it is the reason
+//! this file was not simply deleted when its Lua-parity claim was retired
+//! (#500).
 //!
-//! This test reproduces `Session::new`/`Session::step`'s LIVE-state
-//! construction and per-tick stepping using `gc-sim`'s own public API
-//! directly (this crate cannot depend on `gc-wasm`, which depends on it --
-//! see README.md's layer rule), so it is a faithful stand-in for what
-//! the wasm binding actually runs, minus the wasm-bindgen marshalling
-//! itself (which carries no simulation logic of its own -- see
-//! `session.rs`'s `Session::step` body, four lines of glue around exactly
-//! the calls this test makes).
-//!
-//! The fixture (`fixtures/session_legacy_ordinary_lua_reference.txt`) was
-//! captured by running the unmodified Lua tree under headless `love`
-//! (`tools/lua_reference/capture_session_legacy_ordinary_match.lua`, see
-//! that script's own header) for an ORDINARY match exactly as
-//! `game/screens/match.lua`'s `Match:restart` built one outside the
-//! development-only rollback lab: no `input_ownership`, no
-//! `human_controlled` override (so it defaults `true`), teams
-//! nebula/orion, seed 5, a 960x540 field, `match.step`'s default
-//! duration/goal-limit (120 seconds, no goal cap), fed
-//! `slot_input.neutral_match_input()` every tick (an idle/AFK local
-//! player -- the same scenario `crates/gc-wasm/src/session.rs`'s own
-//! `a_full_match_on_an_idle_local_wire_...` regression test drives) for the
-//! full 7,200-tick match (a complete match, not a pinned excerpt --
-//! capturing it took well under a second, so there was no reason to pin
-//! anything shorter), printing the same per-tick field layout
-//! `match_differential.rs`'s own fixture uses (see that file's header for
-//! the exact field list).
+//! It reproduces `Session::new`/`Session::step`'s LIVE-state construction and
+//! per-tick stepping using `gc-sim`'s own public API directly (this crate
+//! cannot depend on `gc-wasm`, which depends on it -- see README.md's layer
+//! rule), so it is a faithful stand-in for what the wasm binding actually
+//! runs, minus the wasm-bindgen marshalling itself (which carries no
+//! simulation logic of its own -- see `session.rs`'s `Session::step` body,
+//! four lines of glue around exactly the calls this test makes).
 //!
 //! Every field is compared at every tick, and floats are compared by bit
-//! pattern (`f64::to_bits`) after parsing, not by printed text -- see
-//! `tools/lua_reference/README.md`'s warning that a divergence which
-//! self-corrects a tick later is still a desync.
+//! pattern (`f64::to_bits`) after parsing, not by printed text: a divergence
+//! that self-corrects a tick later is still a desync. Over 7,201 ticks that
+//! says the whole wire-driven ordinary-match path is reproducible to the bit
+//! and has not moved since the baseline was recorded.
+//!
+//! WHAT THIS NO LONGER PROVES, AND WHY THE EVIDENCE IS WEAKER.
+//!
+//! Until #500 this test asserted against
+//! `fixtures/session_legacy_ordinary_lua_reference.txt`, captured from the
+//! original Lua `sim/match.lua` -- so a pass was CROSS-IMPLEMENTATION
+//! evidence: two independently written simulations agreed bit-for-bit, which
+//! is the only kind of evidence that can catch the Rust port being wrong
+//! rather than merely being stable. That claim is retired. This test no
+//! longer says anything about Lua.
+//!
+//! The baseline it reads now was recorded from this very code (see
+//! `record_session_legacy_ordinary_baseline` below). Self-recorded evidence is
+//! strictly weaker, and the gap is not a technicality:
+//!
+//!   * It DETECTS CHANGE. If any edit anywhere under this path perturbs one
+//!     float at one tick, this goes red -- which is exactly what a
+//!     determinism guarantee needs, because an unintended perturbation is a
+//!     desync between a client that shipped before the edit and one that
+//!     shipped after.
+//!   * It CANNOT DETECT "WRONG BUT CONSISTENTLY WRONG". A bug that was in the
+//!     baseline when it was recorded is in the expectations forever, and this
+//!     test will defend it. The Lua vector could have caught that class; this
+//!     one cannot. Nothing else in the workspace replaces that coverage,
+//!     because there is no second implementation left to disagree with.
+//!
+//! Do not read a pass here as "the simulation is correct". Read it as "the
+//! simulation is the same one we recorded".
+//!
+//! PROVENANCE.
+//!
+//! Lua bit-parity for this scenario held, and was asserted on every PR,
+//! through commit `9127c5c` -- verified green there immediately before the
+//! conversion. It was retired by a decision of the repository owner recorded
+//! in issue #500, superseded by the goalkeeper rework for #490, which
+//! replaces the keeper's hand-rolled gravity-only extrapolation (the specific
+//! defect #486 was written to eliminate) with a real forward-prediction
+//! query. That fix changes the tick at which a catch draws from the RNG
+//! stream, diverging the Lua vector at `tick 743`; once the stream diverges
+//! at one tick, every later tick differs, so there is no way to annotate
+//! individual intended divergences.
+//!
+//! `fixtures/session_legacy_ordinary_lua_reference.txt` is deliberately KEPT,
+//! unmodified and unread, as the historical record of that capture. See
+//! `tools/lua_reference/README.md` for the standing rule separating those
+//! frozen BEHAVIORAL vectors from the ENCODING vectors, which are still
+//! load-bearing and must never be refreshed.
+//!
+//! The file keeps its `_differential` name: #500, the sibling module docs
+//! that cross-reference it, and the failing-run transcripts all name it, and
+//! a rename would cost that thread more than the name is worth. What it is
+//! now is stated above, not in the filename.
 
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::PitchSize;
+use gc_sim::match_snapshot::{MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
-const FIXTURE: &str = include_str!("fixtures/session_legacy_ordinary_lua_reference.txt");
+const FIXTURE: &str = include_str!("fixtures/session_legacy_ordinary_baseline.txt");
 
+const TICKS: i64 = 7_200;
+const DT: f64 = 1.0 / 60.0;
+const MATCH_SEED: f64 = 5.0;
 const PLAYER_COUNT: usize = 10;
 /// Field count: 11 scalar fields (tick, 6 ball fields, owner, 2 scores, rng)
 /// plus 2 (x, y) per player. Identical layout to `match_differential.rs`'s
-/// own fixture.
+/// own fixture, and to the retired Lua capture this baseline replaced, so
+/// the two files stay diffable against each other.
 const FIELD_COUNT: usize = 11 + PLAYER_COUNT * 2;
 
 struct Row {
@@ -128,7 +162,7 @@ fn assert_bits_eq(actual: f64, expected: f64, tick: i64, field: &str) {
 /// idle/AFK local player, and runs it through the exact decode -> validate
 /// -> dequantize pipeline `crates/gc-wasm/src/session.rs`'s `Session::step`
 /// runs, rather than constructing a `MatchInput` directly -- that pipeline
-/// is the layer this differential exists to cover.
+/// is the layer this test exists to cover.
 fn neutral_local_match_input(tick: i64) -> gc_sim::match_snapshot::MatchInput {
     let frame = input_frame::new(tick, None).expect("an all-neutral frame is always valid");
     let wire = input_frame::encode(&frame).expect("a valid frame always encodes");
@@ -139,18 +173,19 @@ fn neutral_local_match_input(tick: i64) -> gc_sim::match_snapshot::MatchInput {
     slot_input::to_match_input(&decoded.slots[0])
 }
 
-#[test]
-fn wire_driven_session_legacy_step_matches_lua_tick_by_tick_for_a_7200_tick_ordinary_match() {
-    let tune = Tuning::new();
+/// Mirrors `crates/gc-wasm/src/session.rs`'s `Session::new` construction of
+/// its LIVE state exactly: no `input_ownership` (legacy mode), no
+/// `human_controlled` override (defaults `true`, so one player really does
+/// take the human-input branch), teams nebula/orion, seed 5, a 960x540
+/// field, and `match.step`'s default duration/goal limit (120 seconds, no
+/// goal cap).
+///
+/// Shared by the assertion and the recorder below, so a baseline can never
+/// be recorded from a scenario the assertion does not replay.
+fn new_ordinary_session() -> MatchState {
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
-    // Mirrors `crates/gc-wasm/src/session.rs`'s `Session::new` construction
-    // of its LIVE state exactly: no `input_ownership` (legacy mode), no
-    // `human_controlled` override (defaults `true`) -- and mirrors the
-    // capture script's own `match.new({home=, away=, field=, seed=5})`,
-    // which likewise never overrides duration/max_goals, so both sides take
-    // the same defaults (120 seconds, no goal cap).
-    let mut s = sim_match::new(NewMatchOptions {
+    sim_match::new(NewMatchOptions {
         home,
         away,
         field: PitchSize { w: 960.0, h: 540.0 },
@@ -159,32 +194,43 @@ fn wire_driven_session_legacy_step_matches_lua_tick_by_tick_for_a_7200_tick_ordi
         away_tactic: None,
         duration: None,
         max_goals: None,
-        seed: Some(5.0),
+        seed: Some(MATCH_SEED),
         players_by_id: None,
         species_by_id: None,
         showcase_players_by_id: None,
         human_controlled: None,
         input_ownership: None,
-    });
+    })
+}
 
-    let rows: Vec<Row> = FIXTURE.lines().map(parse_row).collect();
+/// Advances one tick exactly as `Session::step` does. Shared for the same
+/// reason as [`new_ordinary_session`].
+fn step_one_tick(state: &mut MatchState, tick: i64, tune: &Tuning) {
+    let match_input = neutral_local_match_input(tick - 1);
+    sim_match::step(state, DT, StepInput::Legacy(match_input), None, tune);
+}
+
+#[test]
+fn wire_driven_session_legacy_step_reproduces_its_recorded_baseline_for_a_7200_tick_ordinary_match()
+{
+    let tune = Tuning::new();
+    let mut s = new_ordinary_session();
+
+    let rows: Vec<Row> = FIXTURE
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(parse_row)
+        .collect();
     assert_eq!(
-        rows.len(),
-        7201,
-        "fixture must cover tick 0 through tick 7200"
+        rows.len() as i64,
+        TICKS + 1,
+        "fixture must cover tick 0 through tick {TICKS}"
     );
 
     let mut compared = 0;
     for row in &rows {
         if row.tick > 0 {
-            let match_input = neutral_local_match_input(row.tick - 1);
-            sim_match::step(
-                &mut s,
-                1.0 / 60.0,
-                StepInput::Legacy(match_input),
-                None,
-                &tune,
-            );
+            step_one_tick(&mut s, row.tick, &tune);
         }
         let tick = row.tick;
         assert_bits_eq(s.ball.x, row.ball_x, tick, "ball.x");
@@ -212,5 +258,122 @@ fn wire_driven_session_legacy_step_matches_lua_tick_by_tick_for_a_7200_tick_ordi
         }
         compared += 1;
     }
-    assert_eq!(compared, 7201);
+    assert_eq!(i64::from(compared), TICKS + 1);
+}
+
+/// Renders one baseline row in the fixture's tab-separated layout.
+///
+/// Floats use Rust's shortest round-trippable `Display` form, which -- unlike
+/// a fixed decimal precision -- is guaranteed to parse back to the exact same
+/// `f64` bit pattern, so the bit-exact comparison above stays sound across
+/// the text round trip. Same rationale, and same choice, as
+/// `gc_sim::outfield_ai_baseline::serialize`. (The retired Lua capture used
+/// `%.17g` for the same reason: Lua had no shortest-round-trip formatter.)
+fn baseline_row(tick: i64, s: &MatchState) -> String {
+    let mut fields = vec![
+        tick.to_string(),
+        s.ball.x.to_string(),
+        s.ball.y.to_string(),
+        s.ball_vel.x.to_string(),
+        s.ball_vel.y.to_string(),
+        s.ball_z.to_string(),
+        s.ball_vz.to_string(),
+        s.owner.unwrap_or(-1).to_string(),
+        s.score.home.to_string(),
+        s.score.away.to_string(),
+        s.rng.to_string(),
+    ];
+    for player in s.players.iter().take(PLAYER_COUNT) {
+        fields.push(player.pos.x.to_string());
+        fields.push(player.pos.y.to_string());
+    }
+    fields.join("\t")
+}
+
+/// Re-records `fixtures/session_legacy_ordinary_baseline.txt` from this
+/// build.
+///
+/// NOT a CI-asserted test, and `#[ignore]`d so it never runs in the gate: it
+/// PRINTS the baseline to stdout for a human to capture into the committed
+/// fixture, the same workflow as `input_sample_vector_generator.rs` beside
+/// it. A recorder that overwrote the fixture on every `cargo test` would
+/// turn a determinism regression into a no-op.
+///
+/// **Re-recording is a decision, not a fix.** A red assertion above is a
+/// FINDING first: something under the wire-driven ordinary-match path
+/// changed. Re-record only when that change is deliberate, reviewed, and
+/// named in the commit message -- exactly the rule
+/// `tools/lua_reference/README.md` states for behavioral vectors. Refreshing
+/// to clear a check you did not intend to trip deletes the only evidence
+/// that the path is stable.
+///
+/// Run:
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test session_legacy_differential -- \
+///     --ignored --nocapture record_session_legacy_ordinary_baseline \
+///   | sed -n '/^# session_legacy_ordinary_baseline/,$p' \
+///   | grep -E '^(#|[0-9])' \
+///   > crates/gc-sim/tests/fixtures/session_legacy_ordinary_baseline.txt
+/// ```
+///
+/// The `grep` drops libtest's own trailing status lines; every header line
+/// starts with `#` and every data line with a digit, so nothing of the
+/// baseline is filtered.
+#[test]
+#[ignore]
+fn record_session_legacy_ordinary_baseline() {
+    let tune = Tuning::new();
+    let mut s = new_ordinary_session();
+
+    println!("# session_legacy_ordinary_baseline");
+    println!(
+        "# Recorded from THIS Rust implementation by \
+         `record_session_legacy_ordinary_baseline` in"
+    );
+    println!("# crates/gc-sim/tests/session_legacy_differential.rs -- see that file's module doc.");
+    println!("#");
+    println!(
+        "# This is a self-recorded determinism baseline, NOT cross-implementation \
+         evidence. It"
+    );
+    println!("# detects change; it cannot detect \"wrong but consistently wrong\".");
+    println!("#");
+    println!(
+        "# It replaces the Lua-captured vector in \
+         session_legacy_ordinary_lua_reference.txt, which"
+    );
+    println!(
+        "# is kept unmodified beside it as a historical artifact. Lua bit-parity for this \
+         scenario"
+    );
+    println!(
+        "# held through commit 9127c5c and was retired by the decision in issue #500, \
+         superseded"
+    );
+    println!("# by the goalkeeper forward-prediction rework for #490.");
+    println!("#");
+    println!(
+        "# Scenario: teams nebula/orion, seed {MATCH_SEED}, 960x540 field, default \
+         duration/goal-limit,"
+    );
+    println!(
+        "# no input_ownership, no human_controlled override, an all-neutral canonical input \
+         frame"
+    );
+    println!("# encoded/decoded/validated/dequantized every tick, {TICKS} ticks.");
+    println!(
+        "# Fields (tab-separated): tick, ball.x, ball.y, ball_vel.x, ball_vel.y, ball_z, \
+         ball_vz,"
+    );
+    println!(
+        "# owner (-1 when none), score.home, score.away, rng, then pos.x/pos.y for each of \
+         the {PLAYER_COUNT} players."
+    );
+    println!("{}", baseline_row(0, &s));
+    for tick in 1..=TICKS {
+        step_one_tick(&mut s, tick, &tune);
+        println!("{}", baseline_row(tick, &s));
+    }
 }
