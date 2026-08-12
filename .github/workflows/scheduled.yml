@@ -1,0 +1,287 @@
+name: Scheduled evidence
+
+# WHY THIS FILE EXISTS, AND WHY IT IS NOT A JOB IN ci.yml.
+#
+# Until this file, this repository had no `schedule:` trigger anywhere --
+# `grep -rn "schedule:" .github/` returned nothing. Every gate ran on push
+# or on a pull request, which bounds what any of them may cost: ci.yml's
+# gate job is capped at 30 minutes for the whole build, and the one piece
+# of real two-browser online evidence inside it runs for 150 ticks, about
+# seven and a half seconds of match. That is enough to prove two real peers
+# agree at all. It is not enough to prove they still agree after half an
+# hour, which is the property a player actually experiences and the one
+# #472 is about ("a real match, played in a real browser ... for its real
+# duration, does not silently desync").
+#
+# Hour-long evidence cannot live on a per-PR trigger without making every
+# PR wait for it, so it needs a trigger that is neither a push nor a pull
+# request. This workflow is that trigger. It is a separate FILE rather than
+# a job in ci.yml because ci.yml is `on: [workflow_dispatch, push,
+# pull_request]` as a whole -- adding a `schedule:` there would offer the
+# gate job a trigger it must not answer, and every job in it would need an
+# `if:` guard to say so.
+#
+# NOT COVERED HERE, deliberately, and tracked on #472 and #473:
+#   - scripted network impairment (delay, jitter, loss). The old
+#     `rollback_browser_matrix` drove those; nothing does today. #472,
+#     and PR #482 now open. This one matters for reading a GREEN run
+#     correctly: `ROLLBACK_WINDOW_TICKS = 30` is 500ms of rollback budget
+#     at 60Hz, and this soak spends NONE of it on RTT, because both peers
+#     sit on one machine with no impairment. A green nightly therefore
+#     says nothing about whether realistic latency eats that budget.
+#   - clock drift between two players' machines. Both peers are launched
+#     by one process on one machine and read the same OS clock, so an
+#     oscillator difference between real devices is structurally
+#     unobservable here -- not unmeasured, impossible. See
+#     `online_peer.ts`'s tick-loop comment.
+#   - growth by FREQUENCY of retained events at an unchanged size. The
+#     byte check compares medians of the non-empty samples, and the
+#     window-width check is capacity-bounded, so neither moves with
+#     occupancy. Occupancy per half IS recorded in the artifact, for the
+#     slice that turns it into a check.
+#   - the seed-sharded scenario matrix. #472.
+#   - cross-engine (Chrome vs Firefox) agreement. That is #473's, not this
+#     file's; `scripts/browser_online_peers.py --cross-engine` exists and
+#     is deliberately NOT run here.
+#   - whole-process/whole-instance memory growth over the soak, which is
+#     what `Omp2RollbackBudgets::memory_growth_ratio` was written against.
+#     What the soak below bounds instead is the driver's own RETAINED
+#     WINDOW, in ticks, from its own diagnostics -- a real statement that
+#     retained history does not grow with the length of the match, but not
+#     a statement about the instance's footprint. Nothing reachable from
+#     this harness today can produce an honest whole-instance figure
+#     (`performance.memory` is the JS heap and excludes wasm linear memory,
+#     and wasm linear memory never shrinks). The engine's exact
+#     retained-BYTE accounting is sampled too, and bounded when a run holds
+#     anything speculative at its sampling instants -- when it does not,
+#     the run reports UNMEASURED rather than a vacuous pass. Either way
+#     that budget remains UNMEASURED rather than approximated.
+#     `gc_sim::snapshot_headroom` (#476) answers the same question
+#     natively, against `snapshot_bytes`/`history_bytes`, and leaves
+#     `memory_growth_ratio` unmeasured on purpose because it is a soak
+#     quantity -- naming #472 as its owner. Driving that band
+#     classification from a browser soak, across the wasm boundary, is the
+#     slice that would close it.
+#
+# ALSO NOT HOSTED HERE, though it probably should be: ci.yml's
+# `rollback-native-matrix` job (#478) is `workflow_dispatch`-only and runs
+# nothing on a cadence, because when it was written there was no schedule
+# to put it on. There is one now. Moving it is a separate change with its
+# own concern (see this PR's discussion) -- it is named here so the next
+# person does not have to rediscover that it is a candidate.
+
+on:
+    schedule:
+        # Daily, 04:17 UTC. Daily because the soak's whole subject is
+        # duration, and a weekly cadence would let a mid-match desync sit
+        # undetected for up to seven days on a property the PR gate only
+        # covers for its first seven seconds; the job costs one runner for
+        # well under an hour, so daily is affordable. 04:17 rather than
+        # 04:00 because GitHub's scheduler queues cron runs and drops them
+        # under load at popular times, and every popular time is on the
+        # hour.
+        - cron: "17 4 * * *"
+    # So this workflow can be exercised on demand -- and so it did not have
+    # to wait for a cron tick to be proven at all.
+    workflow_dispatch:
+        inputs:
+            ticks:
+                description: "Tick-loop iterations (50ms each; 36000 = 30 minutes)"
+                required: false
+                default: "36000"
+
+permissions:
+    actions: read
+    contents: read
+
+concurrency:
+    # Never cancel a soak in progress: a half-finished long run is not
+    # evidence, and the next scheduled tick is a day away.
+    group: scheduled-evidence-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    online_soak:
+        name: Two-peer browser soak
+        runs-on: ubuntu-24.04
+        # Measured on this repository's reference machine: the
+        # 36,000-iteration tick loop ran 1800.5s against a nominal 1800.0s,
+        # and the whole script took 30m03s including the harness build,
+        # both browser launches, signaling, drain and teardown. The rest of
+        # this budget is the toolchain install and the cargo/wasm build,
+        # which cost ci.yml's gate job well under 20 minutes. A soak killed
+        # by this timeout must be read as a failure, so it is set with room
+        # rather than tight.
+        timeout-minutes: 90
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+            # These five installs are the same pinned toolchain ci.yml's
+            # gate job sets up, for the same reason (the harness builds the
+            # wasm package and the harness bundle before it can launch a
+            # browser). They are duplicated rather than shared because
+            # GitHub Actions has no include for a run of steps short of a
+            # composite action, and factoring one out would mean editing
+            # ci.yml -- which three open pull requests are already changing.
+            # Extracting `.github/actions/pinned-toolchain` once those land
+            # is the follow-up.
+            - name: Install rustup if missing
+              run: |
+                  if ! command -v rustup >/dev/null 2>&1; then
+                      curl --fail --location --retry 3 --silent --show-error \
+                          https://sh.rustup.rs \
+                          | sh -s -- -y --profile minimal --default-toolchain none
+                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+                  fi
+
+            - name: Select the pinned rust toolchain
+              working-directory: rust
+              run: rustup show
+
+            - name: Install pinned wasm-bindgen-cli
+              env:
+                  WASM_BINDGEN_VERSION: 0.2.118
+                  WASM_BINDGEN_SHA256: 00b519c9fc2d6e087265da1a00f29160bfcc6a823993482bc2e691910287427b
+              run: |
+                  tool_dir="$RUNNER_TEMP/wasm-bindgen-cli"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/wasm-bindgen.tar.gz" \
+                      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+                  echo "${WASM_BINDGEN_SHA256}  $tool_dir/wasm-bindgen.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/wasm-bindgen.tar.gz" -C "$tool_dir" --strip-components=1
+                  chmod +x "$tool_dir/wasm-bindgen"
+                  "$tool_dir/wasm-bindgen" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            - name: Install pinned Node.js
+              env:
+                  NODE_VERSION: 22.22.0
+                  NODE_SHA256: 9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37
+              run: |
+                  tool_dir="$RUNNER_TEMP/node"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/node.tar.xz" \
+                      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+                  echo "${NODE_SHA256}  $tool_dir/node.tar.xz" | sha256sum --check --status
+                  tar -xJf "$tool_dir/node.tar.xz" -C "$tool_dir" --strip-components=1
+                  "$tool_dir/bin/node" --version
+                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
+
+            - name: Install pinned pnpm
+              env:
+                  PNPM_VERSION: 11.1.2
+                  PNPM_SHA256: f82f761572d9621c5a646ccc00a1ecec4cf5839d66b714497e6ca10cd2e086ee
+              run: |
+                  tool_dir="$RUNNER_TEMP/pnpm"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/pnpm.tar.gz" \
+                      "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"
+                  echo "${PNPM_SHA256}  $tool_dir/pnpm.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/pnpm.tar.gz" -C "$tool_dir"
+                  chmod +x "$tool_dir/pnpm"
+                  "$tool_dir/pnpm" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            - name: Install pinned browser evidence dependencies
+              run: |
+                  python3 -m venv "$RUNNER_TEMP/browser-evidence"
+                  "$RUNNER_TEMP/browser-evidence/bin/pip" install \
+                      --require-hashes \
+                      --requirement scripts/browser_matrix-requirements.txt
+
+            # AGENTS.md §9: every gate must come with a demonstration that
+            # it can go red, and a self-test is NOT a run. This step proves
+            # only the soak's VERDICT RULES -- that a diverged boundary
+            # hash, a tick loop that stopped early, a page that logged
+            # transport errors, a retained window that grew past the budget
+            # ratio, and a run with no retained-history evidence at all are
+            # each REJECTED, each for its own stated reason. It starts no
+            # browser and proves nothing about the netcode. The step below
+            # is the one that does that.
+            - name: Prove the soak's verdict rules reject a bad run (starts no browser)
+              run: |
+                  "$RUNNER_TEMP/browser-evidence/bin/python" -B \
+                      scripts/browser_online_peers.py --self-test
+
+            # The actual long-duration run: two independent Chrome
+            # processes, a real RTCPeerConnection between them, and
+            # ${{ inputs.ticks || 36000 }} tick-loop iterations at 50ms --
+            # 30 minutes of continuous match, against the PR gate's 7.5
+            # seconds. It fails the job on a diverged boundary hash, on any
+            # runtime error either page logged, on a driver that stopped
+            # advancing, on fewer completed iterations than requested, and
+            # on either driver's retained window WIDENING past
+            # `Omp2RollbackBudgets::memory_growth_ratio` (read from gc-data,
+            # not restated here). Measured across real 36,000-iteration
+            # runs, that window sat at 28-29 ticks from the first sample to
+            # the last -- retained history that does not grow with the
+            # length of the match.
+            #
+            # The retained speculative BYTE series is recorded in the
+            # artifact and bounded when there is anything to bound. Across
+            # four real 36,000-iteration runs: two read zero at essentially
+            # every one of 361 sampling instants on both peers (reported
+            # UNMEASURED, never a ceiling that "passed"); the others read
+            # about 292 bytes whenever they read anything. Whether a sample
+            # observes a magnitude at all depends on where it falls
+            # relative to confirmation, so the comparison is a MEDIAN OF
+            # THE NON-EMPTY samples per half, and requires enough of them
+            # in BOTH halves or it reports UNMEASURED -- see
+            # `check_retention` for why that symmetry matters. A mean over
+            # all samples moved 253.7 -> 289.2 on a run whose non-empty
+            # level never left 292, purely because the empty-sample rate
+            # fell between the halves, and failed a healthy thirty-minute
+            # match.
+            #
+            # `--sample-every 100` gives 361 retention samples per peer,
+            # which is what makes a median per half worth stating at all
+            # (150-180 non-empty readings each on a real run).
+            #
+            # `--min-checkpoints 1150`: boundaries land every 30 ticks, so
+            # 36,000 iterations reach about 1,200 and both peers hash all
+            # but the last one or two. A run that completed its iterations
+            # but hashed far fewer boundaries than that did not measure what
+            # this job claims to measure.
+            #
+            # HOW TO READ A RED RUN, because one shape of red is not a
+            # netcode defect. Each peer paces off its own wall clock and
+            # nothing leashes the faster one to the slower, so if either
+            # browser process is starved for about a second -- a busy
+            # runner, a long GC, a noisy neighbour -- the other advances
+            # past `ROLLBACK_WINDOW_TICKS` of retention while it is away,
+            # and the driver correctly refuses the input it can no longer
+            # place: `input_channel_failure` on the host,
+            # `confirmation_stalled` on the guest. Reproduced deliberately
+            # on a machine under heavy unrelated compile load; not seen in
+            # four consecutive 36,000-iteration runs on a quiet one.
+            #
+            # The harness cannot tell that apart from a real stall and must
+            # not guess, so it fails either way. The artifact below is
+            # uploaded `if: always()` and carries per-sample `elapsedMs`
+            # for both peers: a starved process shows a clean 50.0ms/iter
+            # cadence that breaks for one sample window, which a genuine
+            # protocol defect would not.
+            #
+            # No `continue-on-error`, no `|| true`, no `||:`: a red soak is
+            # the entire point of running one.
+            - name: Play a 30-minute two-peer match in real browsers
+              run: |
+                  "$RUNNER_TEMP/browser-evidence/bin/python" -B \
+                      scripts/browser_online_peers.py \
+                      --ticks "${{ inputs.ticks || 36000 }}" \
+                      --sample-every 100 \
+                      --min-checkpoints 1150 \
+                      --output "$RUNNER_TEMP/online-soak.json"
+
+            - name: Publish the soak evidence
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+              with:
+                  name: online-soak
+                  path: ${{ runner.temp }}/online-soak.json
+                  if-no-files-found: warn

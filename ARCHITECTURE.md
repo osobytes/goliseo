@@ -516,6 +516,65 @@ last JS-API release, and the same language as 7.0 — which pnpm's isolated
 `ts/eslint.config.mjs` reaches it through `ts/tools/lint/tseslint.mjs`, which
 documents the whole arrangement and says when to delete it.
 
+### 6.2 Evidence that does not fit in front of a pull request
+
+Some properties can only be observed by running for far longer than any
+per-PR gate may cost. The gate proves two real browser peers agree
+bit-for-bit over 150 ticks — seven and a half seconds of match. It cannot
+prove they still agree after half an hour, and half an hour is closer to
+what a player actually plays.
+
+`.github/workflows/scheduled.yml` is where that evidence runs: daily at
+04:17 UTC, plus `workflow_dispatch` so it can be exercised on demand. It
+runs the same `scripts/browser_online_peers.py` the gate runs — same
+script, same page, same assertions — for 36,000 iterations (30 minutes of
+continuous match), sampling each peer's retained rollback history as it
+goes. Like the gate, it first runs a `--self-test` proving its verdict
+rules reject a diverged hash, a loop that stopped early, a page that logged
+errors, and a retained window that grew past
+`Omp2RollbackBudgets::memory_growth_ratio`; per AGENTS.md §9 that self-test
+demonstrates the job can go red and is *not* a substitute for the run
+beside it.
+
+What it does **not** cover, all tracked: scripted network impairment and
+the seed-sharded scenario matrix ([#472]), cross-engine Chrome/Firefox
+agreement ([#473]), and whole-instance memory growth — the soak bounds the
+driver's own retained window (28–29 ticks wide from the first sample to the
+last, across 36,000 ticks), which is a real statement that retained history
+does not grow with match length, but nothing on this harness's reach can
+produce an honest whole-instance figure today, so
+`Omp2RollbackBudgets::memory_growth_ratio` is reported as unmeasured rather
+than approximated. `gc_sim::snapshot_headroom` ([#476]) answers the adjacent
+question natively — a real rollback session's retained snapshot and history
+bytes against their authored budgets — and leaves `memory_growth_ratio`
+alone for the same reason, because it is a soak quantity.
+
+Three limits a reader of a green nightly run should know, because none of
+them is what that green means:
+
+- **Clock drift between two players' machines is not modelled and cannot
+  be.** Both peers are launched by one process on one machine and read the
+  same OS clock, so an oscillator difference between real devices is
+  structurally unobservable here — not merely unmeasured.
+- **Growth by frequency is invisible.** The byte check compares the median
+  of the *non-empty* retention samples, so retained events becoming more
+  frequent at an unchanged size would not move it; the window-width check
+  does not backstop that either, since `retained_floor_tick` trails the
+  confirmed frontier by a fixed `ROLLBACK_WINDOW_TICKS` capacity and sits
+  flat whatever the occupancy. Per-half occupancy is recorded in the
+  evidence so a later slice can make it a real check.
+- **Nothing here says the rollback window is wide enough for a real
+  network.** `ROLLBACK_WINDOW_TICKS = 30` is 500ms at 60Hz, and this soak
+  spends none of it on RTT, because the two peers are on one machine with
+  no impairment. Whether realistic latency eats that budget is the
+  impairment work ([#472], PR [#482]) and the cross-engine work ([#473]),
+  not something a green soak speaks to.
+
+[#472]: https://github.com/osobytes/goliseo/issues/472
+[#473]: https://github.com/osobytes/goliseo/issues/473
+[#476]: https://github.com/osobytes/goliseo/pull/476
+[#482]: https://github.com/osobytes/goliseo/pull/482
+
 ---
 
 ## 7. Rules inherited from AGENTS.md that still bind
