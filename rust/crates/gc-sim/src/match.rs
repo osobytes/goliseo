@@ -33,6 +33,9 @@
 
 use crate::aerial;
 use crate::ai;
+use crate::ball_flight::{
+    self, AIR_FRICTION, BALL_RADIUS, FRICTION, GRAVITY, GROUND_GRAB_HEIGHT, in_mouth,
+};
 use crate::brain;
 use crate::combat;
 use crate::combat_feasibility;
@@ -70,8 +73,6 @@ use gc_data::teams::TeamData;
 use indexmap::IndexMap;
 
 const PLAYER_RADIUS: f64 = 12.0;
-const BALL_RADIUS: f64 = 6.0;
-const FRICTION: f64 = 1.2;
 const STICK_AHEAD: f64 = PLAYER_RADIUS + BALL_RADIUS;
 const DRIBBLE_LEAD_MIN: f64 = STICK_AHEAD;
 const DRIBBLE_TOUCH_REACH: f64 = STICK_AHEAD + 6.0;
@@ -107,8 +108,6 @@ fn pass_range_min(tune: &Tuning) -> f64 {
 
 const GOAL_MOUTH: f64 = 110.0;
 const GOAL_DEPTH: f64 = 30.0;
-const NET_DAMP: f64 = 0.3;
-const NET_ROLLOUT: f64 = 200.0;
 const RELEASE_CD: f64 = 0.3;
 
 const STEAL_DIST: f64 = 26.0;
@@ -143,19 +142,11 @@ const STUN_TIME: f64 = 0.5;
 const JOCKEY_REACH_BONUS: f64 = 6.0;
 const JOCKEY_HOLD: f64 = 0.2;
 
-const GRAVITY: f64 = 900.0;
-const BOUNCE: f64 = 0.55;
-const AIR_FRICTION: f64 = 0.3;
-const GROUND_GRAB_HEIGHT: f64 = 14.0;
 const KEEPER_AIR_GRAB: f64 = 60.0;
 const CROSSBAR: f64 = 70.0;
-const LAND_SETTLE_VZ: f64 = 60.0;
 const LOB_CLEAR_H: f64 = 24.0;
 const MAX_LOB_VH: f64 = 400.0;
 const CHIP_LINE_Z: f64 = 65.0;
-
-const CAGE_CEILING: f64 = 170.0;
-const CEIL_BOUNCE: f64 = 0.55;
 
 const AERIAL_ANTICIPATE: f64 = 84.0;
 const CROSS_AID_Z: f64 = 30.0;
@@ -202,7 +193,6 @@ const WINDUP_MOVE: f64 = 0.3;
 
 const CHARGE_POWER: f64 = 0.9;
 const CURVE_MAX: f64 = 520.0;
-const SPIN_DECAY: f64 = 1.4;
 const DODGE_DURATION: f64 = 0.16;
 const DODGE_CD: f64 = 0.6;
 const DODGE_SPEED_MULT: f64 = 2.4;
@@ -1044,10 +1034,6 @@ fn to_keeper_rect(r: Rect) -> keeper::Rect {
 fn clamp_to_field(field: PitchSize, pos: Vec2) -> Vec2 {
     let r = PLAYER_RADIUS;
     Vec2::new(pos.x.clamp(r, field.w - r), pos.y.clamp(r, field.h - r))
-}
-
-fn in_mouth(ball: Vec2, goal: Rect) -> bool {
-    ball.y >= goal.y && ball.y <= goal.y + goal.h
 }
 
 /// Set (1-based player index -> true) of the `count` non-keepers of `team`
@@ -5634,100 +5620,12 @@ fn update_ball(
     }
 
     // Loose ball: integrate, decay, curve, bounce off touchlines/back
-    // walls.
-    s.ball = s.ball.add(s.ball_vel.scale(dt));
-    // Full grass friction only near the ground; a lofted ball glides
-    // (light drag).
-    let airborne = s.ball_z > GROUND_GRAB_HEIGHT;
-    let hfric = if airborne { AIR_FRICTION } else { FRICTION };
-    s.ball_vel = s.ball_vel.scale((1.0 - hfric * dt).max(0.0));
-    let mut trajectory_bounced = false;
-    // Spin only bends a ball rolling on the grass.
-    if !airborne && s.ball_spin != 0.0 && s.ball_vel.length() > 1.0 {
-        let v = s.ball_vel;
-        let perp = Vec2::new(-v.y, v.x).normalized();
-        s.ball_vel = s.ball_vel.add(perp.scale(s.ball_spin * dt));
-        s.ball_spin *= (1.0 - SPIN_DECAY * dt).max(0.0);
-    }
-
-    // Vertical: integrate under gravity, land and rebound (keeping
-    // horizontal pace).
-    s.ball_z += s.ball_vz * dt;
-    s.ball_vz -= GRAVITY * dt;
-    // Cage ceiling: a skied ball bounces back down into the arena.
-    if s.ball_z >= CAGE_CEILING {
-        s.ball_z = CAGE_CEILING;
-        if s.ball_vz > 0.0 {
-            s.ball_vz = -s.ball_vz * CEIL_BOUNCE;
-            trajectory_bounced = true;
-        }
-    }
-    if s.ball_z <= 0.0 {
-        s.ball_z = 0.0;
-        if s.ball_vz < 0.0 {
-            if -s.ball_vz <= LAND_SETTLE_VZ {
-                s.ball_vz = 0.0; // settle: stop micro-bouncing
-            } else {
-                s.ball_vz = -s.ball_vz * BOUNCE; // rebound up; ball_vel unchanged
-            }
-        }
-    }
-
-    if s.ball.y < BALL_RADIUS {
-        s.ball.y = BALL_RADIUS;
-        s.ball_vel.y = -s.ball_vel.y;
-        trajectory_bounced = true;
-    } else if s.ball.y > s.field.h - BALL_RADIUS {
-        s.ball.y = s.field.h - BALL_RADIUS;
-        s.ball_vel.y = -s.ball_vel.y;
-        trajectory_bounced = true;
-    }
-    // X walls: through a goal mouth the ball plays on into the net box
-    // behind the line; anywhere else it bounces back in. Inside a net box
-    // the side netting clamps y, the back net kills most pace, and a
-    // gentle "slope" rolls a dead ball back out toward the line so it
-    // can't strand there.
-    if s.ball.x < BALL_RADIUS {
-        if in_mouth(s.ball, s.goal_home) {
-            let g = s.goal_home;
-            if s.ball.x < g.x + BALL_RADIUS {
-                s.ball.x = g.x + BALL_RADIUS;
-                s.ball_vel = Vec2::new(-s.ball_vel.x * NET_DAMP, s.ball_vel.y * NET_DAMP);
-            }
-            if s.ball.y < g.y + BALL_RADIUS {
-                s.ball.y = g.y + BALL_RADIUS;
-                s.ball_vel.y = -s.ball_vel.y * NET_DAMP;
-            } else if s.ball.y > g.y + g.h - BALL_RADIUS {
-                s.ball.y = g.y + g.h - BALL_RADIUS;
-                s.ball_vel.y = -s.ball_vel.y * NET_DAMP;
-            }
-            s.ball_vel.x += NET_ROLLOUT * dt;
-        } else {
-            s.ball.x = BALL_RADIUS;
-            s.ball_vel.x = -s.ball_vel.x;
-            trajectory_bounced = true;
-        }
-    } else if s.ball.x > s.field.w - BALL_RADIUS {
-        if in_mouth(s.ball, s.goal_away) {
-            let g = s.goal_away;
-            if s.ball.x > g.x + g.w - BALL_RADIUS {
-                s.ball.x = g.x + g.w - BALL_RADIUS;
-                s.ball_vel = Vec2::new(-s.ball_vel.x * NET_DAMP, s.ball_vel.y * NET_DAMP);
-            }
-            if s.ball.y < g.y + BALL_RADIUS {
-                s.ball.y = g.y + BALL_RADIUS;
-                s.ball_vel.y = -s.ball_vel.y * NET_DAMP;
-            } else if s.ball.y > g.y + g.h - BALL_RADIUS {
-                s.ball.y = g.y + g.h - BALL_RADIUS;
-                s.ball_vel.y = -s.ball_vel.y * NET_DAMP;
-            }
-            s.ball_vel.x -= NET_ROLLOUT * dt;
-        } else {
-            s.ball.x = s.field.w - BALL_RADIUS;
-            s.ball_vel.x = -s.ball_vel.x;
-            trajectory_bounced = true;
-        }
-    }
+    // walls. The integration itself lives in `crate::ball_flight` so that
+    // the forward-prediction service's scratch world steps THIS code rather
+    // than a second copy of it (see that module's doc comment).
+    let mut flight = ball_flight::BallFlight::of(s);
+    let trajectory_bounced = ball_flight::step(&mut flight, &ball_flight::BallArena::of(s), dt);
+    flight.write_back(s);
     if trajectory_bounced {
         for player in &mut s.players {
             player.keeper_set = 0.0;
