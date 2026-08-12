@@ -232,3 +232,220 @@ fn the_frozen_fixture_tape_replays_through_sim_replay_with_no_divergence() {
     assert!(result.divergence.is_none());
     assert_eq!(result.boundaries.len(), tape.boundary_hashes.len());
 }
+
+/// `determinism_evidence::sequence_digest` is the same fold a campaign
+/// performs incrementally: run over the pinned boundary hashes it must
+/// reproduce the pinned digest. Without this, a re-record could write a
+/// digest no campaign can ever agree with.
+#[test]
+fn the_sequence_digest_helper_reproduces_the_pinned_digest_from_the_pinned_hashes() {
+    let fixture = omp1_determinism::fixture();
+    let hashes: Vec<String> = omp1_determinism::boundary_hash_lines()
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect();
+    assert_eq!(
+        determinism_evidence::sequence_digest(&hashes),
+        fixture.expected_sequence_digest
+    );
+    assert_ne!(
+        determinism_evidence::sequence_digest(&hashes[..hashes.len() - 1]),
+        fixture.expected_sequence_digest
+    );
+}
+
+/// Re-records the **derived half** of the OMP-1 determinism fixture
+/// (`gc-data/src/omp1_determinism.json`) from this build: `boundary_hashes`,
+/// `boundary_count`, `expected_final_hash`, `expected_sequence_digest`.
+///
+/// NOT a CI-asserted test, and `#[ignore]`d so it never runs in the gate: it
+/// PRINTS the regenerated fixture document to stdout for a human to capture,
+/// the same workflow as `input_sample_vector_generator.rs` and
+/// `session_legacy_differential.rs`'s recorder. A recorder that overwrote
+/// the fixture on every `cargo test` would turn a determinism regression
+/// into a no-op.
+///
+/// **The frozen half is never re-recorded, and this asserts that rather than
+/// trusting it.** The recorded input — `frame_wires`, `identity`,
+/// `source_seeds`, `windows` — came from source bots deleted from this
+/// repository and can never be recaptured; only values *derived* from it by
+/// replaying it may be re-derived. Two checks, before anything is printed:
+/// every wire this replay consumed re-encodes to the frozen blob byte for
+/// byte, and `omp1_determinism::rerecorded_json` parses its own output back
+/// and refuses it if any frozen field moved.
+///
+/// **Re-recording is a decision, not a fix.** A red boundary hash in
+/// `determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence_command`
+/// is a FINDING first: the state this simulation reaches from fixed input
+/// changed, and an unintended change of that kind is a desync between
+/// clients built on either side of it. Re-record only for a deliberate,
+/// reviewed change, and record with it the decision, the superseding change,
+/// and the last commit at which the previous baseline held — the rule #500
+/// set for behavioral vectors. And read what a pass proves afterwards: a
+/// self-recorded baseline detects change, it cannot detect "wrong but
+/// consistently wrong". `gc_data::omp1_determinism`'s module doc states the
+/// full trade.
+///
+/// Run (two steps on purpose — a `>` redirect straight onto the fixture
+/// truncates it to nothing if the recorder panics):
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test determinism_evidence -- \
+///     --ignored --nocapture record_omp1_derived_baseline \
+///   | sed -n 's/^GC_OMP1_FIXTURE_JSON //p' | tr -d '\n' > /tmp/omp1_determinism.json
+/// test -s /tmp/omp1_determinism.json \
+///   && mv /tmp/omp1_determinism.json crates/gc-data/src/omp1_determinism.json
+/// git -C .. diff --stat rust/crates/gc-data/src/omp1_determinism.json
+/// ```
+///
+/// The `sed` selects the one marked line (the document is minified onto a
+/// single line, so nothing of it can be filtered) and drops libtest's own
+/// status lines and the `#` summary; `tr -d '\n'` removes the newline `sed`
+/// adds, because the committed file has none.
+#[test]
+#[ignore]
+fn record_omp1_derived_baseline() {
+    let tune = Tuning::new();
+    let fixture = omp1_determinism::fixture();
+    let recording = determinism_evidence::record(&tune).expect("the frozen OMP-1 frames replay");
+
+    // The frozen half, checked before a single byte is printed.
+    let replayed_wires: String = recording
+        .frame_wires
+        .iter()
+        .map(|wire| format!("{wire}\n"))
+        .collect();
+    assert_eq!(
+        recording.frame_wires.len() as i64,
+        fixture.frame_count,
+        "the replay must consume every frozen frame and no more"
+    );
+    assert!(
+        replayed_wires == fixture.frame_wires,
+        "the replayed frames must re-encode to the frozen frame_wires blob byte for byte -- the \
+         recorded input is not re-recordable"
+    );
+    assert_eq!(
+        recording.boundary_hashes.len(),
+        recording.frame_wires.len() + 1,
+        "one boundary per frame, plus the initial boundary"
+    );
+
+    let digest = determinism_evidence::sequence_digest(&recording.boundary_hashes);
+    let final_hash = recording
+        .boundary_hashes
+        .last()
+        .expect("at least one boundary")
+        .clone();
+    let json = omp1_determinism::rerecorded_json(&omp1_determinism::Omp1DerivedBaseline {
+        boundary_hashes: recording.boundary_hashes.clone(),
+        sequence_digest: digest.clone(),
+    })
+    .expect("the frozen half survives the write-back");
+
+    let pinned = omp1_determinism::boundary_hash_lines();
+    let moved: Vec<usize> = recording
+        .boundary_hashes
+        .iter()
+        .enumerate()
+        .filter(|(index, hash)| pinned.get(*index) != Some(&hash.as_str()))
+        .map(|(index, _)| index)
+        .collect();
+
+    println!(
+        "# GC_OMP1_RERECORD -- derived half of the OMP-1 determinism fixture, from this build."
+    );
+    println!(
+        "# Frozen half verified untouched before printing: frame_wires (all {} wires re-encoded), identity, source_seeds, windows.",
+        recording.frame_wires.len()
+    );
+    println!(
+        "# boundary_count           {} (pinned {})",
+        recording.boundary_hashes.len(),
+        fixture.boundary_count
+    );
+    println!(
+        "# expected_final_hash      {final_hash} (pinned {})",
+        fixture.expected_final_hash
+    );
+    println!(
+        "# expected_sequence_digest {digest} (pinned {})",
+        fixture.expected_sequence_digest
+    );
+    println!(
+        "# boundary hashes moved    {} of {}{}",
+        moved.len(),
+        recording.boundary_hashes.len(),
+        match moved.first() {
+            Some(first) => format!(" (first at boundary {first})"),
+            None => " -- this build reproduces the pinned baseline exactly".to_string(),
+        }
+    );
+
+    // event_counts, expected_score and windows are derived from the same
+    // replay but are the fixture's BEHAVIORAL claims, so they are copied
+    // verbatim rather than refreshed (see gc_data::omp1_determinism's module
+    // doc). Say so loudly when the replay disagrees: the re-recorded fixture
+    // will still fail finish_campaign/verify_window, and that is a decision
+    // about what this fixture is evidence of, not a hash refresh.
+    let mut behavioral: Vec<String> = Vec::new();
+    if recording.score_home != fixture.expected_score.home
+        || recording.score_away != fixture.expected_score.away
+    {
+        behavioral.push(format!(
+            "expected_score {}-{} -> {}-{}",
+            fixture.expected_score.home,
+            fixture.expected_score.away,
+            recording.score_home,
+            recording.score_away
+        ));
+    }
+    for (name, pinned_count) in &fixture.event_counts {
+        let actual = recording.event_counts.get(name).copied().unwrap_or(0);
+        if actual != *pinned_count {
+            behavioral.push(format!("event_counts.{name} {pinned_count} -> {actual}"));
+        }
+    }
+    for name in recording.event_counts.keys() {
+        if !fixture.event_counts.contains_key(name) {
+            behavioral.push(format!(
+                "event_counts.{name} absent -> {}",
+                recording.event_counts[name]
+            ));
+        }
+    }
+    for window in &fixture.windows {
+        let key = window.event_kind.as_deref().unwrap_or(&window.name);
+        let actual = recording.event_ticks.get(key).copied();
+        if actual != window.event_tick {
+            behavioral.push(format!(
+                "windows.{}.event_tick {:?} -> {:?}",
+                window.name, window.event_tick, actual
+            ));
+        }
+    }
+    if behavioral.is_empty() {
+        println!(
+            "# behavioral claims        unchanged (event_counts, expected_score, window event ticks)"
+        );
+    } else {
+        println!("#");
+        println!("# WARNING: this build also moved the fixture's BEHAVIORAL claims, which this");
+        println!(
+            "# recorder deliberately does NOT refresh -- they are what the fixture is evidence"
+        );
+        println!("# OF (that it covers a tackle, a catch, a header, a full time, ending 1-0), and");
+        println!(
+            "# moving them is a larger decision than re-deriving a digest. The document below"
+        );
+        println!("# keeps the pinned values, so the gate will still fail on them. Resolve that");
+        println!("# deliberately before capturing this output:");
+        for line in &behavioral {
+            println!("#   {line}");
+        }
+    }
+    println!("#");
+    println!("# Capture the marked line below; see this test's doc comment for the command.");
+    println!("GC_OMP1_FIXTURE_JSON {json}");
+}
