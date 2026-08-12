@@ -19,6 +19,19 @@ event counts, and restore windows. The source bot policy and its RNG are not
 used during verification; they only materialize a replacement recording when
 the explicit refresh command is invoked.
 
+**"Immutable" is true of the recorded input, not of the hashes derived from
+it** (#503). The Rust fixture `rust/crates/gc-data/src/omp1_determinism.json`
+splits in two: `frame_wires`, `identity`, `source_seeds` and `windows` can
+never be recaptured — the source bots that authored them are deleted — while
+`boundary_hashes`, `boundary_count`, `expected_final_hash` and
+`expected_sequence_digest` are what the current simulation computes by
+replaying those frames, and a deliberate gameplay change moves all of them.
+The re-record command is `record_omp1_derived_baseline` in
+`rust/crates/gc-sim/tests/determinism_evidence.rs` (`#[ignore]`d; it never
+runs in a gate). Re-recording is a decision, not a fix, and it weakens what a
+pass means — see `gc_data::omp1_determinism`'s module doc for the rule and
+the trade.
+
 | Identity field | Frozen value |
 | --- | --- |
 | Fixture | `omp1-nebula-orion-eight-streams-v2` |
