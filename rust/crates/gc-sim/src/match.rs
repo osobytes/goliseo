@@ -92,8 +92,19 @@ const PASS_SPEED: f64 = 420.0;
 const PASS_ARRIVE_PACE: f64 = 120.0;
 const PASS_SPEED_MAX: f64 = 700.0;
 const PASS_LEAD: f64 = 0.6;
-const PASS_RANGE_MIN: f64 = 110.0;
 const CROSS_CLEAR_H: f64 = 50.0;
+/// Range of an uncharged pass.
+///
+/// The registry spot-check (#487): this was a raw `const PASS_RANGE_MIN: f64 =
+/// 110.0` in this file, invisible to the sweep and to the config hash even
+/// though it sits inside the same expression as `PASS_RANGE_MAX`, which was
+/// already a knob. The raw definition is deleted; the value is authored in
+/// `gc_data::tunables::SIM_TUNABLES` and read through the registry handle the
+/// caller already holds, so a sweep can move it and two peers hash it.
+fn pass_range_min(tune: &Tuning) -> f64 {
+    tune.value("PASS_RANGE_MIN")
+}
+
 const GOAL_MOUTH: f64 = 110.0;
 const GOAL_DEPTH: f64 = 30.0;
 const NET_DAMP: f64 = 0.3;
@@ -1684,7 +1695,10 @@ fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>,
     // Hold-to-charge picks the RANGE: a tap prefers someone close, a
     // charged release picks out the long option along the aim.
     let range = if pass_charge > 0.12 {
-        Some(PASS_RANGE_MIN + pass_charge * (tune.value("PASS_RANGE_MAX") - PASS_RANGE_MIN))
+        Some(
+            pass_range_min(tune)
+                + pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune)),
+        )
     } else {
         None
     };
@@ -4374,8 +4388,8 @@ fn human_keeper_actions(
         if owner.feet_ball {
             try_pass(s, owner_idx, input.lob, Some(aim), tune);
         } else {
-            let range = PASS_RANGE_MIN
-                + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - PASS_RANGE_MIN);
+            let range = pass_range_min(tune)
+                + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune));
             keeper_throw(s, owner_idx, range, Some(aim));
         }
         let owner = &mut s.players[(owner_idx - 1) as usize];
@@ -4766,7 +4780,10 @@ fn update_pass_target_outfield(
 ) {
     let owner = s.players[(owner_idx - 1) as usize].clone();
     let range = if owner.pass_charge > 0.12 {
-        Some(PASS_RANGE_MIN + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - PASS_RANGE_MIN))
+        Some(
+            pass_range_min(tune)
+                + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune)),
+        )
     } else {
         None
     };
@@ -4788,8 +4805,8 @@ fn update_pass_target_keeper(
     tune: &Tuning,
 ) {
     let keeper = s.players[(keeper_idx - 1) as usize].clone();
-    let range =
-        PASS_RANGE_MIN + keeper.pass_charge * (tune.value("PASS_RANGE_MAX") - PASS_RANGE_MIN);
+    let range = pass_range_min(tune)
+        + keeper.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune));
     let aim = if input.r#move.x != 0.0 || input.r#move.y != 0.0 {
         Some(input.r#move.normalized())
     } else {

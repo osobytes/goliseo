@@ -149,14 +149,23 @@ pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {
         config: "field=960x540;duration=120;max_goals=3;tick_rate=60;bot=none;combat=disabled;tactic=balanced",
         config_hash: "48c4a66267142b10",
         content_hash: "e6c01365e6311f12",
-        tuning_hash: "4e69ddad3a53984f",
+        // Re-pinned by #487, WITHOUT re-recording: `tuning_hash` covers every
+        // shipped knob's key and default, and that set gained `PASS_RANGE_MIN`
+        // — a constant that was already 110.0 inside `match.rs` and is now a
+        // registered tunable at the same default. No number this recording
+        // measured moved (the stats below reproduce bit-for-bit); only the
+        // knob-set identity did, which is the hash doing its job.
+        tuning_hash: "815f8929cfce068e",
         snapshot_version: 11,
         input_version: 2,
         tick_rate: 60,
         seed_first: 20001,
         seed_count: 60,
         seed_hash: "accc11e953c394d0",
-        fixture_hash: "766e9087d00023c3",
+        // Re-pinned by #487 alongside `tuning_hash` above, for the same
+        // reason and with the same evidence: the recorded numbers are
+        // unchanged, the identity the fixture is stamped with moved.
+        fixture_hash: "483fe1d1297befc1",
     },
     stats: OutfieldAiBaselineStats {
         fun: OutfieldAiBaselineStat {
@@ -321,5 +330,7 @@ pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {
             max: 44.0,
         },
     },
-    signature: "8fa6a781d26002fe",
+    // Derived from the identity above, so #487's identity re-pin moves it
+    // too. `baseline_version` stays 1: nothing was re-recorded.
+    signature: "264dbdce9e640206",
 };

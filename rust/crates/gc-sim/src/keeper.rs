@@ -7,6 +7,7 @@
 //! sits on the determinism path (see the crate root docs and
 //! `tools/lua_reference/README.md`).
 
+use crate::tunable_registry;
 use gc_core::deterministic_math;
 use gc_core::vec2::Vec2;
 
@@ -256,8 +257,6 @@ const BASE_ARC_EXTRA_FRACTION: f64 = 0.15;
 const BASE_ARC_MAX_EXTRA: f64 = 6.0;
 const CONTAIN_DISTANCE: f64 = 4.0;
 const RECOVER_DURATION: f64 = 0.18;
-const ADVANCE_THREAT_DISTANCE: f64 = 200.0;
-const DEFENDER_HANDOFF_DISTANCE: f64 = 120.0;
 const CONTAIN_DEPTH_FRACTION: f64 = 0.8;
 const CHIP_VISIBLE_MIN_DEPTH: f64 = 20.0;
 const CHIP_CLEARANCE_PAD: f64 = 2.0;
@@ -265,15 +264,35 @@ const CROSSBAR_PAD: f64 = 2.0;
 const CHIP_FALLBACK_HEIGHT_FRACTION: f64 = 0.5;
 const MIN_CHIP_LAUNCH_SPEED: f64 = 1.0;
 const MOVEMENT_SETTLE_TIME: f64 = 0.12;
-const SMOTHER_DISTANCE: f64 = 26.0;
-const SPREAD_DISTANCE: f64 = 78.0;
-const CENTRAL_REACH_FRACTION: f64 = 0.4;
+
+// Tier-3 AI membership bands (#487). These five numbers used to be raw
+// `const`s here. They are not five independent knobs: `smother_distance`,
+// `spread_distance` and `central_reach_fraction` between them decide which of
+// four save styles a shot produces, and `defender_handoff_distance` only means
+// anything relative to `advance_threat_distance`. Editing one in isolation
+// produces a classification nobody designed, which is exactly why they are
+// authored as versioned band SETS in `gc_data::tunables::BAND_SETS` and
+// substituted whole (`tunable_registry::Registry::substitute_band_set`);
+// there is no single-edge write path.
+//
+// Read from the shipped registry rather than threaded through every
+// signature: these are pure classifier helpers with no `Tuning` in scope, and
+// `tunable_registry::shipped()` is read-only `static` content (see that
+// module's doc on globals), so the values are identical on every peer and on
+// every resimulation.
+fn save_style_edge(edge: &str) -> f64 {
+    tunable_registry::shipped().band_edge("keeper_save_style", edge)
+}
+
+fn engagement_edge(edge: &str) -> f64 {
+    tunable_registry::shipped().band_edge("keeper_engagement", edge)
+}
 
 /// Whether `distance` is close enough for the keeper to smother the ball
 /// directly instead of diving.
 #[must_use]
 pub fn in_smother_range(distance: f64) -> bool {
-    distance <= SMOTHER_DISTANCE
+    distance <= save_style_edge("smother_distance")
 }
 
 fn clamp(value: f64, minimum: f64, maximum: f64) -> f64 {
@@ -381,12 +400,12 @@ pub fn arc_target(context: &KeeperPositionContext) -> Vec2 {
 #[must_use]
 pub fn should_advance(context: &KeeperAdvanceContext) -> bool {
     context.in_claim_zone
-        && context.threat_distance <= ADVANCE_THREAT_DISTANCE
+        && context.threat_distance <= engagement_edge("advance_threat_distance")
         && (context.attacker_controlled || context.loose_touch)
         && !context.support_near
         && (context.loose_touch
             || !context.defender_engaged
-            || context.threat_distance <= DEFENDER_HANDOFF_DISTANCE)
+            || context.threat_distance <= engagement_edge("defender_handoff_distance"))
 }
 
 /// Whether the keeper should at least contain the threat (a superset of
@@ -394,7 +413,7 @@ pub fn should_advance(context: &KeeperAdvanceContext) -> bool {
 #[must_use]
 pub fn should_contain(context: &KeeperAdvanceContext) -> bool {
     context.in_claim_zone
-        && context.threat_distance <= ADVANCE_THREAT_DISTANCE
+        && context.threat_distance <= engagement_edge("advance_threat_distance")
         && (context.attacker_controlled || context.loose_touch)
 }
 
@@ -645,10 +664,10 @@ pub fn save_style(dist_to_keeper: f64, dive_dist: f64, reach: f64) -> SaveStyle 
         !in_smother_range(dist_to_keeper),
         "save_style only classifies saves beyond the smother distance"
     );
-    if dist_to_keeper <= SPREAD_DISTANCE {
+    if dist_to_keeper <= save_style_edge("spread_distance") {
         return SaveStyle::Spread;
     }
-    if dive_dist <= reach * CENTRAL_REACH_FRACTION {
+    if dive_dist <= reach * save_style_edge("central_reach_fraction") {
         return SaveStyle::Central;
     }
     SaveStyle::Stretch
