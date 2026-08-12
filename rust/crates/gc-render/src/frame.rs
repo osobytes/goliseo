@@ -46,6 +46,7 @@ use gc_sim::match_snapshot::{
 };
 use gc_sim::outfield_press::StablePressMode;
 use gc_sim::possession_transition::{self, TransitionTeam};
+use gc_sim::tunable_registry::Registry;
 
 use crate::identity;
 use crate::player_pose::{
@@ -518,6 +519,18 @@ pub struct RenderFrameOptions {
     /// unselectable no matter what the simulation underneath is doing
     /// (#441).
     pub combat: Option<FrameCombatModel>,
+    /// Tier-2 presentation values this frame is drawn with. `None` means
+    /// [`crate::presentation_tunables::shipped`], which is what every shipping
+    /// caller wants.
+    ///
+    /// It is injectable at all so that tier-2 isolation can be *measured*
+    /// rather than asserted: `tests/presentation_tunables.rs` builds one frame
+    /// with the shipped values and one with every value perturbed, and shows
+    /// the rendered output differs while the simulation's boundary-hash
+    /// sequence does not. Without this seam that test could only re-run the
+    /// same global twice and would pass no matter what the isolation was
+    /// doing.
+    pub presentation: Option<Registry>,
 }
 
 // Pose-timer normalisers and the reticle window are TIER 2 of the tunable
@@ -528,8 +541,11 @@ pub struct RenderFrameOptions {
 // crate rather than `gc-data`) and read through the registry here, so nothing
 // in this file is a raw number the simulation might one day be tempted to
 // read.
-fn tier2(id: &str) -> f64 {
-    crate::presentation_tunables::shipped().value(id)
+fn tier2(opts: &RenderFrameOptions, id: &str) -> f64 {
+    opts.presentation
+        .as_ref()
+        .unwrap_or_else(|| crate::presentation_tunables::shipped())
+        .value(id)
 }
 
 // Loose-ball ballistics for the landing reticle. The solve is presentation
@@ -556,18 +572,18 @@ fn eased(timer: f64, ease: f64) -> f64 {
     (timer / ease).min(1.0)
 }
 
-fn aerial_ease(player: &gc_sim::match_snapshot::MatchPlayer) -> f64 {
+fn aerial_ease(opts: &RenderFrameOptions, player: &gc_sim::match_snapshot::MatchPlayer) -> f64 {
     if player.aerial_style == Some(AerialStyle::Bicycle) {
-        tier2("presentation.aerial_ease_bicycle")
+        tier2(opts, "presentation.aerial_ease_bicycle")
     } else if player.aerial_jump > 0.0 {
-        tier2("presentation.aerial_ease_jump")
+        tier2(opts, "presentation.aerial_ease_jump")
     } else if matches!(
         player.aerial_style,
         Some(AerialStyle::LegControl) | Some(AerialStyle::ChestControl)
     ) {
-        tier2("presentation.aerial_ease_control")
+        tier2(opts, "presentation.aerial_ease_control")
     } else {
-        tier2("presentation.aerial_ease")
+        tier2(opts, "presentation.aerial_ease")
     }
 }
 
@@ -775,15 +791,20 @@ fn build_events(events: &[MatchEvent], roster: &RenderFrameRoster) -> RenderFram
 // Where a lofted, loose ball will come down. Only for a genuinely airborne
 // ball (a cross or a lob), never a grounded pass, and only when it lands on
 // the pitch inside a readable window.
-fn landing_point(state: &MatchState, ball_x: f64, ball_y: f64) -> (Option<f64>, Option<f64>) {
+fn landing_point(
+    state: &MatchState,
+    opts: &RenderFrameOptions,
+    ball_x: f64,
+    ball_y: f64,
+) -> (Option<f64>, Option<f64>) {
     let height = state.ball_z;
-    if state.owner.is_some() || height <= tier2("presentation.reticle_min_height") {
+    if state.owner.is_some() || height <= tier2(opts, "presentation.reticle_min_height") {
         return (None, None);
     }
     let vz = state.ball_vz;
     let fall = (vz + (vz * vz + 2.0 * BALL_GRAVITY * height).sqrt()) / BALL_GRAVITY;
-    if fall <= tier2("presentation.reticle_min_time")
-        || fall >= tier2("presentation.reticle_max_time")
+    if fall <= tier2(opts, "presentation.reticle_min_time")
+        || fall >= tier2(opts, "presentation.reticle_max_time")
     {
         return (None, None);
     }
@@ -1066,34 +1087,37 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
         players
             .holding
             .push(Some(index) == state.owner && player.is_keeper && !player.feet_ball);
-        players
-            .dive
-            .push(eased(player.dive_timer, tier2("presentation.dive_ease")));
+        players.dive.push(eased(
+            player.dive_timer,
+            tier2(opts, "presentation.dive_ease"),
+        ));
         players.dive_dir_x.push(dive_dir_x);
         players.dive_dir_y.push(dive_dir_y);
-        players
-            .grab
-            .push(eased(player.grab_timer, tier2("presentation.grab_ease")));
-        players
-            .throw
-            .push(eased(player.throw_timer, tier2("presentation.throw_ease")));
+        players.grab.push(eased(
+            player.grab_timer,
+            tier2(opts, "presentation.grab_ease"),
+        ));
+        players.throw.push(eased(
+            player.throw_timer,
+            tier2(opts, "presentation.throw_ease"),
+        ));
         // The wind-up back-swing is deliberately unclamped: 0 = no windup,
         // 1 = just committed, and a long charge reads above 1.
         players.windup.push(if player.windup_timer > 0.0 {
-            player.windup_timer / tier2("presentation.windup_ease")
+            player.windup_timer / tier2(opts, "presentation.windup_ease")
         } else {
             0.0
         });
         players
             .aerial
-            .push(eased(player.aerial_timer, aerial_ease(player)));
+            .push(eased(player.aerial_timer, aerial_ease(opts, player)));
         players.aerial_jump.push(player.aerial_jump);
         players.aerial_style.push(player.aerial_style);
         players.aerial_outcome.push(player.aerial_outcome);
     }
 
     let ball_point = render_pose.map_or(state.ball, |pose| pose.ball);
-    let (landing_x, landing_y) = landing_point(state, ball_point.x, ball_point.y);
+    let (landing_x, landing_y) = landing_point(state, opts, ball_point.x, ball_point.y);
 
     let controlled = &state.players[(state.controlled - 1) as usize];
     let (charge_kind, charge) = if controlled.charge > 0.02 {

@@ -11,10 +11,36 @@
 //! match replays to a byte-identical state-hash sequence with every one of
 //! them moved.
 
+use gc_core::vec2::Vec2;
 use gc_data::tunables::Tier;
+use gc_render::frame::{self as render_frame, RenderFrameOptions};
 use gc_render::presentation_tunables;
+use gc_sim::aerial::AerialStyle;
+use gc_sim::r#match::{self as sim_match, NewMatchOptions};
+use gc_sim::match_snapshot::{MatchState, PitchSize};
 use gc_sim::tuning::Tuning;
 use gc_sim::{determinism_evidence, replay, tunable_registry};
+
+fn fixture(seed: f64) -> MatchState {
+    let home = gc_data::teams::get("nebula").expect("nebula team is authored");
+    let away = gc_data::teams::get("orion").expect("orion team is authored");
+    sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: None,
+        max_goals: None,
+        seed: Some(seed),
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    })
+}
 
 /// A registry with EVERY tier-2 value moved off its default, each toward the
 /// far end of its own range so no value can accidentally land back where it
@@ -71,41 +97,6 @@ fn presentation_tunables_are_all_tier_two_and_none_of_them_is_a_sim_tunable() {
 }
 
 #[test]
-fn perturbing_every_presentation_value_changes_what_the_renderer_produces() {
-    // Without this, every other assertion here would pass just as well for a
-    // table of numbers nothing reads. `frame.rs` has no other source for these
-    // values — the raw `const DIVE_EASE`/`GRAB_EASE`/... it used to carry are
-    // deleted — and `tests/frame.rs`'s
-    // `normalises_pose_timers_so_no_renderer_re_derives_a_duration` pins the
-    // rendered output those values produce (`grab_timer` 0.125 -> `grab` 0.5,
-    // `aerial_timer` 0.11 -> `aerial` 0.11/0.18). Tying the registry's values
-    // to that test's arithmetic here means a registry that stopped feeding the
-    // renderer turns that test red rather than passing quietly.
-    let shipped = presentation_tunables::shipped();
-    assert_eq!(shipped.value("presentation.grab_ease"), 0.25);
-    assert_eq!(shipped.value("presentation.aerial_ease_control"), 0.18);
-    assert_eq!(shipped.value("presentation.dive_ease"), 0.3);
-
-    let perturbed = all_perturbed();
-    let mut differences = 0;
-    for def in presentation_tunables::PRESENTATION_TUNABLES {
-        if (shipped.value(def.id) - perturbed.value(def.id)).abs() > f64::EPSILON {
-            differences += 1;
-        }
-    }
-    assert_eq!(
-        differences,
-        presentation_tunables::PRESENTATION_TUNABLES.len(),
-        "every tier-2 value must actually be perturbed"
-    );
-    assert_ne!(
-        shipped.serialize_tier(Tier::Presentation),
-        perturbed.serialize_tier(Tier::Presentation),
-        "a perturbed tier-2 registry must serialize differently"
-    );
-}
-
-#[test]
 fn perturbing_every_presentation_value_never_moves_the_sim_config_hash() {
     let before = tunable_registry::shipped().config_hash();
     let perturbed = all_perturbed();
@@ -127,7 +118,90 @@ fn perturbing_every_presentation_value_never_moves_the_sim_config_hash() {
 }
 
 #[test]
-fn a_recorded_match_replays_to_an_identical_state_hash_sequence_with_tier_two_perturbed() {
+fn perturbing_every_presentation_value_changes_the_rendered_frame() {
+    // Without this, every other assertion here would pass just as well for a
+    // table of numbers nothing reads. This drives the REAL `frame::build` twice
+    // over one identical `MatchState`, changing nothing but the injected
+    // tier-2 registry, and requires the drawn pose numbers to differ.
+    let mut state = fixture(17.0);
+    state.players[2].is_keeper = false;
+    state.players[2].dive_timer = 0.12;
+    state.players[2].grab_timer = 0.125;
+    state.players[2].throw_timer = 0.1;
+    state.players[2].aerial_timer = 0.11;
+    state.players[2].aerial_style = Some(AerialStyle::ChestControl);
+
+    let shipped_frame = render_frame::build(&state, &RenderFrameOptions::default());
+    let perturbed_frame = render_frame::build(
+        &state,
+        &RenderFrameOptions {
+            presentation: Some(all_perturbed()),
+            ..Default::default()
+        },
+    );
+
+    assert_ne!(
+        shipped_frame.players.dive[2], perturbed_frame.players.dive[2],
+        "the dive ease must reach the drawn frame"
+    );
+    assert_ne!(
+        shipped_frame.players.grab[2], perturbed_frame.players.grab[2],
+        "the grab ease must reach the drawn frame"
+    );
+    assert_ne!(
+        shipped_frame.players.aerial[2], perturbed_frame.players.aerial[2],
+        "the aerial-control ease must reach the drawn frame"
+    );
+
+    // And the shipped values are exactly the ones `tests/frame.rs` pins the
+    // rendered arithmetic against, so a registry that stopped feeding the
+    // renderer turns that test red rather than passing quietly.
+    let shipped = presentation_tunables::shipped();
+    assert_eq!(shipped.value("presentation.grab_ease"), 0.25);
+    assert_eq!(shipped.value("presentation.aerial_ease_control"), 0.18);
+    assert_eq!(shipped.value("presentation.dive_ease"), 0.3);
+    assert!((shipped_frame.players.grab[2] - 0.5).abs() < 1e-9);
+    assert!((shipped_frame.players.aerial[2] - 0.11 / 0.18).abs() < 1e-9);
+}
+
+#[test]
+fn the_landing_reticle_window_is_a_tier_two_value_the_frame_actually_reads() {
+    // The reticle window is the one tier-2 value that gates whether a field is
+    // populated at all rather than scaling a number, so it needs its own case:
+    // a fall that is inside the shipped window and outside the perturbed one.
+    let mut state = fixture(23.0);
+    state.owner = None;
+    state.ball_z = 60.0;
+    state.ball_vz = 0.0;
+    state.ball_vel = Vec2::new(10.0, 10.0);
+
+    let shipped_frame = render_frame::build(&state, &RenderFrameOptions::default());
+    assert!(
+        shipped_frame.ball.landing_x.is_some(),
+        "the fixture must draw a reticle at shipped values, or this proves nothing"
+    );
+
+    // `presentation.reticle_min_height` perturbs to its max (120), above the
+    // ball's 60px, so the reticle must disappear.
+    let perturbed_frame = render_frame::build(
+        &state,
+        &RenderFrameOptions {
+            presentation: Some(all_perturbed()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        perturbed_frame.ball.landing_x.is_none(),
+        "a perturbed reticle window must change what the frame reports"
+    );
+}
+
+#[test]
+fn a_recorded_match_replays_to_an_identical_state_hash_sequence_while_tier_two_moves_the_frame() {
+    // The two halves of the isolation claim, measured against ONE state:
+    // moving every tier-2 value changes the rendered frame (proved above and
+    // re-checked here on this state), and changes nothing about the
+    // simulation's own boundary-hash sequence over a recorded match.
     let tune = Tuning::new();
     let tape = determinism_evidence::fixture_tape(&tune).expect("the OMP-1 fixture tape loads");
     let identity =
@@ -144,22 +218,33 @@ fn a_recorded_match_replays_to_an_identical_state_hash_sequence_with_tier_two_pe
         "a one-boundary replay would make this vacuous"
     );
 
-    // Move every presentation value, then replay the same recorded match.
+    // The perturbed tier-2 registry demonstrably changes rendering of the
+    // replay's own final state...
     let perturbed = all_perturbed();
+    let mut rendered = before.state.clone();
+    rendered.players[2].is_keeper = false;
+    rendered.players[2].grab_timer = 0.125;
+    let shipped_frame = render_frame::build(&rendered, &RenderFrameOptions::default());
+    let perturbed_frame = render_frame::build(
+        &rendered,
+        &RenderFrameOptions {
+            presentation: Some(perturbed),
+            ..Default::default()
+        },
+    );
     assert_ne!(
-        perturbed.serialize_tier(Tier::Presentation),
-        presentation_tunables::shipped().serialize_tier(Tier::Presentation)
+        shipped_frame.players.grab[2], perturbed_frame.players.grab[2],
+        "the perturbation must be live, or the hash comparison below proves nothing"
     );
 
+    // ...and changes nothing about the simulation that produced it. Rendering
+    // is a pure read of `MatchState`, so this also checks that building those
+    // two frames did not perturb the state the replay ended on.
     let after = replay::run(&tape, &identity, &tune).expect("the fixture tape replays again");
     let hashes_after: Vec<String> = after.boundaries.iter().map(|b| b.hash.clone()).collect();
-
     assert_eq!(
         hashes_before, hashes_after,
         "a tier-2 perturbation changed the state-hash sequence of a replayed match"
     );
     assert!(after.divergence.is_none());
-    // Keep the perturbed registry alive to the end, so nothing can argue it
-    // was optimised away before the replay ran.
-    assert!(!perturbed.serialize_tier(Tier::Presentation).is_empty());
 }
