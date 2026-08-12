@@ -18,6 +18,7 @@
 //!   therefore takes an explicit `&Tuning` parameter rather than reading a
 //!   global.
 
+use crate::metric_registry;
 use crate::tuning::Tuning;
 use gc_core::vec2::Vec2;
 use indexmap::IndexMap;
@@ -783,84 +784,30 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
     }
 }
 
-/// Trapezoid desirability bands `{zero_lo, good_lo, good_hi, zero_hi}`:
-/// worth 1 inside `[good_lo, good_hi]`, falling linearly to 0 at the outer
-/// edges. Provisional targets — see `docs/design/fun_metrics.md` for the
-/// rationale.
-const BAND_GOALS_TOTAL: [f64; 4] = [0.0, 2.0, 5.0, 8.0];
-// zero_hi sits at "catastrophic", not "bad": search needs gradient out here
-// (the baseline lives around 18 — see the doc's baseline signature).
-const BAND_SHOTS_PER_GOAL: [f64; 4] = [1.0, 2.5, 6.0, 25.0];
-const BAND_SAVE_RATE: [f64; 4] = [0.15, 0.45, 0.75, 0.95];
-const BAND_PASS_COMPLETION: [f64; 4] = [0.25, 0.55, 0.85, 1.001];
-// SETTLED possession changes (see SETTLE_HOLD) — raw ownership flicker runs
-// ~40x higher and means nothing.
-const BAND_TURNOVERS_PER_MIN: [f64; 4] = [0.3, 1.0, 5.0, 10.0];
-const BAND_POSSESSION_BALANCE: [f64; 4] = [0.1, 0.35, 0.65, 0.9];
-const BAND_LONGEST_DROUGHT_S: [f64; 4] = [-1.0, 0.0, 35.0, 80.0];
-const BAND_DECIDED_LATE: [f64; 4] = [0.05, 0.4, 1.0, f64::INFINITY];
-
 /// Desirability of `v` under a trapezoid band `{zero_lo, good_lo, good_hi,
 /// zero_hi}`. Returns `0..1`.
+///
+/// The bands themselves moved to [`crate::metric_registry`]; this stays as the
+/// name every caller already imports.
 #[must_use]
 pub fn desirability(v: f64, band: [f64; 4]) -> f64 {
-    let [zl, gl, gh, zh] = band;
-    if v <= zl || v >= zh {
-        return 0.0;
-    }
-    if v < gl {
-        return (v - zl) / (gl - zl);
-    }
-    if v > gh {
-        return (zh - v) / (zh - gh);
-    }
-    1.0
+    metric_registry::desirability(v, band)
 }
 
-/// Geometric mean of the banded metrics present in `m`. A collapsed
+/// Geometric mean of the registered metrics present in `m`. A collapsed
 /// dimension (desirability 0) zeroes the whole score by design; missing
 /// metrics (`None` denominators) are skipped, not defaulted. Returns the
 /// score (`0..1`) and each contributing band's desirability, by key.
+///
+/// The bands and the fold order are [`crate::metric_registry`]'s now. This
+/// module used to carry a private `BAND_*` table that two other modules
+/// duplicated by hand (`crate::headless`'s `band_for`, `crate::lever_metrics`'s
+/// `band_width`); all three read one registry. Scores are unchanged — the
+/// registry folds the same eight metrics in the same order, which
+/// `tests/metric_registry.rs` pins against the pre-migration values.
 #[must_use]
 pub fn fun_score(m: &MatchMetrics) -> (f64, IndexMap<&'static str, f64>) {
-    let entries: [(&'static str, [f64; 4], Option<f64>); 8] = [
-        ("goals_total", BAND_GOALS_TOTAL, Some(m.goals_total as f64)),
-        ("shots_per_goal", BAND_SHOTS_PER_GOAL, m.shots_per_goal),
-        ("save_rate", BAND_SAVE_RATE, m.save_rate),
-        ("pass_completion", BAND_PASS_COMPLETION, m.pass_completion),
-        (
-            "turnovers_per_min",
-            BAND_TURNOVERS_PER_MIN,
-            Some(m.turnovers_per_min),
-        ),
-        (
-            "possession_balance",
-            BAND_POSSESSION_BALANCE,
-            m.possession_balance,
-        ),
-        (
-            "longest_drought_s",
-            BAND_LONGEST_DROUGHT_S,
-            Some(m.longest_drought_s),
-        ),
-        ("decided_late", BAND_DECIDED_LATE, Some(m.decided_late)),
-    ];
-
-    let mut product = 1.0_f64;
-    let mut n = 0_i32;
-    let mut per = IndexMap::new();
-    for (key, band, value) in entries {
-        if let Some(v) = value {
-            let d = desirability(v, band);
-            per.insert(key, d);
-            product *= d;
-            n += 1;
-        }
-    }
-    if n == 0 {
-        return (0.0, per);
-    }
-    (product.powf(1.0 / f64::from(n)), per)
+    metric_registry::shipped().fun_score(m)
 }
 
 /// Distribution stats for one metric across a batch of matches.
