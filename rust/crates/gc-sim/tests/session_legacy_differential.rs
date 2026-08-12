@@ -47,7 +47,7 @@
 //! pattern after parsing, not by printed text: a divergence that
 //! self-corrects a tick later is still a desync.
 //!
-//! FOUR ASSERTIONS, AND ONLY ONE OF THEM MOVES.
+//! FIVE ASSERTIONS, AND ONLY ONE OF THEM MOVES.
 //!
 //! The split matters, because a frozen per-tick trajectory is broken by any
 //! deliberate gameplay change BY CONSTRUCTION -- that is what happened to the
@@ -73,6 +73,13 @@
 //!   4. `wire_round_trip_preserves_every_slot_at_its_own_index` -- encode ->
 //!      decode -> validate returns all eight distinct slots unpermuted.
 //!      IMMUNE; it never steps the simulation at all.
+//!   5. `every_wire_field_varies_across_the_corpus` -- the META-assertion:
+//!      no field this file claims to cover may be constant across the whole
+//!      corpus, because a constant field cannot catch a defect in itself.
+//!      IMMUNE. It exists because three review rounds each found a different
+//!      field sitting at a constant with an oracle derived from the code
+//!      under test; fixing those one at a time was losing, so the gate now
+//!      names the offending field itself.
 //!
 //! So a gameplay rework re-records one fixture and loses no wire coverage,
 //! and a quantization or slot-indexing defect still fails the gate even in a
@@ -140,7 +147,7 @@
 use gc_core::vec2::Vec2;
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::{MatchState, PitchSize};
+use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
@@ -249,28 +256,179 @@ fn local_slot(decoded: &input_frame::InputFrame) -> input_frame::InputSample {
 /// reading a different stick deflection off the same bytes.
 const ORACLE_MOVE_SCALE: f64 = 127.0;
 
-/// A per-slot, per-tick sample chosen so that **no two slots are ever equal**
-/// and slot 0's move axes are **never both zero**.
+/// Every button state one tick of one slot can carry, as plain booleans.
 ///
-/// Both properties are load-bearing. The previous version of the transparency
-/// assertion drove the wire with `input_frame::new(tick, None)` -- eight
-/// identical `InputSample::default()`s with zero axes -- which made it
-/// vacuous for the two defect classes it advertised: reading the wrong slot
-/// index selected an identical value, and any change to the dequantization
-/// scale multiplied zero by something and got zero. Both mutations were
-/// confirmed to leave that assertion green.
+/// The corpus is defined in terms of THIS, not in terms of bitmasks, and it
+/// is the reason the oracle can be independent: [`sample_from`] turns these
+/// booleans into wire bitmasks through `HeldAction::bit`/`EdgeAction::bit`,
+/// while [`oracle_from`] turns the SAME booleans into a `MatchInput` without
+/// touching `is_held`, `has_edge` or `to_match_input`. Two code paths, one
+/// set of facts -- so a decode defect makes them disagree.
+#[derive(Clone, Copy, Debug)]
+struct Buttons {
+    shoot_held: bool,
+    pass_held: bool,
+    sprint: bool,
+    jockey: bool,
+    lob: bool,
+    aerial_strike: bool,
+    aerial_acrobatic: bool,
+    equipment_held: bool,
+    shoot: bool,
+    pass: bool,
+    switch: bool,
+    dash: bool,
+    dodge: bool,
+    equipment_pressed: bool,
+    equipment_released: bool,
+}
+
+/// The five `(equipment_held, pressed, released)` combinations
+/// `input_frame::validate_sample` accepts.
 ///
-/// `slot * 31` and `slot * 47` offsets are coprime-ish with the 255 modulus
-/// and differ across every pair of slots at every tick, so the sample for
-/// slot 0 differs from the sample for every other slot on every tick, not
-/// merely on average.
-fn distinctive_sample(slot: usize, tick: i64) -> input_frame::InputSample {
+/// It rejects `pressed && !released && !held` and `released && held`, so a
+/// naive per-bit pattern would build frames that fail validation. Cycling
+/// these keeps all three equipment fields varying while staying valid.
+const EQUIPMENT_COMBOS: [(bool, bool, bool); 5] = [
+    (false, false, false),
+    (true, false, false),
+    (false, true, true),
+    (true, true, false),
+    (false, false, true),
+];
+
+/// The button state for one slot on one tick.
+///
+/// Every field varies across the corpus -- asserted, not asserted-by-hand,
+/// by `every_wire_field_varies_across_the_corpus` below.
+fn buttons_for(slot: usize, tick: i64) -> Buttons {
+    let k = slot as i64 * 13 + tick * 7;
+    let bit = |i: u32| (k >> i) & 1 == 1;
+    let (equipment_held, equipment_pressed, equipment_released) =
+        EQUIPMENT_COMBOS[(slot + tick.rem_euclid(5) as usize) % EQUIPMENT_COMBOS.len()];
+    Buttons {
+        shoot_held: bit(0),
+        pass_held: bit(1),
+        sprint: bit(2),
+        jockey: bit(3),
+        lob: bit(4),
+        aerial_strike: bit(5),
+        aerial_acrobatic: bit(6),
+        equipment_held,
+        shoot: bit(7),
+        pass: bit(8),
+        switch: bit(9),
+        dash: bit(10),
+        dodge: bit(11),
+        equipment_pressed,
+        equipment_released,
+    }
+}
+
+/// Packs [`Buttons`] into the wire sample's two bitmasks.
+fn sample_masks(b: &Buttons) -> (i64, i64) {
+    use input_frame::{EdgeAction, HeldAction};
+    let mut held = 0;
+    let mut set_held = |on: bool, action: HeldAction| {
+        if on {
+            held |= action.bit();
+        }
+    };
+    set_held(b.shoot_held, HeldAction::Shoot);
+    set_held(b.pass_held, HeldAction::Pass);
+    set_held(b.sprint, HeldAction::Sprint);
+    set_held(b.jockey, HeldAction::Jockey);
+    set_held(b.lob, HeldAction::Lob);
+    set_held(b.aerial_strike, HeldAction::AerialStrike);
+    set_held(b.aerial_acrobatic, HeldAction::AerialAcrobatic);
+    set_held(b.equipment_held, HeldAction::Equipment);
+
+    let mut edges = 0;
+    let mut set_edge = |on: bool, action: EdgeAction| {
+        if on {
+            edges |= action.bit();
+        }
+    };
+    set_edge(b.shoot, EdgeAction::Shoot);
+    set_edge(b.pass, EdgeAction::Pass);
+    set_edge(b.switch, EdgeAction::Switch);
+    set_edge(b.dash, EdgeAction::Dash);
+    set_edge(b.dodge, EdgeAction::Dodge);
+    set_edge(b.equipment_pressed, EdgeAction::EquipmentPressed);
+    set_edge(b.equipment_released, EdgeAction::EquipmentReleased);
+
+    (held, edges)
+}
+
+/// The quantized move axes for one slot on one tick.
+///
+/// `slot * 31` and `slot * 47` offsets differ across every pair of slots at
+/// every tick, so slot 0's sample differs from every other slot's on every
+/// tick, not merely on average -- which is what makes a slot-selection
+/// mutation detectable.
+fn axes_for(slot: usize, tick: i64) -> (i64, i64) {
     let slot = slot as i64;
+    (
+        (slot * 31 + tick * 7).rem_euclid(255) - 127,
+        (slot * 47 + tick * 13).rem_euclid(255) - 127,
+    )
+}
+
+/// A per-slot, per-tick sample: no two slots are ever equal, slot 0's move
+/// axes are never both zero, and **every button bit varies**.
+///
+/// All three properties are load-bearing, and each was added only after a
+/// reviewer proved its absence made an assertion vacuous. The original
+/// version drove the wire with `input_frame::new(tick, None)` -- eight
+/// identical `InputSample::default()`s -- so a wrong slot index selected an
+/// identical value and a changed dequantization scale multiplied zero. The
+/// version after that varied only the axes, leaving `held`/`edges` at zero,
+/// so a stuck-bit decode defect (`is_held` returning `true` for `Sprint`
+/// unconditionally -- every player permanently sprinting) also passed. All
+/// three mutations now fail.
+fn distinctive_sample(slot: usize, tick: i64) -> input_frame::InputSample {
+    let (move_x, move_y) = axes_for(slot, tick);
+    let (held, edges) = sample_masks(&buttons_for(slot, tick));
     input_frame::InputSample {
-        move_x: (slot * 31 + tick * 7).rem_euclid(255) - 127,
-        move_y: (slot * 47 + tick * 13).rem_euclid(255) - 127,
-        held: 0,
-        edges: 0,
+        move_x,
+        move_y,
+        held,
+        edges,
+    }
+}
+
+/// The `MatchInput` the wire is expected to produce for one slot on one tick,
+/// derived WITHOUT the code under test.
+///
+/// Nothing here calls `dequantize_axis`, `is_held`, `has_edge` or
+/// `to_match_input`. The field mapping is transcribed from
+/// `slot_input::to_match_input`'s documented contract rather than delegated
+/// to it, because an oracle that calls the implementation is not an oracle --
+/// a lesson this file learned twice (see the `LOCAL_SLOT_ZERO_INDEX` note
+/// below).
+fn oracle_from(slot: usize, tick: i64) -> MatchInput {
+    let b = buttons_for(slot, tick);
+    let (move_x, move_y) = axes_for(slot, tick);
+    MatchInput {
+        r#move: Vec2::new(
+            move_x as f64 / ORACLE_MOVE_SCALE,
+            move_y as f64 / ORACLE_MOVE_SCALE,
+        ),
+        shoot: b.shoot,
+        shoot_held: b.shoot_held,
+        pass: b.pass,
+        pass_held: b.pass_held,
+        switch: b.switch,
+        dash: b.dash,
+        dodge: b.dodge,
+        lob: b.lob,
+        sprint: b.sprint,
+        jockey: b.jockey,
+        aerial_strike: Some(b.aerial_strike),
+        aerial_acrobatic: Some(b.aerial_acrobatic),
+        equipment_held: b.equipment_held,
+        equipment_pressed: b.equipment_pressed,
+        equipment_released: b.equipment_released,
     }
 }
 
@@ -490,20 +648,16 @@ fn wire_driven_session_legacy_step_agrees_with_an_independently_specified_non_ne
         input_frame::validate(&decoded).expect("a freshly encoded frame is always valid");
         let from_wire = slot_input::to_match_input(&local_slot(&decoded));
 
-        // Oracle side: the same slot-0 input, specified without the wire and
-        // without `dequantize_axis`.
-        let mut oracle = slot_input::to_match_input(&input_frame::InputSample::default());
-        // Literal 0, deliberately NOT `LOCAL_SLOT_ZERO_INDEX`: the oracle
-        // must assert which slot the local player's input comes from, not
-        // inherit that answer from the code under test. Using the constant
-        // here made a 0 -> 3 mutation of it move both sides together and the
-        // assertion stayed green -- verified, and the reason this line is
-        // spelled this way.
-        let local = distinctive_sample(0, tick - 1);
-        oracle.r#move = Vec2::new(
-            local.move_x as f64 / ORACLE_MOVE_SCALE,
-            local.move_y as f64 / ORACLE_MOVE_SCALE,
-        );
+        // Oracle side: the same slot-0 input, specified without the wire,
+        // without `dequantize_axis`, and without `is_held`/`has_edge`.
+        //
+        // Literal 0, deliberately NOT `LOCAL_SLOT_ZERO_INDEX`: the oracle must
+        // assert which slot the local player's input comes from, not inherit
+        // that answer from the code under test. Using the constant here made a
+        // 0 -> 3 mutation of it move both sides together and the assertion
+        // stayed green -- verified, and the reason this line is spelled this
+        // way.
+        let oracle = oracle_from(0, tick - 1);
 
         // Assert the DEQUANTIZED INPUT, not merely the state it produces.
         //
@@ -543,6 +697,187 @@ fn wire_driven_session_legacy_step_agrees_with_an_independently_specified_non_ne
              one given the same slot-0 input specified independently of the wire"
         );
     }
+}
+
+/// Fields that are allowed to be constant across the corpus, each with a
+/// written reason.
+///
+/// Empty, deliberately. An entry here is a DISCLOSED gap, not a silenced
+/// one: it says "this field is not covered by these assertions and here is
+/// why", which a reviewer can weigh. Adding one to make the meta-assertion
+/// below go green, without a reason that survives being read out loud,
+/// re-creates the exact defect that meta-assertion exists to prevent.
+const ALLOWED_CONSTANT_FIELDS: &[(&str, &str)] = &[];
+
+/// Tracks whether one named field ever took a second value.
+#[derive(Default)]
+struct Variation {
+    first: Option<u64>,
+    varied: bool,
+}
+
+impl Variation {
+    fn observe(&mut self, value: u64) {
+        match self.first {
+            None => self.first = Some(value),
+            Some(seen) if seen != value => self.varied = true,
+            Some(_) => {}
+        }
+    }
+}
+
+/// Every field of a wire [`input_frame::InputSample`], flattened to
+/// `(name, value)` -- masks split PER BIT, because a `held` mask that varies
+/// as a whole can still hold one particular button constant, which is
+/// precisely the defect this catches.
+fn sample_field_values(sample: &input_frame::InputSample) -> Vec<(&'static str, u64)> {
+    use input_frame::{EdgeAction, HeldAction};
+    let held_bit = |a: HeldAction| u64::from(sample.held & a.bit() != 0);
+    let edge_bit = |a: EdgeAction| u64::from(sample.edges & a.bit() != 0);
+    vec![
+        ("sample.move_x", sample.move_x as u64),
+        ("sample.move_y", sample.move_y as u64),
+        ("sample.held.shoot", held_bit(HeldAction::Shoot)),
+        ("sample.held.pass", held_bit(HeldAction::Pass)),
+        ("sample.held.sprint", held_bit(HeldAction::Sprint)),
+        ("sample.held.jockey", held_bit(HeldAction::Jockey)),
+        ("sample.held.lob", held_bit(HeldAction::Lob)),
+        (
+            "sample.held.aerial_strike",
+            held_bit(HeldAction::AerialStrike),
+        ),
+        (
+            "sample.held.aerial_acrobatic",
+            held_bit(HeldAction::AerialAcrobatic),
+        ),
+        ("sample.held.equipment", held_bit(HeldAction::Equipment)),
+        ("sample.edges.shoot", edge_bit(EdgeAction::Shoot)),
+        ("sample.edges.pass", edge_bit(EdgeAction::Pass)),
+        ("sample.edges.switch", edge_bit(EdgeAction::Switch)),
+        ("sample.edges.dash", edge_bit(EdgeAction::Dash)),
+        ("sample.edges.dodge", edge_bit(EdgeAction::Dodge)),
+        (
+            "sample.edges.equipment_pressed",
+            edge_bit(EdgeAction::EquipmentPressed),
+        ),
+        (
+            "sample.edges.equipment_released",
+            edge_bit(EdgeAction::EquipmentReleased),
+        ),
+    ]
+}
+
+/// Every field of a decoded [`MatchInput`], flattened to `(name, value)`.
+fn match_input_field_values(input: &MatchInput) -> Vec<(&'static str, u64)> {
+    vec![
+        ("input.move.x", input.r#move.x.to_bits()),
+        ("input.move.y", input.r#move.y.to_bits()),
+        ("input.shoot", u64::from(input.shoot)),
+        ("input.shoot_held", u64::from(input.shoot_held)),
+        ("input.pass", u64::from(input.pass)),
+        ("input.pass_held", u64::from(input.pass_held)),
+        ("input.switch", u64::from(input.switch)),
+        ("input.dash", u64::from(input.dash)),
+        ("input.dodge", u64::from(input.dodge)),
+        ("input.lob", u64::from(input.lob)),
+        ("input.sprint", u64::from(input.sprint)),
+        ("input.jockey", u64::from(input.jockey)),
+        (
+            "input.aerial_strike",
+            u64::from(input.aerial_strike.unwrap_or(false)),
+        ),
+        (
+            "input.aerial_acrobatic",
+            u64::from(input.aerial_acrobatic.unwrap_or(false)),
+        ),
+        ("input.equipment_held", u64::from(input.equipment_held)),
+        (
+            "input.equipment_pressed",
+            u64::from(input.equipment_pressed),
+        ),
+        (
+            "input.equipment_released",
+            u64::from(input.equipment_released),
+        ),
+    ]
+}
+
+/// **The meta-assertion.** Every wire field this file claims to cover must
+/// actually take more than one value across the corpus the assertions drive.
+///
+/// WHY THIS EXISTS. Three separate review rounds found the same defect in
+/// this file: a field or constant that never varied, with an oracle quietly
+/// derived from the implementation, so an assertion that named the field
+/// asserted nothing about it. First the move axes (all-neutral frames), then
+/// the slot index (an oracle reading `LOCAL_SLOT_ZERO_INDEX`), then the
+/// button bitmasks (`held: 0, edges: 0` with the oracle calling
+/// `to_match_input`). Each was fixed one dimension at a time, and each fix
+/// left the next instance in place.
+///
+/// Patching dimensions one at a time loses. A constant field cannot catch a
+/// defect in itself, so this test refuses to pass while the corpus claims
+/// coverage it does not have -- naming the offending field. That turns
+/// "a reviewer noticed" into "the gate notices", per AGENTS.md §9's rule that
+/// every gate needs a demonstration it can go red.
+#[test]
+fn every_wire_field_varies_across_the_corpus() {
+    use indexmap::IndexMap;
+
+    let mut fields: IndexMap<&'static str, Variation> = IndexMap::new();
+    let observe = |values: Vec<(&'static str, u64)>,
+                   fields: &mut IndexMap<&'static str, Variation>| {
+        for (name, value) in values {
+            fields.entry(name).or_default().observe(value);
+        }
+    };
+
+    for tick in 0..=TICKS {
+        // The wire samples every slot carries, exactly as the round-trip and
+        // transparency assertions build them.
+        for slot in 0..8 {
+            observe(
+                sample_field_values(&distinctive_sample(slot, tick)),
+                &mut fields,
+            );
+        }
+        // The dequantized input the transparency assertion actually compares.
+        observe(match_input_field_values(&oracle_from(0, tick)), &mut fields);
+    }
+
+    let allowed: Vec<&str> = ALLOWED_CONSTANT_FIELDS.iter().map(|(n, _)| *n).collect();
+    let constant: Vec<&str> = fields
+        .iter()
+        .filter(|(name, v)| !v.varied && !allowed.contains(*name))
+        .map(|(name, _)| *name)
+        .collect();
+
+    assert!(
+        constant.is_empty(),
+        "these wire fields never change across the whole corpus, so every assertion in this \
+         file that names them is vacuous for them -- vary them in `buttons_for`/`axes_for`, or \
+         add an explicit `ALLOWED_CONSTANT_FIELDS` entry with a reason: {constant:?}"
+    );
+
+    // A stale allowlist entry is its own silent gap: it would keep excusing a
+    // field that has since started varying, and hide the next regression to
+    // constant.
+    for (name, reason) in ALLOWED_CONSTANT_FIELDS {
+        let v = fields
+            .get(name)
+            .unwrap_or_else(|| panic!("allowlisted field {name} is not in the corpus at all"));
+        assert!(
+            !v.varied,
+            "allowlisted field {name} DOES vary now ({reason}) -- drop the entry"
+        );
+    }
+
+    // Guards the guard: if the corpus stopped covering these field sets, the
+    // loop above would trivially find nothing constant.
+    assert_eq!(
+        fields.len(),
+        34,
+        "corpus must cover all 17 + 17 named fields"
+    );
 }
 
 /// Renders one baseline row in the fixture's tab-separated layout.

@@ -160,6 +160,17 @@ guarantee. The re-recorded baseline is bit-identical to
 the retired Lua vector across all 7,201 × 31 fields, so that conversion moved
 the claim and not one value.
 
+A second lesson from the same file, worth stating because it generalizes:
+**an assertion that names a field proves nothing about that field unless the
+field varies, and unless the expectation is derived independently of the code
+under test.** Three review rounds each found a different instance in this one
+test -- neutral move axes, an oracle reading the slot constant it was meant to
+check, then all-zero button bitmasks with the oracle calling the decoder. Each
+fix closed one dimension and left the next. The durable answer was a
+meta-assertion, `every_wire_field_varies_across_the_corpus`, which fails and
+names any field that is constant across the corpus, with an explicit
+allowlist for a disclosed gap. Prefer that shape over patching instances.
+
 Rule 5 above was learned here, and the transcript is worth keeping: with the
 #490 keeper commits cherry-picked on top of the *converted* test, it still
 failed at the same `tick 743`. A Rust-recorded trajectory is regenerable, not
