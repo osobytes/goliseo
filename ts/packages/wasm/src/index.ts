@@ -62,6 +62,7 @@ export type {
   OnlineCombatPhaseScenario,
   PlayerPoseBridge,
   RawExports,
+  RetainedHistoryAccounting,
   RollbackEventsTimeline,
   RollbackEventsTimelineConstructor,
   RollbackPlayableLab,

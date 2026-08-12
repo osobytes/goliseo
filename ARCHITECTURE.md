@@ -106,7 +106,7 @@ Two boundaries worth restating because they are easy to get backwards:
 
 ### 1.2 Modules that must exist in both languages
 
-Three so far, for two different reasons.
+Four so far, for two different reasons.
 
 **`vec2`** — a 54-line immutable value type. Cheaper to keep twice than to
 marshal across the wasm boundary. Divergence is implausible and harmless.
@@ -126,6 +126,20 @@ file — a list of inputs and their expected hex digests, checked into
 `tools/lua_reference/` and asserted by a test in each language (see that
 directory's README). A duplicate without shared vectors is not acceptable
 here.
+
+**`rng` / `network_conditions`' impairment half** — the same category as
+`fnv1a64`, for the same reason. `gc-sim`'s `network_conditions` impairs the
+native rollback matrix; `packages/transport/src/impairment.ts` impairs
+browser evidence, and `packages/transport/src/impairment_rng.ts` ports
+`gc-core`'s minstd generator so the two consume identical rolls from
+identical seeds. Evidence gathered under one is compared against evidence
+gathered under the other, so they **must agree** — and a disagreement throws
+nothing anywhere, it just makes two green suites mean different things.
+Therefore: both implementations are pinned by a shared transcript literal
+asserted by a test in each language, and by gate 0c
+(`scripts/check_network_profile_parity.mjs`), which requires the two literals
+to be byte-identical. Only the impairment half is duplicated; the redundant
+input history, the authoritative ledger and `drain` stay Rust-only.
 
 ---
 
@@ -273,6 +287,20 @@ ts/
    cross-language assertion, wired into the gate, landing with the
    duplicate — or not taken.
 
+   **A second carve-out, taken on exactly those terms (#472).**
+   `packages/transport/src/network_profiles.ts` restates `gc-data`'s four
+   authored network profiles, because the impairment decorator must run in a
+   plain vitest process with no wasm module loaded, and nothing in `gc-wasm`
+   exports the profile table today. The duplicate is not trusted either: it
+   is asserted against the Rust source by
+   `scripts/check_network_profile_parity.mjs`, run as gate 0c — and that gate
+   goes further than the other two, because a drifted profile value throws
+   nowhere at all. It also pins the impairment generator's constants and the
+   shared five-scenario impairment transcript both languages assert. Reading
+   the table through the wasm bridge instead, which would make the duplicate
+   impossible rather than merely detectable, remains the better long-term
+   answer.
+
 7. **Prefer `readonly` and immutable updates in pure code.** Use in-place
    mutation only where a module already does so deliberately (a
    performance-sensitive hot path, an established call-site convention) —
@@ -394,6 +422,26 @@ It is stricter than the commands above in ways that matter:
   the duplicated `ROSTER_STRING_FIELD_COUNT` — which, unlike
   `LAYOUT_VERSION`, is not stamped into the wire, so nothing else can catch
   it drifting (#447).
+- it checks **cross-language network-impairment parity**, beside the other
+  two (`node scripts/check_network_profile_parity.mjs`, gate 0c). `gc-data`
+  authors four network profiles — `clean`, `omp0_parity`, `playable`,
+  `stress` — and the native rollback matrix drives every scenario through
+  `gc-sim`'s `network_conditions` under them. Browser evidence now drives the
+  same profiles through `packages/transport/src/impairment.ts`. If the two
+  impair traffic differently, **nothing throws in either language**: the
+  browser suite and the native suite go on measuring different networks while
+  both stay green, so a soak that ran a "stress" link at a tenth of the
+  authored loss rate reports a clean hour and proves nothing. The gate
+  compares every profile's tuning fields — over the field set read from
+  `gc-data`'s own `NetworkProfile` struct, so a *new* tuning field left out of
+  the browser's copy is caught rather than skipped — the impairment generator's
+  `MOD`/`MULT` constants, and the five-scenario impairment transcript that
+  `rust/crates/gc-sim/tests/browser_impairment_parity.rs` and
+  `ts/packages/transport/src/impairment_parity.spec.ts` each assert — byte
+  for byte, so a drift is caught even when only one language's tests run. It
+  additionally requires that transcript to still record a loss, a burst, a
+  duplicate and a reordering: two identical literals prove nothing if both
+  sides quietly became a pass-through (#472).
 - `cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings`
   runs as an **explicit, separate** step from the workspace clippy run. The
   native workspace run never compiles `gc-wasm`'s wasm-only code paths at
@@ -467,6 +515,65 @@ last JS-API release, and the same language as 7.0 — which pnpm's isolated
 `node_modules` hands to typescript-eslint without the root ever seeing it.
 `ts/eslint.config.mjs` reaches it through `ts/tools/lint/tseslint.mjs`, which
 documents the whole arrangement and says when to delete it.
+
+### 6.2 Evidence that does not fit in front of a pull request
+
+Some properties can only be observed by running for far longer than any
+per-PR gate may cost. The gate proves two real browser peers agree
+bit-for-bit over 150 ticks — seven and a half seconds of match. It cannot
+prove they still agree after half an hour, and half an hour is closer to
+what a player actually plays.
+
+`.github/workflows/scheduled.yml` is where that evidence runs: daily at
+04:17 UTC, plus `workflow_dispatch` so it can be exercised on demand. It
+runs the same `scripts/browser_online_peers.py` the gate runs — same
+script, same page, same assertions — for 36,000 iterations (30 minutes of
+continuous match), sampling each peer's retained rollback history as it
+goes. Like the gate, it first runs a `--self-test` proving its verdict
+rules reject a diverged hash, a loop that stopped early, a page that logged
+errors, and a retained window that grew past
+`Omp2RollbackBudgets::memory_growth_ratio`; per AGENTS.md §9 that self-test
+demonstrates the job can go red and is *not* a substitute for the run
+beside it.
+
+What it does **not** cover, all tracked: scripted network impairment and
+the seed-sharded scenario matrix ([#472]), cross-engine Chrome/Firefox
+agreement ([#473]), and whole-instance memory growth — the soak bounds the
+driver's own retained window (28–29 ticks wide from the first sample to the
+last, across 36,000 ticks), which is a real statement that retained history
+does not grow with match length, but nothing on this harness's reach can
+produce an honest whole-instance figure today, so
+`Omp2RollbackBudgets::memory_growth_ratio` is reported as unmeasured rather
+than approximated. `gc_sim::snapshot_headroom` ([#476]) answers the adjacent
+question natively — a real rollback session's retained snapshot and history
+bytes against their authored budgets — and leaves `memory_growth_ratio`
+alone for the same reason, because it is a soak quantity.
+
+Three limits a reader of a green nightly run should know, because none of
+them is what that green means:
+
+- **Clock drift between two players' machines is not modelled and cannot
+  be.** Both peers are launched by one process on one machine and read the
+  same OS clock, so an oscillator difference between real devices is
+  structurally unobservable here — not merely unmeasured.
+- **Growth by frequency is invisible.** The byte check compares the median
+  of the *non-empty* retention samples, so retained events becoming more
+  frequent at an unchanged size would not move it; the window-width check
+  does not backstop that either, since `retained_floor_tick` trails the
+  confirmed frontier by a fixed `ROLLBACK_WINDOW_TICKS` capacity and sits
+  flat whatever the occupancy. Per-half occupancy is recorded in the
+  evidence so a later slice can make it a real check.
+- **Nothing here says the rollback window is wide enough for a real
+  network.** `ROLLBACK_WINDOW_TICKS = 30` is 500ms at 60Hz, and this soak
+  spends none of it on RTT, because the two peers are on one machine with
+  no impairment. Whether realistic latency eats that budget is the
+  impairment work ([#472], PR [#482]) and the cross-engine work ([#473]),
+  not something a green soak speaks to.
+
+[#472]: https://github.com/osobytes/goliseo/issues/472
+[#473]: https://github.com/osobytes/goliseo/issues/473
+[#476]: https://github.com/osobytes/goliseo/pull/476
+[#482]: https://github.com/osobytes/goliseo/pull/482
 
 ---
 
