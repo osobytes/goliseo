@@ -35,6 +35,7 @@ use crate::input_frame::{self, InputFrame, InputSample};
 use crate::input_tape::{self, InputTape};
 use crate::match_snapshot::{self, MatchEvent, MatchSnapshot, MatchSnapshotDifference, MatchState};
 use crate::network_conditions::{self, NetworkConditions, NetworkDelivery, NetworkProfile};
+use crate::retained_history;
 use crate::rollback_events::{self, RollbackEventDiff, RollbackEventStep, RollbackEventTimeline};
 use crate::rollback_input_history::{self, RollbackInputSource};
 use crate::rollback_session::{self, RollbackSession, RollbackSessionMeasure, RollbackTickOutput};
@@ -806,8 +807,10 @@ fn update_peaks(state: &mut RollbackLabRunState) {
     let snapshots = session.snapshot_history;
     let inputs = session.input_history;
     let network = network_conditions::diagnostics(&state.network);
-    let accounting = rollback_session::accounting(&mut state.session);
-    let event_accounting = rollback_events::accounting(&state.events);
+    // One reading, one definition of `history_bytes` — see
+    // `crate::retained_history`'s module doc for why the combined
+    // session-plus-event-timeline figure is the one this peak means.
+    let retained = retained_history::sample(&mut state.session, &state.events);
     let peaks = &mut state.peaks;
     peaks.snapshot_count = peaks
         .snapshot_count
@@ -830,12 +833,10 @@ fn update_peaks(state: &mut RollbackLabRunState) {
     peaks.network_authoritative_records = peaks
         .network_authoritative_records
         .max(network.peak_retained_authoritative_records);
-    peaks.input_bytes = peaks.input_bytes.max(accounting.input.total_bytes);
-    peaks.output_bytes = peaks.output_bytes.max(accounting.output_bytes);
-    peaks.event_bytes = peaks.event_bytes.max(event_accounting.total_bytes);
-    peaks.history_bytes = peaks
-        .history_bytes
-        .max(accounting.total_bytes + event_accounting.total_bytes);
+    peaks.input_bytes = peaks.input_bytes.max(retained.session.input.total_bytes);
+    peaks.output_bytes = peaks.output_bytes.max(retained.session.output_bytes);
+    peaks.event_bytes = peaks.event_bytes.max(retained.events.total_bytes);
+    peaks.history_bytes = peaks.history_bytes.max(retained.history_bytes);
 }
 
 fn detect_unconfirmed_floor(state: &mut RollbackLabRunState) {
@@ -1105,14 +1106,13 @@ fn finish_result(
     );
     let events = event_metrics(state);
     let event_diagnostics = rollback_events::diagnostics(&state.events);
-    let session_accounting = rollback_session::accounting(&mut state.session);
-    let event_accounting = rollback_events::accounting(&state.events);
+    let retained = retained_history::sample(&mut state.session, &state.events);
     let history_accounting = RollbackLabHistoryAccounting {
-        input: session_accounting.input,
-        output_bytes: session_accounting.output_bytes,
-        snapshot_bytes: session_accounting.snapshot_bytes,
-        event_bytes: event_accounting.total_bytes,
-        total_bytes: session_accounting.total_bytes + event_accounting.total_bytes,
+        input: retained.session.input,
+        output_bytes: retained.session.output_bytes,
+        snapshot_bytes: retained.session.snapshot_bytes,
+        event_bytes: retained.events.total_bytes,
+        total_bytes: retained.history_bytes,
     };
     let last_tick = tape.frames.len() as i64 - 1;
     if session.confirmed_tick < last_tick && state.unconfirmed_tick.is_none() {

@@ -292,6 +292,78 @@ export interface WasmMatchSnapshot {
 }
 
 /**
+ * Everything one live peer retains, as
+ * {@link MatchDriverBridge.retainedHistoryAccountingJson} reports it —
+ * `gc_wasm::match_driver_bridge::retained_history_to_json`'s shape, from
+ * `gc_sim::retained_history::sample`.
+ *
+ * Unlike this file's other `*Json` methods (which deliberately do not
+ * duplicate a JSON shape in TypeScript), this one is declared: it is a
+ * measurement a caller does arithmetic on — a soak comparing samples over an
+ * hour of play — not a diagnostics blob it forwards.
+ *
+ * ## `historyBytes` is the COMBINED figure
+ *
+ * `history_bytes` is `session.total_bytes + events.total_bytes`, which is
+ * what that name means everywhere else in this tree (`gc_sim::rollback_lab`'s
+ * peak, `gc-sim`'s `tests/combat_load_fixtures.rs`, and the band
+ * `tests/snapshot_headroom.rs` compares to
+ * `Omp2RollbackBudgets::history_bytes`). The session half alone omits the
+ * retained speculative event timeline — which this bridge retains per peer,
+ * so it is real browser-side memory.
+ *
+ * ## Why the counts matter as much as the bytes
+ *
+ * A byte total is trivially satisfied by a window that has stopped
+ * measuring, and — less obviously — by one retaining only scaffolding:
+ * thirty speculative steps holding *no events* still report a plausible,
+ * nonzero, budget-comparable figure in which no per-event encoder was ever
+ * entered. Anything gating on `history_bytes` must reject a sample whose
+ * `retained_event_count`/`retained_step_count`/`retained_boundary_count` say
+ * the window is empty, rather than pass on the bytes alone.
+ */
+export interface RetainedHistoryAccounting {
+  /** `session.total_bytes + events.total_bytes` — the whole retained
+   * footprint. See this interface's doc. */
+  readonly history_bytes: number;
+  /** The rollback session's own retained accounting. */
+  readonly session: {
+    /** Retained input history, canonically encoded. */
+    readonly input_bytes: number;
+    /** Retained per-tick outputs (a diagnostic size proxy, per
+     * `gc_sim::rollback_session`'s module doc). */
+    readonly output_bytes: number;
+    /** The snapshot ring's canonical bytes — the dominant term. */
+    readonly snapshot_bytes: number;
+    /** `input_bytes + output_bytes + snapshot_bytes`. */
+    readonly total_bytes: number;
+  };
+  /** The retained speculative event timeline's accounting — the same shape
+   * {@link MatchDriverBridge.rollbackAccountingJson} returns on its own. */
+  readonly events: {
+    readonly retained_step_bytes: number;
+    readonly total_bytes: number;
+  };
+  /** Boundaries currently in the snapshot ring. */
+  readonly retained_boundary_count: number;
+  /** The ring's own high-water mark — so growth that happened *between* two
+   * samples is still reported. */
+  readonly peak_retained_boundary_count: number;
+  /** High-water mark of `session.snapshot_bytes`, same between-samples
+   * property. */
+  readonly peak_snapshot_bytes: number;
+  /** Oldest retained boundary tick; absent when the ring is empty. */
+  readonly oldest_boundary_tick?: number;
+  /** Newest boundary tick ever stored; absent when the ring is empty. */
+  readonly latest_boundary_tick?: number;
+  /** Retained speculative steps. */
+  readonly retained_step_count: number;
+  /** Retained events across those steps — the field that separates a window
+   * holding real content from one holding empty step wrappers. */
+  readonly retained_event_count: number;
+}
+
+/**
  * Mirrors `gc_wasm::match_driver_bridge::SnapshotLookup`
  * (`crates/gc-wasm/src/match_driver_bridge.rs`) — one
  * `gc_netcode::match_driver::snapshot` lookup result:
@@ -308,6 +380,17 @@ export interface SnapshotLookup {
   /** The retained snapshot, present exactly when {@link SnapshotLookup.status}
    * is `"present"` or `"retained"`. */
   readonly snapshot?: WasmMatchSnapshot;
+  /** This boundary's exact canonical wire byte count
+   * (`gc_sim::match_snapshot::encoded_size_canonical`, computed once when
+   * the ring stored it), present exactly when
+   * {@link SnapshotLookup.snapshot} is.
+   *
+   * This is the per-boundary figure the ring sums into
+   * {@link RetainedHistoryAccounting}'s `session.snapshot_bytes`: summing it
+   * across every retained boundary re-derives that field independently, so a
+   * sampled retained-byte total is one a caller can check rather than take
+   * on trust. */
+  readonly canonicalBytes?: number;
   free(): void;
 }
 
@@ -566,7 +649,34 @@ export interface MatchDriverBridge {
    * `MatchDriverBridge`'s own traffic. */
   transportDiagnosticsJson(): string;
   rollbackDiagnosticsJson(): string;
+  /** The rollback-event timeline's retained byte accounting, as JSON — ONE
+   * HALF of what this peer retains. For the figure a retention budget is
+   * written against, use
+   * {@link MatchDriverBridge.retainedHistoryAccountingJson}. */
   rollbackAccountingJson(): string;
+  /** **Everything this peer retains**, as JSON — parse as
+   * {@link RetainedHistoryAccounting}. The seam a long-duration soak
+   * samples: the combined `history_bytes` figure plus the components and
+   * occupancy counts behind it.
+   *
+   * Before this existed, nothing on this bridge reported the session half at
+   * all ({@link MatchDriverBridge.rollbackAccountingJson} is the event
+   * timeline only), so a browser peer could not observe its own
+   * retained-history growth — the snapshot ring, input history and retained
+   * outputs, together the large majority of the number, were invisible from
+   * JS. `performance.memory` is not an alternative: it excludes wasm linear
+   * memory, which never shrinks anyway.
+   *
+   * Cost: O(retained input rows + retained outputs + retained events), with
+   * the snapshot component read from a counter the ring maintains
+   * incrementally — no snapshot is re-encoded. On a full 31-boundary ring
+   * with a full 30-step window: 0.27 ms and 0.38 ms per call in native
+   * release builds on two different machines, and 0.37-0.42 ms through wasm
+   * under node on both. Those are observations on the machines that took them, not
+   * a bound — sub-millisecond is the claim, and neither figure is a budget
+   * to assert against. Cheap enough to sample every tick for hours; still
+   * not something to call per entity. */
+  retainedHistoryAccountingJson(): string;
   retainedRollbackStepsJson(): string;
   /** This driver's own boundary-zero snapshot, as an opaque handle — for
    * building a standalone {@link RollbackEventsTimeline} against this same
@@ -608,6 +718,11 @@ export interface MatchDriverBridge {
   /** Match-constant roster ids and display names, newline-joined -- the
    * string counterpart of {@link MatchDriverBridge.rosterNumeric}. */
   rosterIdsAndNames(): string;
+  /** Releases this driver's wasm-side memory. A driver retains a full
+   * 31-boundary snapshot ring (hundreds of kilobytes), and wasm linear
+   * memory never shrinks, so a harness building peers repeatedly should free
+   * them. */
+  free(): void;
 }
 
 /** Constructs a {@link MatchDriverBridge}. `session` must be a freshly
