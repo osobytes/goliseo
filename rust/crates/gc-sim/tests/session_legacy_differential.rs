@@ -74,12 +74,15 @@
 //!      decode -> validate returns all eight distinct slots unpermuted.
 //!      IMMUNE; it never steps the simulation at all.
 //!   5. `every_wire_field_varies_across_the_corpus` -- the META-assertion:
-//!      no field this file claims to cover may be constant across the whole
-//!      corpus, because a constant field cannot catch a defect in itself.
-//!      IMMUNE. It exists because three review rounds each found a different
-//!      field sitting at a constant with an oracle derived from the code
-//!      under test; fixing those one at a time was losing, so the gate now
-//!      names the offending field itself.
+//!      no field this file claims to cover may be constant across SLOT 0's
+//!      corpus (the slot assertion 3 actually reads), because a constant
+//!      field cannot catch a defect in itself. IMMUNE. It exists because
+//!      three review rounds each found a different field sitting at a
+//!      constant with an oracle derived from the code under test; fixing
+//!      those one at a time was losing, so the gate now names the offending
+//!      field itself. It ships its own red demonstrations as standing tests
+//!      (`the_variation_guard_*`), so a refactor that stopped it detecting a
+//!      constant field breaks a test rather than quietly stopping guarding.
 //!
 //! So a gameplay rework re-records one fixture and loses no wire coverage,
 //! and a quantization or slot-indexing defect still fails the gate even in a
@@ -150,6 +153,7 @@ use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
+use indexmap::IndexMap;
 
 const FIXTURE: &str = include_str!("fixtures/session_legacy_ordinary_baseline.txt");
 
@@ -802,6 +806,77 @@ fn match_input_field_values(input: &MatchInput) -> Vec<(&'static str, u64)> {
     ]
 }
 
+/// One observation: the `(name, value)` pairs read off one artifact at one
+/// tick.
+type Observation = Vec<(&'static str, u64)>;
+
+/// Folds observations into per-field variation.
+///
+/// Separated from the assertions so the guard's own detection can be tested
+/// against a synthetic corpus -- see the self-tests below. A refactor of this
+/// or of [`Variation::observe`] that stopped detecting a constant field must
+/// break a test, not merely make the guard quietly stop guarding.
+fn variation_of(observations: &[Observation]) -> IndexMap<&'static str, Variation> {
+    let mut fields: IndexMap<&'static str, Variation> = IndexMap::new();
+    for observation in observations {
+        for (name, value) in observation {
+            fields.entry(name).or_default().observe(*value);
+        }
+    }
+    fields
+}
+
+/// Fields that never varied and are not allowlisted. Pure; empty means clean.
+fn constant_fields(
+    fields: &IndexMap<&'static str, Variation>,
+    allowed: &[(&str, &str)],
+) -> Vec<&'static str> {
+    fields
+        .iter()
+        .filter(|(name, v)| !v.varied && !allowed.iter().any(|(a, _)| a == *name))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// Allowlist entries that no longer describe reality -- the field varies now,
+/// or is not in the corpus at all.
+///
+/// A stale entry is its own silent gap: it would keep excusing a field that
+/// has since started varying, and hide the next regression to constant.
+fn stale_allowlist_entries(
+    fields: &IndexMap<&'static str, Variation>,
+    allowed: &[(&str, &str)],
+) -> Vec<String> {
+    allowed
+        .iter()
+        .filter_map(|(name, reason)| match fields.get(name) {
+            None => Some(format!("{name} is not in the corpus at all")),
+            Some(v) if v.varied => Some(format!("{name} DOES vary now ({reason})")),
+            Some(_) => None,
+        })
+        .collect()
+}
+
+/// The corpus the load-bearing assertions actually drive.
+///
+/// **Slot 0 only, deliberately.** The transparency assertion reads slot 0 and
+/// nothing else, so aggregating variation across all eight slots would report
+/// "varies" on cross-slot noise while slot 0's own value sat constant for
+/// every one of 7,200 ticks. A reviewer demonstrated exactly that: making
+/// `sprint` depend on `slot % 2` (constant per slot, varying across slots)
+/// left `sample.held.sprint` unflagged. Cross-slot DISTINCTNESS is a separate
+/// property with a separate home -- the `assert_ne!` in
+/// `wire_round_trip_preserves_every_slot_at_its_own_index` -- and conflating
+/// the two is how this guard would have started lying.
+fn corpus_observations() -> Vec<Observation> {
+    let mut out = Vec::with_capacity((TICKS as usize + 1) * 2);
+    for tick in 0..=TICKS {
+        out.push(sample_field_values(&distinctive_sample(0, tick)));
+        out.push(match_input_field_values(&oracle_from(0, tick)));
+    }
+    out
+}
+
 /// **The meta-assertion.** Every wire field this file claims to cover must
 /// actually take more than one value across the corpus the assertions drive.
 ///
@@ -817,66 +892,104 @@ fn match_input_field_values(input: &MatchInput) -> Vec<(&'static str, u64)> {
 /// Patching dimensions one at a time loses. A constant field cannot catch a
 /// defect in itself, so this test refuses to pass while the corpus claims
 /// coverage it does not have -- naming the offending field. That turns
-/// "a reviewer noticed" into "the gate notices", per AGENTS.md §9's rule that
-/// every gate needs a demonstration it can go red.
+/// "a reviewer noticed" into "the gate notices".
+///
+/// Per AGENTS.md §9 this gate ships its own red demonstrations, as standing
+/// tests rather than a transcript in a commit message: see
+/// `the_variation_guard_*` below.
 #[test]
 fn every_wire_field_varies_across_the_corpus() {
-    use indexmap::IndexMap;
+    let fields = variation_of(&corpus_observations());
 
-    let mut fields: IndexMap<&'static str, Variation> = IndexMap::new();
-    let observe = |values: Vec<(&'static str, u64)>,
-                   fields: &mut IndexMap<&'static str, Variation>| {
-        for (name, value) in values {
-            fields.entry(name).or_default().observe(value);
-        }
-    };
-
-    for tick in 0..=TICKS {
-        // The wire samples every slot carries, exactly as the round-trip and
-        // transparency assertions build them.
-        for slot in 0..8 {
-            observe(
-                sample_field_values(&distinctive_sample(slot, tick)),
-                &mut fields,
-            );
-        }
-        // The dequantized input the transparency assertion actually compares.
-        observe(match_input_field_values(&oracle_from(0, tick)), &mut fields);
-    }
-
-    let allowed: Vec<&str> = ALLOWED_CONSTANT_FIELDS.iter().map(|(n, _)| *n).collect();
-    let constant: Vec<&str> = fields
-        .iter()
-        .filter(|(name, v)| !v.varied && !allowed.contains(*name))
-        .map(|(name, _)| *name)
-        .collect();
-
+    let constant = constant_fields(&fields, ALLOWED_CONSTANT_FIELDS);
     assert!(
         constant.is_empty(),
-        "these wire fields never change across the whole corpus, so every assertion in this \
+        "these wire fields never change across slot 0's corpus, so every assertion in this \
          file that names them is vacuous for them -- vary them in `buttons_for`/`axes_for`, or \
          add an explicit `ALLOWED_CONSTANT_FIELDS` entry with a reason: {constant:?}"
     );
 
-    // A stale allowlist entry is its own silent gap: it would keep excusing a
-    // field that has since started varying, and hide the next regression to
-    // constant.
-    for (name, reason) in ALLOWED_CONSTANT_FIELDS {
-        let v = fields
-            .get(name)
-            .unwrap_or_else(|| panic!("allowlisted field {name} is not in the corpus at all"));
-        assert!(
-            !v.varied,
-            "allowlisted field {name} DOES vary now ({reason}) -- drop the entry"
-        );
-    }
+    let stale = stale_allowlist_entries(&fields, ALLOWED_CONSTANT_FIELDS);
+    assert!(stale.is_empty(), "stale allowlist entries: {stale:?}");
 
     // Guards the guard: if the corpus stopped covering these field sets, the
-    // loop above would trivially find nothing constant.
+    // check above would trivially find nothing constant.
     assert_eq!(
         fields.len(),
         34,
         "corpus must cover all 17 + 17 named fields"
+    );
+}
+
+/// Replaces one field's value with a constant throughout a corpus, so a
+/// self-test can pin a REAL field in the REAL corpus rather than assert
+/// against a hand-built toy.
+fn pinning(observations: Vec<Observation>, field: &str, value: u64) -> Vec<Observation> {
+    observations
+        .into_iter()
+        .map(|observation| {
+            observation
+                .into_iter()
+                .map(|(name, v)| {
+                    if name == field {
+                        (name, value)
+                    } else {
+                        (name, v)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Red demonstration 1: a constant field is detected and named.
+#[test]
+fn the_variation_guard_names_a_constant_field() {
+    let pinned = pinning(corpus_observations(), "sample.held.sprint", 0);
+    let fields = variation_of(&pinned);
+
+    assert_eq!(
+        constant_fields(&fields, &[]),
+        vec!["sample.held.sprint"],
+        "pinning a field constant must be detected, and only that field named"
+    );
+    // The unpinned corpus is clean, so the detection above is attributable to
+    // the pin and not to a corpus that was already broken.
+    assert!(constant_fields(&variation_of(&corpus_observations()), &[]).is_empty());
+}
+
+/// Red demonstration 2: the allowlist excuses a constant field, and only the
+/// field it names.
+#[test]
+fn the_variation_guard_honours_an_allowlist_entry() {
+    let pinned = pinning(corpus_observations(), "sample.held.sprint", 0);
+    let fields = variation_of(&pinned);
+    let allowed = [("sample.held.sprint", "pinned by this self-test")];
+
+    assert!(constant_fields(&fields, &allowed).is_empty());
+    assert!(stale_allowlist_entries(&fields, &allowed).is_empty());
+}
+
+/// Red demonstration 3: an allowlist entry for a field that varies -- or for
+/// a field that does not exist -- is reported as stale.
+#[test]
+fn the_variation_guard_rejects_a_stale_allowlist_entry() {
+    let fields = variation_of(&corpus_observations());
+
+    let varying = [("sample.held.sprint", "no longer true")];
+    let stale = stale_allowlist_entries(&fields, &varying);
+    assert_eq!(stale.len(), 1);
+    assert!(
+        stale[0].contains("sample.held.sprint") && stale[0].contains("DOES vary now"),
+        "unexpected message: {stale:?}"
+    );
+
+    let absent = [("sample.not_a_field", "typo")];
+    let stale = stale_allowlist_entries(&fields, &absent);
+    assert_eq!(stale.len(), 1);
+    assert!(
+        stale[0].contains("not in the corpus at all"),
+        "unexpected message: {stale:?}"
     );
 }
 
