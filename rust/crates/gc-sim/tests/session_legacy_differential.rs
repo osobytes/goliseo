@@ -29,10 +29,36 @@
 //! four lines of glue around exactly the calls this test makes).
 //!
 //! Every field is compared at every tick, and floats are compared by bit
-//! pattern (`f64::to_bits`) after parsing, not by printed text: a divergence
-//! that self-corrects a tick later is still a desync. Over 7,201 ticks that
-//! says the whole wire-driven ordinary-match path is reproducible to the bit
-//! and has not moved since the baseline was recorded.
+//! pattern after parsing, not by printed text: a divergence that
+//! self-corrects a tick later is still a desync.
+//!
+//! THREE ASSERTIONS, AND ONLY ONE OF THEM MOVES.
+//!
+//! The split matters, because a frozen per-tick trajectory is broken by any
+//! deliberate gameplay change BY CONSTRUCTION -- that is what happened to the
+//! Lua vector, and re-recording the same shape of fixture in Rust would only
+//! have made it regenerable, not immune. So the coverage that justifies this
+//! file's existence was moved out of the frozen part:
+//!
+//!   1. `..._reproduces_its_recorded_baseline_...` -- the pinned trajectory.
+//!      Detects unintended change. This is the one a deliberate gameplay
+//!      rework legitimately trips, and the one it re-records (see
+//!      `record_session_legacy_ordinary_baseline` below, and
+//!      `tools/lua_reference/README.md`'s rule for behavioral vectors).
+//!   2. `..._is_bit_reproducible_across_two_independent_runs` -- the same
+//!      match stepped twice must agree bit-for-bit. IMMUNE to gameplay
+//!      change: both runs move together.
+//!   3. `..._agrees_with_a_directly_constructed_neutral_input` -- the wire
+//!      round trip is transparent, over a full match, against the direct
+//!      `MatchInput` construction `match_differential.rs` uses. IMMUNE for
+//!      the same reason. **This is the assertion that carries the unique
+//!      coverage described above**, and it keeps gating unconditionally
+//!      through every rework in #488-#491 without anyone re-recording
+//!      anything.
+//!
+//! So a gameplay rework re-records one fixture and loses no wire coverage,
+//! and a quantization or slot-indexing defect still fails the gate even in a
+//! PR that is legitimately re-recording the baseline.
 //!
 //! WHAT THIS NO LONGER PROVES, AND WHY THE EVIDENCE IS WEAKER.
 //!
@@ -59,8 +85,14 @@
 //!     one cannot. Nothing else in the workspace replaces that coverage,
 //!     because there is no second implementation left to disagree with.
 //!
+//! Assertions 2 and 3 are not weakened this way -- they compare two live runs
+//! against each other rather than against a record, so they need no oracle.
+//! But neither is a substitute for the lost coverage: they prove the path is
+//! self-consistent, which a uniformly wrong implementation also is.
+//!
 //! Do not read a pass here as "the simulation is correct". Read it as "the
-//! simulation is the same one we recorded".
+//! simulation is the same one we recorded, and the wire layer is not adding
+//! anything of its own".
 //!
 //! PROVENANCE.
 //!
@@ -88,7 +120,7 @@
 
 use gc_sim::input_frame;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::{MatchState, PitchSize};
+use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
@@ -210,6 +242,25 @@ fn step_one_tick(state: &mut MatchState, tick: i64, tune: &Tuning) {
     sim_match::step(state, DT, StepInput::Legacy(match_input), None, tune);
 }
 
+/// Runs the whole wire-driven match and returns one rendered row per tick.
+///
+/// Rows are compared as text in the two assertions below, which is a
+/// bit-exact comparison and not an approximate one: [`baseline_row`] renders
+/// floats with Rust's shortest round-trippable `Display`, and that mapping is
+/// injective on `f64` bit patterns -- two values render identically only if
+/// they ARE identical, `-0` and `0` included.
+fn run_wire_driven_match() -> Vec<String> {
+    let tune = Tuning::new();
+    let mut s = new_ordinary_session();
+    let mut rows = Vec::with_capacity(TICKS as usize + 1);
+    rows.push(baseline_row(0, &s));
+    for tick in 1..=TICKS {
+        step_one_tick(&mut s, tick, &tune);
+        rows.push(baseline_row(tick, &s));
+    }
+    rows
+}
+
 #[test]
 fn wire_driven_session_legacy_step_reproduces_its_recorded_baseline_for_a_7200_tick_ordinary_match()
 {
@@ -259,6 +310,69 @@ fn wire_driven_session_legacy_step_reproduces_its_recorded_baseline_for_a_7200_t
         compared += 1;
     }
     assert_eq!(i64::from(compared), TICKS + 1);
+}
+
+/// The browser wire path is DETERMINISTIC: the same ordinary match, stepped
+/// twice through `input_frame::encode`/`decode`/`validate` and
+/// `slot_input::to_match_input`, produces identical bits at every one of
+/// 7,201 ticks.
+///
+/// Immune to deliberate gameplay change by construction -- both runs move
+/// together -- so unlike the baseline above this never needs re-recording,
+/// and it keeps gating through every rework in #488-#491. It is also the
+/// assertion that still means something if a baseline is ever re-recorded
+/// carelessly: a nondeterministic path cannot be frozen into a fixture at
+/// all, and would fail here no matter what the fixture says.
+#[test]
+fn wire_driven_session_legacy_step_is_bit_reproducible_across_two_independent_runs() {
+    let first = run_wire_driven_match();
+    let second = run_wire_driven_match();
+    assert_eq!(first.len() as i64, TICKS + 1);
+    for (tick, (a, b)) in first.iter().zip(second.iter()).enumerate() {
+        assert_eq!(
+            a, b,
+            "tick {tick}: two runs of the same wire-driven match diverged"
+        );
+    }
+}
+
+/// The wire round trip is TRANSPARENT: driving the session through the full
+/// encode -> decode -> validate -> dequantize pipeline gives bit-identical
+/// results to constructing the `MatchInput` directly, for all 7,201 ticks.
+///
+/// This is the coverage that justified keeping this file when its Lua-parity
+/// claim was retired (#500). `match_differential.rs` takes the direct-
+/// construction side only and can say nothing about the pipeline;
+/// `gc-wasm`'s `Session::step` takes the wire side only. A quantization,
+/// validation or slot-indexing defect that made the two disagree would show
+/// up in a real browser match and in neither test alone.
+///
+/// Immune to deliberate gameplay change for the same reason as the test
+/// above: a sim change moves both sides identically.
+#[test]
+fn wire_driven_session_legacy_step_agrees_with_a_directly_constructed_neutral_input() {
+    let tune = Tuning::new();
+    let mut wire_driven = new_ordinary_session();
+    let mut direct = new_ordinary_session();
+
+    for tick in 1..=TICKS {
+        step_one_tick(&mut wire_driven, tick, &tune);
+        sim_match::step(
+            &mut direct,
+            DT,
+            StepInput::Legacy(MatchInput::default()),
+            None,
+            &tune,
+        );
+        assert_eq!(
+            baseline_row(tick, &wire_driven),
+            baseline_row(tick, &direct),
+            "tick {tick}: the wire round trip is not transparent -- a session \
+             driven through input_frame encode/decode/validate and \
+             slot_input::to_match_input diverged from one given the same input \
+             directly"
+        );
+    }
 }
 
 /// Renders one baseline row in the fixture's tab-separated layout.
