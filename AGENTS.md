@@ -316,11 +316,22 @@ Three things make that enforceable rather than aspirational:
   fun score without a harness edit, and there is exactly one band table.
 - **The noise floor is measured, not assumed.**
   `gc_sim::knob_contract::noise_floor` runs the metric at defaults on the
-  caller's own seed set. `knob_contract::assert_moves` is the one-line form:
-  `gc-sim`'s own `tests/knob_contract.rs` carries both the passing example
-  (`AI_SHOOT_RANGE` moves `longest_drought_s`) and the red demonstration
-  (`REPLAY_SLOWMO`, a registered and swept knob that no simulation code reads,
-  fails it).
+  caller's own seed set, and both entry points refuse a seed set below
+  `knob_contract::MIN_SEEDS` — under that a lucky small standard error passes a
+  shift nobody could reproduce.
+- **The direction is declared and enforced, not checked by hand.**
+  `KnobMoveOpts::expect` is where "the documented direction" above is
+  documented, and `assert_moves` fails a shift that clears the noise floor with
+  the opposite sign. A knob wired backwards passes any magnitude-only test, so
+  this is not a nicety: it is the difference between a contract and a
+  formality. Keep it distinct from `MetricDirection`, which is the metric's own
+  desirability slope rather than a knob's causal claim.
+
+`gc-sim`'s own `tests/knob_contract.rs` is the worked example: one passing case
+(`AI_SHOOT_RANGE` shortens `longest_drought_s`) and **two** red demonstrations,
+because this gate has two distinct ways to be broken — a knob that moves nothing
+(`REPLAY_SLOWMO`, registered and swept and read by no simulation code) and a
+knob whose metric moves the wrong way.
 
 The tiers matter to this rule: only **tier 1** (sim-affecting scalars) and
 **tier 3** (versioned AI membership band-sets, substituted whole) can move a

@@ -4,14 +4,17 @@
 //!
 //! - [`knob_contract_passes_for_a_wired_knob`] is the contract's one shipped
 //!   example, using an already-wired tunable (`AI_SHOOT_RANGE`).
-//! - [`knob_contract_goes_red_for_a_decoration_knob`] is its demonstration
-//!   that it can fail, using `REPLAY_SLOWMO` — a registered, swept knob that
-//!   no simulation code reads. AGENTS.md §9 requires every gate to ship a
-//!   demonstration it can go red, and a contract that cannot fail for a knob
-//!   that moves nothing would be worth nothing: the issue that asked for this
-//!   helper opened on the finding that dead knobs already exist here.
+//! - [`knob_contract_goes_red_for_a_decoration_knob`] and
+//!   [`knob_contract_goes_red_for_a_backwards_wired_knob`] are its
+//!   demonstrations that it can fail — one for a knob that moves nothing
+//!   (`REPLAY_SLOWMO`, registered and swept and read by no simulation code),
+//!   one for a knob whose metric moves the WRONG WAY. Both matter: a
+//!   magnitude-only contract passes the second case, and a backwards-wired
+//!   knob is a bug that looks exactly like a success. AGENTS.md §9 requires
+//!   every gate to ship a demonstration it can go red, and this gate has two
+//!   distinct ways to be broken.
 
-use gc_sim::knob_contract::{self, KnobMoveOpts, Perturb};
+use gc_sim::knob_contract::{self, ExpectedShift, KnobMoveOpts, Perturb};
 
 // Short matches and a modest seed set: enough for a wired knob to clear its
 // measured noise floor, cheap enough for a per-feature test. A feature whose
@@ -36,9 +39,13 @@ fn knob_contract_passes_for_a_wired_knob() {
         seeds: &seeds,
         duration: DURATION,
         perturbation: None,
+        // The claim, made through the helper rather than re-checked by hand
+        // afterwards: raising the AI's shooting range SHORTENS the gaps
+        // between chances.
+        expect: ExpectedShift::Decreases,
         direction: Some(Perturb::Up),
     });
-    assert!(outcome.moved, "{}", outcome.report);
+    assert!(outcome.passes && outcome.moved, "{}", outcome.report);
     assert!(
         outcome.delta.abs() > outcome.threshold,
         "the verdict must be the measurement, not a flag: {}",
@@ -54,6 +61,7 @@ fn knob_contract_passes_for_a_wired_knob() {
         "shooting from further out must SHORTEN the drought, not merely move it: {}",
         outcome.report
     );
+    assert_eq!(outcome.expect, ExpectedShift::Decreases);
     assert!(
         outcome.report.contains("WIRED"),
         "the report must say what it concluded: {}",
@@ -75,10 +83,11 @@ fn knob_contract_goes_red_for_a_decoration_knob() {
         seeds: &seeds,
         duration: DURATION,
         perturbation: None,
+        expect: ExpectedShift::Increases,
         direction: Some(Perturb::Up),
     });
     assert!(
-        !outcome.moved,
+        !outcome.moved && !outcome.passes,
         "a knob no simulation code reads must fail the contract: {}",
         outcome.report
     );
@@ -101,6 +110,7 @@ fn knob_contract_goes_red_for_a_decoration_knob() {
             seeds: &seeds,
             duration: DURATION,
             perturbation: None,
+            expect: ExpectedShift::Increases,
             direction: Some(Perturb::Up),
         })
     });
@@ -112,6 +122,80 @@ fn knob_contract_goes_red_for_a_decoration_knob() {
     assert!(
         message.contains("REPLAY_SLOWMO") && message.contains("DECORATION"),
         "the panic must be the report, so a failing review reads why: {message}"
+    );
+}
+
+#[test]
+fn knob_contract_goes_red_for_a_backwards_wired_knob() {
+    // The failure a magnitude-only contract waves through. `AI_SHOOT_RANGE`
+    // genuinely moves `longest_drought_s` and genuinely clears the noise floor
+    // — it just moves it DOWN. A feature claiming it moves up is describing a
+    // knob wired the wrong way round, and that must fail exactly as loudly as
+    // a knob wired to nothing.
+    let seeds = seeds(48);
+    let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
+        knob: "AI_SHOOT_RANGE",
+        metric: "longest_drought_s",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Up),
+    });
+
+    assert!(
+        outcome.moved,
+        "the shift itself must be real, or this tests the wrong thing: {}",
+        outcome.report
+    );
+    assert!(
+        !outcome.passes,
+        "a real shift in the WRONG direction must still fail the contract: {}",
+        outcome.report
+    );
+    assert!(
+        outcome.report.contains("BACKWARDS"),
+        "a backwards-wired knob must be named as such, not lumped in with dead ones: {}",
+        outcome.report
+    );
+
+    let result = std::panic::catch_unwind(|| {
+        let seeds = (0..48).map(|i| 20_001.0 + i as f64).collect::<Vec<f64>>();
+        knob_contract::assert_moves(&KnobMoveOpts {
+            knob: "AI_SHOOT_RANGE",
+            metric: "longest_drought_s",
+            seeds: &seeds,
+            duration: DURATION,
+            perturbation: None,
+            expect: ExpectedShift::Increases,
+            direction: Some(Perturb::Up),
+        })
+    });
+    let err = result.expect_err("assert_moves must panic for a backwards-wired knob");
+    let message = err
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| (*err.downcast_ref::<&str>().unwrap_or(&"")).to_string());
+    assert!(
+        message.contains("BACKWARDS") && message.contains("expected to increase"),
+        "the panic must state the claim it failed: {message}"
+    );
+
+    // The same measurement with the correct claim passes: the difference is
+    // the declared direction and nothing else.
+    let corrected = knob_contract::knob_moves_metric(&KnobMoveOpts {
+        knob: "AI_SHOOT_RANGE",
+        metric: "longest_drought_s",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(corrected.passes, "{}", corrected.report);
+    assert_eq!(
+        corrected.delta, outcome.delta,
+        "the claim must not change the measurement"
     );
 }
 
@@ -136,23 +220,63 @@ fn knob_contract_measures_a_noise_floor_rather_than_assuming_one() {
 
 #[test]
 fn knob_contract_panics_on_an_unregistered_knob_or_metric() {
-    let two = seeds(2);
+    let enough = seeds(knob_contract::MIN_SEEDS);
     let knob = std::panic::catch_unwind(|| {
         knob_contract::knob_moves_metric(&KnobMoveOpts {
             knob: "NOT_A_KNOB",
             metric: "goals_total",
-            seeds: &two,
+            seeds: &enough,
             duration: DURATION,
             perturbation: None,
+            expect: ExpectedShift::Unstated,
             direction: None,
         })
     });
     assert!(knob.is_err(), "an unregistered knob is a programmer error");
     let metric =
-        std::panic::catch_unwind(|| knob_contract::noise_floor("not_a_metric", &two, DURATION));
+        std::panic::catch_unwind(|| knob_contract::noise_floor("not_a_metric", &enough, DURATION));
     assert!(
         metric.is_err(),
         "an unregistered metric is a programmer error"
+    );
+}
+
+#[test]
+fn knob_contract_refuses_a_seed_set_too_small_to_threshold_against() {
+    // A structural floor, not a convention: below it a lucky small standard
+    // error yields a small threshold, and a shift nobody could reproduce
+    // reports WIRED.
+    let too_few = seeds(knob_contract::MIN_SEEDS - 1);
+    let contract = std::panic::catch_unwind(|| {
+        knob_contract::knob_moves_metric(&KnobMoveOpts {
+            knob: "AI_SHOOT_RANGE",
+            metric: "goals_total",
+            seeds: &too_few,
+            duration: DURATION,
+            perturbation: None,
+            expect: ExpectedShift::Unstated,
+            direction: None,
+        })
+    });
+    let err = contract.expect_err("too few seeds must be refused, not silently accepted");
+    let message = err
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| (*err.downcast_ref::<&str>().unwrap_or(&"")).to_string());
+    assert!(
+        message.contains("at least") && message.contains("seeds"),
+        "the refusal must say what the floor is: {message}"
+    );
+
+    let floor =
+        std::panic::catch_unwind(|| knob_contract::noise_floor("goals_total", &too_few, DURATION));
+    assert!(floor.is_err(), "noise_floor holds the same floor");
+
+    // And exactly at the floor it runs.
+    let at_floor = seeds(knob_contract::MIN_SEEDS);
+    assert_eq!(
+        knob_contract::noise_floor("goals_total", &at_floor, DURATION).n,
+        knob_contract::MIN_SEEDS
     );
 }
 

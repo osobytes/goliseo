@@ -32,6 +32,18 @@
 //! the second catches a knob whose effect is real on average but wildly
 //! inconsistent per seed.
 //!
+//! ## Direction is part of the contract, not a per-test afterthought
+//!
+//! AGENTS.md §9's rule says the metric must move "in the documented
+//! direction", so [`KnobMoveOpts::expect`] is where that direction is
+//! documented and [`knob_moves_metric`] is what enforces it. A knob wired
+//! BACKWARDS — a keeper-reach knob that lowers `save_rate` when raised — clears
+//! any magnitude-only threshold comfortably; it is a bug that looks exactly
+//! like a success. [`ExpectedShift`] is deliberately a different type from
+//! `gc_data::tunables::MetricDirection`: that one is the metric's own
+//! desirability slope (which way is *good*), this one is the knob-to-metric
+//! causal claim the feature is making (which way this knob *pushes*).
+//!
 //! ## Harness knobs, not tier-1 knobs
 //!
 //! [`DEFAULT_PERTURBATION_FRACTION`], [`DEFAULT_NOISE_FLOOR_MATCHES`] and
@@ -78,6 +90,29 @@ pub const DEFAULT_NOISE_FLOOR_MATCHES: usize = 40;
 /// that nudges a metric by less than the seed set can resolve.
 pub const NOISE_SIGMAS: f64 = 2.0;
 
+/// The smallest seed set [`knob_moves_metric`] and [`noise_floor`] will run on.
+///
+/// A structural floor, not test-author discipline: with three or four seeds a
+/// lucky small `delta_se` produces a small threshold, and a real-but-unrepresentative
+/// shift passes. Eight is the point below which the standard error of a mean is
+/// not worth thresholding against at all. This gates four upcoming feature PRs,
+/// so it panics rather than warns.
+pub const MIN_SEEDS: usize = 8;
+
+/// The direction a feature claims its knob pushes its metric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpectedShift {
+    /// Perturbing the knob (in `direction`) must RAISE the metric.
+    Increases,
+    /// Perturbing the knob (in `direction`) must LOWER the metric.
+    Decreases,
+    /// No direction claimed: magnitude only.
+    ///
+    /// Deliberately explicit rather than the default, so choosing not to state
+    /// a direction is a decision somebody typed and a reviewer can see.
+    Unstated,
+}
+
 /// Which way a perturbation is applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Perturb {
@@ -116,6 +151,13 @@ pub struct KnobMoveOpts<'a> {
     /// [`DEFAULT_PERTURBATION_FRACTION`].
     pub perturbation: Option<f64>,
     /// Displacement direction; defaults to [`Perturb::Up`].
+    ///
+    /// This is which way the KNOB moves, not which way the metric is expected
+    /// to respond — that is [`Self::expect`].
+    pub expect: ExpectedShift,
+    /// The direction the metric must move in when the knob is perturbed. A
+    /// shift that clears the noise floor with the OPPOSITE sign fails the
+    /// contract: a backwards-wired knob is a bug, not a pass.
     pub direction: Option<Perturb>,
 }
 
@@ -138,8 +180,13 @@ pub struct KnobMoveOutcome {
     pub delta_se: f64,
     /// The value `|delta|` had to clear.
     pub threshold: f64,
-    /// Whether the knob moved the metric past the noise floor.
+    /// Whether the shift cleared the noise floor at all, regardless of sign.
     pub moved: bool,
+    /// Whether the shift cleared the noise floor AND matched
+    /// [`KnobMoveOpts::expect`]. This is what [`assert_moves`] asserts.
+    pub passes: bool,
+    /// The direction the caller claimed.
+    pub expect: ExpectedShift,
     /// Human-readable verdict, for an assertion message.
     pub report: String,
 }
@@ -189,12 +236,18 @@ pub fn noise_floor(metric: &'static str, seeds: &[f64], duration: Option<f64>) -
         metric_registry::shipped().get(metric).is_some(),
         "unregistered metric id: {metric}"
     );
+    assert!(
+        seeds.len() >= MIN_SEEDS,
+        "a noise floor over {} seeds is not a measurement: {MIN_SEEDS} is the minimum",
+        seeds.len()
+    );
     let opts = KnobMoveOpts {
         knob: "",
         metric,
         seeds,
         duration,
         perturbation: None,
+        expect: ExpectedShift::Unstated,
         direction: None,
     };
     let present: Vec<f64> = metric_series("", &opts).into_iter().flatten().collect();
@@ -230,6 +283,12 @@ pub fn knob_moves_metric(opts: &KnobMoveOpts<'_>) -> KnobMoveOutcome {
         metric_registry::shipped().get(opts.metric).is_some(),
         "unregistered metric id: {}",
         opts.metric
+    );
+    assert!(
+        opts.seeds.len() >= MIN_SEEDS,
+        "the knob-moves-metric contract needs at least {MIN_SEEDS} seeds, got {}: \
+         below that a lucky small standard error passes a shift no one could reproduce",
+        opts.seeds.len()
     );
 
     let fraction = opts.perturbation.unwrap_or(DEFAULT_PERTURBATION_FRACTION);
@@ -273,20 +332,40 @@ pub fn knob_moves_metric(opts: &KnobMoveOpts<'_>) -> KnobMoveOutcome {
 
     let threshold = NOISE_SIGMAS * standard_error.max(delta_se);
     let moved = delta.abs() > threshold;
+    let sign_agrees = match opts.expect {
+        ExpectedShift::Increases => delta > 0.0,
+        ExpectedShift::Decreases => delta < 0.0,
+        ExpectedShift::Unstated => true,
+    };
+    let passes = moved && sign_agrees;
+    let verdict = match (moved, sign_agrees) {
+        (false, _) => "DECORATION",
+        // The dangerous case, and the reason this check exists: a shift that
+        // clears the noise floor in the wrong direction looks like success to
+        // any magnitude-only test.
+        (true, false) => "BACKWARDS",
+        (true, true) => "WIRED",
+    };
+    let claim = match opts.expect {
+        ExpectedShift::Increases => " (expected to increase)",
+        ExpectedShift::Decreases => " (expected to decrease)",
+        ExpectedShift::Unstated => " (no direction claimed)",
+    };
     let report = format!(
-        "{} {} -> {} moves {}: delta {:+.4} (+/-{:.4} se), noise floor {:.4} \
+        "{} {} -> {} moves {}{}: delta {:+.4} (+/-{:.4} se), noise floor {:.4} \
          (sd {:.4}, n {}), threshold {:.4} => {}",
         def.id,
         format_g6(def.default),
         format_g6(perturbed_value),
         opts.metric,
+        claim,
         delta,
         delta_se,
         standard_error,
         sd,
         n,
         threshold,
-        if moved { "WIRED" } else { "DECORATION" },
+        verdict,
     );
 
     KnobMoveOutcome {
@@ -299,6 +378,8 @@ pub fn knob_moves_metric(opts: &KnobMoveOpts<'_>) -> KnobMoveOutcome {
         delta_se,
         threshold,
         moved,
+        passes,
+        expect: opts.expect,
         report,
     }
 }
@@ -308,11 +389,17 @@ pub fn knob_moves_metric(opts: &KnobMoveOpts<'_>) -> KnobMoveOutcome {
 /// The one-line form a feature test uses:
 /// `knob_contract::assert_moves(&opts);`
 ///
+/// Fails on BOTH ways the contract can be broken: a knob whose metric does not
+/// move past the measured noise floor, and a knob whose metric moves the
+/// opposite way to [`KnobMoveOpts::expect`]. The second is the one a
+/// magnitude-only helper waves through.
+///
 /// # Panics
 ///
-/// If the knob does not move the metric past its measured noise floor.
+/// If the knob does not move the metric past its measured noise floor, or
+/// moves it against the declared direction.
 pub fn assert_moves(opts: &KnobMoveOpts<'_>) -> KnobMoveOutcome {
     let outcome = knob_moves_metric(opts);
-    assert!(outcome.moved, "{}", outcome.report);
+    assert!(outcome.passes, "{}", outcome.report);
     outcome
 }
