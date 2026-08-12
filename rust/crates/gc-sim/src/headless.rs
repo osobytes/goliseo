@@ -42,8 +42,10 @@ use crate::input_frame::{self, InputFrame};
 use crate::keeper::{KeeperBehaviorState, KeeperShotType};
 use crate::r#match as sim_match;
 use crate::match_snapshot::{MatchEvent, MatchInput, MatchPlayer, MatchState, PitchSize, Team};
+use crate::metric_registry;
 use crate::metrics;
 use crate::slot_input;
+use crate::tunable_registry::format_g6;
 use crate::tuning::Tuning;
 use gc_data::players::PlayerData;
 use gc_data::species::SpeciesData;
@@ -665,45 +667,13 @@ const REPORT_ROWS: &[&str] = &[
     "duration",
 ];
 
-// A private, display-only duplicate of `metrics.rs`'s (also private)
-// `BAND_*` constants. `metrics.rs` keeps them private, so these values only
-// ever feed formatted report text here, never a determinism-path
-// computation — the duplication is display-layer, not content-layer
-// (AGENTS.md §8 is about game content, not report labels).
+// One registered metric's band, for the report's rightmost column. This used
+// to be a hand-maintained duplicate of `metrics.rs`'s private `BAND_*`
+// constants (one of two — `lever_metrics` carried the third copy); it now
+// reads `crate::metric_registry`, so a metric registered by a feature shows
+// its band here with no edit to this file.
 fn band_for(key: &str) -> Option<[f64; 4]> {
-    Some(match key {
-        "goals_total" => [0.0, 2.0, 5.0, 8.0],
-        "shots_per_goal" => [1.0, 2.5, 6.0, 25.0],
-        "save_rate" => [0.15, 0.45, 0.75, 0.95],
-        "pass_completion" => [0.25, 0.55, 0.85, 1.001],
-        "turnovers_per_min" => [0.3, 1.0, 5.0, 10.0],
-        "possession_balance" => [0.1, 0.35, 0.65, 0.9],
-        "longest_drought_s" => [-1.0, 0.0, 35.0, 80.0],
-        "decided_late" => [0.05, 0.4, 1.0, f64::INFINITY],
-        _ => return None,
-    })
-}
-
-/// Format `value` the way C's `%g` would, for the small magnitude range
-/// every band edge lives in. See `sim/tuning.rs`'s `format_g6` for the same
-/// technique at a different fixed precision; duplicated here because it is
-/// a private helper there.
-fn format_g(value: f64) -> String {
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let magnitude = value.abs().log10().floor() as i32;
-    let decimals = (5 - magnitude).clamp(0, 17) as usize;
-    let mut s = format!("{value:.decimals$}");
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    s
+    metric_registry::shipped().band(key)
 }
 
 /// Render a batch's fun-proxy metrics as a fixed-width table.
@@ -732,7 +702,7 @@ pub fn report(batch: &BatchResult) -> String {
             continue;
         };
         let band_str = band_for(key)
-            .map(|b| format!("[{} .. {}]", format_g(b[1]), format_g(b[2])))
+            .map(|b| format!("[{} .. {}]", format_g6(b[1]), format_g6(b[2])))
             .unwrap_or_default();
         let d_str = desir
             .get(key)

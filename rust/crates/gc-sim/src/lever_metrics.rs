@@ -8,15 +8,17 @@
 //! here means a lever is perceptible, not that it is a decision: a lever is
 //! ships-eligible only after decision_contingency (#0005) passes as well.
 //!
-//! ## Band table duplication
+//! ## Bands come from the metric registry
 //!
-//! [`crate::headless`]'s `band_for` already duplicates `crate::metrics`'s
-//! private `BAND_*` constants, since `metrics.rs` keeps them private.
-//! [`band_width`] duplicates the same eight good-band widths a second time;
-//! both duplicates are display/analysis-layer reads of authored balance
-//! constants, not game content (AGENTS.md §8 is about content, not these).
+//! This module used to carry its own copy of the eight good-band widths, and
+//! [`crate::headless`] a third copy of the bands themselves, because
+//! `crate::metrics` kept its `BAND_*` constants private. All three now read
+//! [`crate::metric_registry`], which is the single authored source; the
+//! metric set below is enumerated from it too, so a metric a feature registers
+//! is compared here without an edit to this file.
 
 use crate::headless::{self, BatchOpts, BatchResult, HeadlessBot, Winner};
+use crate::metric_registry;
 use crate::metrics::MatchMetrics;
 use gc_data::players::PlayerData;
 use gc_data::tactics::TacticData;
@@ -31,55 +33,32 @@ pub const WIN_GOOD_HI: f64 = 20.0;
 /// Minimum |band-widths| shift for a metric to count as "moved".
 pub const METRIC_MOVE_MIN: f64 = 0.5;
 
-// Sorted good-band widths for the eight metrics `crate::metrics` bands.
-// Values are `good_hi - good_lo` from `crate::metrics`'s private `BAND_*`
-// constants.
-const BANDED_KEYS: &[&str] = &[
-    "decided_late",
-    "goals_total",
-    "longest_drought_s",
-    "pass_completion",
-    "possession_balance",
-    "save_rate",
-    "shots_per_goal",
-    "turnovers_per_min",
-];
-
-fn band_width(key: &str) -> Option<f64> {
-    Some(match key {
-        "decided_late" => 1.0 - 0.4,
-        "goals_total" => 5.0 - 2.0,
-        "longest_drought_s" => 35.0 - 0.0,
-        "pass_completion" => 0.85 - 0.55,
-        "possession_balance" => 0.65 - 0.35,
-        "save_rate" => 0.75 - 0.45,
-        "shots_per_goal" => 6.0 - 2.5,
-        "turnovers_per_min" => 5.0 - 1.0,
-        _ => return None,
-    })
+/// Every registered metric this comparison reports, id-sorted.
+///
+/// Sorted rather than fold order because this is a report axis, not the fun
+/// score's fold: a reader scanning a lever table wants a stable alphabetical
+/// column set, and sorting keeps that stable as features register more.
+fn banded_keys() -> Vec<&'static str> {
+    let mut keys = metric_registry::shipped().ids();
+    keys.sort_unstable();
+    keys
 }
 
-/// Read the observed value for one of [`BANDED_KEYS`] off a finished
+fn band_width(key: &str) -> Option<f64> {
+    metric_registry::shipped().band_width(key)
+}
+
+/// Read the observed value for one of [`banded_keys`] off a finished
 /// match's metrics. `None` is what a rate metric has when its denominator
 /// did not occur.
 fn banded_value(m: &MatchMetrics, key: &str) -> Option<f64> {
-    match key {
-        "decided_late" => Some(m.decided_late),
-        "goals_total" => Some(m.goals_total as f64),
-        "longest_drought_s" => Some(m.longest_drought_s),
-        "pass_completion" => m.pass_completion,
-        "possession_balance" => m.possession_balance,
-        "save_rate" => m.save_rate,
-        "shots_per_goal" => m.shots_per_goal,
-        "turnovers_per_min" => Some(m.turnovers_per_min),
-        _ => None,
-    }
+    metric_registry::shipped().extract(key, m)
 }
 
 /// One banded metric's paired-seed comparison between fixture A and B.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeverMetricDelta {
-    /// The metric name (one of [`BANDED_KEYS`]).
+    /// The metric name (one of [`banded_keys`]).
     pub key: &'static str,
     /// Seeds with finite observations for both A and B.
     pub n: i64,
@@ -108,7 +87,7 @@ pub struct LeverLivenessResult {
     pub dwin_pts: f64,
     /// Whether `|dwin_pts|` is in the 3..20 pp good band.
     pub win_in_band: bool,
-    /// Every banded metric's comparison, in [`BANDED_KEYS`] order.
+    /// Every banded metric's comparison, in [`banded_keys`] order.
     pub metric_deltas: Vec<LeverMetricDelta>,
     /// The subset of `metric_deltas` with `|band_widths| >= METRIC_MOVE_MIN`.
     pub moved_metrics: Vec<LeverMetricDelta>,
@@ -127,7 +106,7 @@ fn home_win_rate(batch: &BatchResult) -> f64 {
 
 fn metric_deltas(a: &BatchResult, b: &BatchResult) -> Vec<LeverMetricDelta> {
     let mut deltas = Vec::new();
-    for &key in BANDED_KEYS {
+    for key in banded_keys() {
         let Some(width) = band_width(key) else {
             continue;
         };

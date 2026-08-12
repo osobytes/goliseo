@@ -1,0 +1,782 @@
+//! Authored tunable content: the tier-1 sim-affecting scalars, the tier-3 AI
+//! membership band-sets, and the balance metrics the harness scores.
+//!
+//! Data, not mechanism (AGENTS.md §8). This module holds the *shapes* and the
+//! *values*; the registry container, registration API, ordering, duplicate
+//! detection, serialization and config hashing all live in
+//! `gc_sim::tunable_registry`. Nothing here is a function over game state, and
+//! this crate keeps requiring nothing (AGENTS.md §2: `data/` requires nothing),
+//! which is why the type declarations live beside the tables rather than in
+//! `gc-core`.
+//!
+//! ## The three tiers, and where each one physically lives
+//!
+//! 1. **[`Tier::Sim`] — sim-affecting scalars.** Every number the simulation
+//!    reads that changes match outcomes. The ONLY tier a balance sweep may
+//!    vary. Authored here as [`SIM_TUNABLES`].
+//! 2. **[`Tier::Presentation`] — presentation-only constants.** Smoothing
+//!    rates, follow-through windows, marker sizes. Never read by `gc-sim`.
+//!    Deliberately **not** authored in this crate: `gc-sim` depends on
+//!    `gc-data`, so anything here is reachable from the simulation and the
+//!    isolation promise would be a comment rather than a fact. Tier 2 is
+//!    authored in `gc_render::presentation_tunables`, and `gc-render` depends
+//!    on `gc-sim` — so a `gc-sim` module that tried to read a tier-2 value
+//!    would be a dependency cycle the compiler rejects. That is the structural
+//!    enforcement; see that module's doc.
+//! 3. **[`Tier::Bands`] — AI membership bands.** The edges that classify a
+//!    continuous situation into a discrete AI choice. Versioned and
+//!    substituted **as one unit**: an edge only means anything relative to its
+//!    neighbours, so editing one in isolation produces classifications nobody
+//!    designed. Authored here as [`BAND_SETS`].
+//!
+//! The boundaries fall on the two operational questions: *can changing this
+//! desync a match?* (tier 2 no, tiers 1 and 3 yes) and *is this value
+//! meaningful alone?* (tier 1 yes, tier 3 no).
+
+/// Which tunable tier an entry belongs to. See the module doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// Sim-affecting scalar: sweepable, hashed into the config identity.
+    Sim,
+    /// Presentation-only: invisible to the sim and to the sweep, never in a
+    /// snapshot.
+    Presentation,
+    /// An edge inside a versioned AI membership band-set: hashed, but only
+    /// substitutable as a whole set.
+    Bands,
+}
+
+impl Tier {
+    /// Stable wire/serialization tag for this tier. Each tier serializes into
+    /// its own blob, tagged with this string.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Tier::Sim => "sim",
+            Tier::Presentation => "presentation",
+            Tier::Bands => "bands",
+        }
+    }
+}
+
+/// One declaratively registered tunable.
+///
+/// `label`, `cat` and `step` exist for the F1 tuning panel; `unit`, `desc`
+/// and the `min`/`max` range exist so a sweep can enumerate a knob it has
+/// never heard of and still produce meaningful values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TunableDef {
+    /// Registry id, also the serialization key. Unique across all tiers.
+    pub id: &'static str,
+    /// Which tier this value belongs to.
+    pub tier: Tier,
+    /// Shown in the tuning panel.
+    pub label: &'static str,
+    /// Panel tab this knob's category groups into.
+    pub cat: &'static str,
+    /// Value a fresh match plays with.
+    pub default: f64,
+    /// Physical unit, for sweep reports and panel tooltips.
+    pub unit: &'static str,
+    /// Minimum allowed value.
+    pub min: f64,
+    /// Maximum allowed value.
+    pub max: f64,
+    /// Nudge step size.
+    pub step: f64,
+    /// One line on what this controls.
+    pub desc: &'static str,
+}
+
+/// One edge inside a [`BandSet`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandEdge {
+    /// Edge id, unique within its set. The registry id is
+    /// `"<set_id>.<edge_id>"`.
+    pub id: &'static str,
+    /// The edge value.
+    pub value: f64,
+    /// What crossing this edge changes.
+    pub desc: &'static str,
+}
+
+/// A versioned group of AI membership band edges, substituted as one unit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandSet {
+    /// Set id, stable across versions.
+    pub id: &'static str,
+    /// Version of this set's edge values. A substitution must change it.
+    pub version: &'static str,
+    /// What continuous situation this set classifies.
+    pub desc: &'static str,
+    /// The edges, in the order the classifier tests them.
+    pub edges: &'static [BandEdge],
+}
+
+impl BandSet {
+    /// One edge's value by id.
+    #[must_use]
+    pub fn edge(&self, id: &str) -> Option<f64> {
+        self.edges.iter().find(|e| e.id == id).map(|e| e.value)
+    }
+}
+
+/// Which way a balance metric wants to move to get better.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricDirection {
+    /// Desirable inside its band; neither end is "better" on its own.
+    Banded,
+}
+
+/// One registered balance metric: what the harness measures and what band it
+/// scores against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MetricDef {
+    /// Metric id, also its key in batch aggregates and reports.
+    pub id: &'static str,
+    /// Trapezoid desirability band `{zero_lo, good_lo, good_hi, zero_hi}`:
+    /// worth 1 inside `[good_lo, good_hi]`, falling linearly to 0 at the outer
+    /// edges.
+    pub band: [f64; 4],
+    /// Direction of goodness.
+    pub direction: MetricDirection,
+    /// One line on what this measures.
+    pub desc: &'static str,
+}
+
+/// Every authored tier-1 sim-affecting scalar, in panel display order.
+///
+/// Display order, not id order: the F1 panel groups by `cat` and shows knobs
+/// in this sequence. The registry derives its own sorted-by-id canonical order
+/// for hashing (see `gc_sim::tunable_registry`), so a re-order here is a
+/// cosmetic panel change and never moves the config hash.
+pub static SIM_TUNABLES: &[TunableDef] = &[
+    // Movement
+    TunableDef {
+        id: "MOVE_ACCEL",
+        tier: Tier::Sim,
+        label: "Acceleration",
+        cat: "Movement",
+        default: 1100.0,
+        unit: "px/s^2",
+        min: 400.0,
+        max: 2400.0,
+        step: 100.0,
+        desc: "Acceleration a player at speed applies toward its move target.",
+    },
+    TunableDef {
+        id: "START_ACCEL",
+        tier: Tier::Sim,
+        label: "Standing start",
+        cat: "Movement",
+        default: 450.0,
+        unit: "px/s^2",
+        min: 150.0,
+        max: 1100.0,
+        step: 50.0,
+        desc: "Acceleration from a standstill, before the run builds.",
+    },
+    TunableDef {
+        id: "MOVE_DECEL",
+        tier: Tier::Sim,
+        label: "Deceleration",
+        cat: "Movement",
+        default: 1500.0,
+        unit: "px/s^2",
+        min: 400.0,
+        max: 3000.0,
+        step: 100.0,
+        desc: "Braking rate when a player stops or reverses.",
+    },
+    TunableDef {
+        id: "SPRINT_MULT",
+        tier: Tier::Sim,
+        label: "Sprint speed x",
+        cat: "Movement",
+        default: 1.35,
+        unit: "x",
+        min: 1.1,
+        max: 1.8,
+        step: 0.05,
+        desc: "Top-speed multiplier while the sprint meter is being spent.",
+    },
+    TunableDef {
+        id: "SPRINT_REFILL",
+        tier: Tier::Sim,
+        label: "Sprint refill /s",
+        cat: "Movement",
+        default: 0.4,
+        unit: "meter/s",
+        min: 0.1,
+        max: 1.0,
+        step: 0.05,
+        desc: "Sprint meter regained per second while not sprinting.",
+    },
+    TunableDef {
+        id: "JOCKEY_SLOW",
+        tier: Tier::Sim,
+        label: "Jockey speed x",
+        cat: "Movement",
+        default: 0.75,
+        unit: "x",
+        min: 0.5,
+        max: 1.0,
+        step: 0.05,
+        desc: "Speed multiplier while jockeying a carrier.",
+    },
+    // Dribble (touch-based ball control)
+    TunableDef {
+        id: "DRIBBLE_CLOSE",
+        tier: Tier::Sim,
+        label: "Close ctrl x speed",
+        cat: "Dribble",
+        default: 1.05,
+        unit: "x",
+        min: 0.2,
+        max: 1.4,
+        step: 0.05,
+        desc: "Carrier speed multiplier under close control.",
+    },
+    TunableDef {
+        id: "DRIBBLE_PUSH",
+        tier: Tier::Sim,
+        label: "Touch push xspeed",
+        cat: "Dribble",
+        default: 1.5,
+        unit: "x",
+        min: 1.15,
+        max: 2.2,
+        step: 0.05,
+        desc: "How far ahead of the carrier a pushed touch travels.",
+    },
+    TunableDef {
+        id: "DRIBBLE_ERR",
+        tier: Tier::Sim,
+        label: "Touch error (rad)",
+        cat: "Dribble",
+        default: 0.3,
+        unit: "rad",
+        min: 0.0,
+        max: 0.6,
+        step: 0.05,
+        desc: "Maximum angular error on a dribble touch.",
+    },
+    TunableDef {
+        id: "DRIBBLE_TOUCH",
+        tier: Tier::Sim,
+        label: "Gather stiffness",
+        cat: "Dribble",
+        default: 14.0,
+        unit: "1/s",
+        min: 4.0,
+        max: 30.0,
+        step: 1.0,
+        desc: "How hard the ball is pulled back onto the carrier's foot.",
+    },
+    TunableDef {
+        id: "DRIBBLE_CONTROL",
+        tier: Tier::Sim,
+        label: "Control radius",
+        cat: "Dribble",
+        default: 34.0,
+        unit: "px",
+        min: 20.0,
+        max: 80.0,
+        step: 2.0,
+        desc: "Radius inside which the carrier still counts as in control.",
+    },
+    // Aerial (headers, volleys, finishing crosses)
+    TunableDef {
+        id: "AERIAL_ASSIST",
+        tier: Tier::Sim,
+        label: "Strike reach aid",
+        cat: "Aerial",
+        default: 44.0,
+        unit: "px",
+        min: 0.0,
+        max: 80.0,
+        step: 4.0,
+        desc: "Extra reach granted when striking a ball out of the air.",
+    },
+    TunableDef {
+        id: "AERIAL_MAGNET",
+        tier: Tier::Sim,
+        label: "Ball magnet /s",
+        cat: "Aerial",
+        default: 260.0,
+        unit: "px/s",
+        min: 0.0,
+        max: 600.0,
+        step: 20.0,
+        desc: "Pull applied to an airborne ball inside the strike window.",
+    },
+    // Attacking
+    TunableDef {
+        id: "CHARGE_RATE",
+        tier: Tier::Sim,
+        label: "Shot charge /s",
+        cat: "Attacking",
+        default: 1.5,
+        unit: "charge/s",
+        min: 0.5,
+        max: 3.0,
+        step: 0.1,
+        desc: "How fast a held shot builds power.",
+    },
+    TunableDef {
+        id: "PASS_CHARGE_RATE",
+        tier: Tier::Sim,
+        label: "Pass charge /s",
+        cat: "Attacking",
+        default: 2.4,
+        unit: "charge/s",
+        min: 0.5,
+        max: 3.0,
+        step: 0.1,
+        desc: "How fast a held pass builds range.",
+    },
+    TunableDef {
+        id: "SHOT_WINDUP",
+        tier: Tier::Sim,
+        label: "Shot wind-up s",
+        cat: "Attacking",
+        default: 0.15,
+        unit: "s",
+        min: 0.0,
+        max: 0.4,
+        step: 0.01,
+        desc: "Committed wind-up before a shot leaves the foot.",
+    },
+    TunableDef {
+        id: "PASS_RANGE_MIN",
+        tier: Tier::Sim,
+        label: "Min pass range",
+        cat: "Attacking",
+        default: 110.0,
+        unit: "px",
+        min: 60.0,
+        max: 300.0,
+        step: 10.0,
+        desc: "Range of an uncharged pass; the floor PASS_RANGE_MAX charges up from.",
+    },
+    TunableDef {
+        id: "PASS_RANGE_MAX",
+        tier: Tier::Sim,
+        label: "Max pass range",
+        cat: "Attacking",
+        default: 520.0,
+        unit: "px",
+        min: 300.0,
+        max: 800.0,
+        step: 20.0,
+        desc: "Range of a fully charged pass.",
+    },
+    TunableDef {
+        id: "HEADER_SPEED",
+        tier: Tier::Sim,
+        label: "Header pace x",
+        cat: "Attacking",
+        default: 0.85,
+        unit: "x",
+        min: 0.5,
+        max: 1.2,
+        step: 0.05,
+        desc: "Ball pace multiplier off a header, relative to a foot strike.",
+    },
+    TunableDef {
+        id: "VOLLEY_SKY_P",
+        tier: Tier::Sim,
+        label: "Volley sky odds",
+        cat: "Attacking",
+        default: 0.35,
+        unit: "probability",
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        desc: "Chance a mistimed volley is skied. NOT YET WIRED: no sim code \
+               reads this id, so it fails the knob-moves-metric contract \
+               (gc_sim::knob_contract). Tracked as decoration, not balance.",
+    },
+    // Defending
+    TunableDef {
+        id: "AI_STEAL_CD",
+        tier: Tier::Sim,
+        label: "AI poke cooldown",
+        cat: "Defending",
+        default: 1.2,
+        unit: "s",
+        min: 0.4,
+        max: 2.5,
+        step: 0.1,
+        desc: "Seconds an AI defender waits between poke tackles.",
+    },
+    TunableDef {
+        id: "STEAL_ATTEMPT",
+        tier: Tier::Sim,
+        label: "AI poke range",
+        cat: "Defending",
+        default: 40.0,
+        unit: "px",
+        min: 28.0,
+        max: 60.0,
+        step: 2.0,
+        desc: "Distance at which an AI defender attempts a poke tackle.",
+    },
+    TunableDef {
+        id: "WHIFF_STUMBLE",
+        tier: Tier::Sim,
+        label: "Whiff stumble s",
+        cat: "Defending",
+        default: 0.3,
+        unit: "s",
+        min: 0.0,
+        max: 0.8,
+        step: 0.05,
+        desc: "Recovery time after a missed tackle.",
+    },
+    TunableDef {
+        id: "CARRIER_SETTLE",
+        tier: Tier::Sim,
+        label: "AI settle touch s",
+        cat: "Defending",
+        default: 0.35,
+        unit: "s",
+        min: 0.0,
+        max: 0.8,
+        step: 0.05,
+        desc: "Seconds an AI carrier settles the ball before acting on it.",
+    },
+    TunableDef {
+        id: "AI_PASS_PRESSURE",
+        tier: Tier::Sim,
+        label: "AI pass-out range",
+        cat: "Defending",
+        default: 70.0,
+        unit: "px",
+        min: 30.0,
+        max: 120.0,
+        step: 5.0,
+        desc: "Opponent proximity that makes an AI carrier pass out of trouble.",
+    },
+    // Keeper
+    TunableDef {
+        id: "SAVE_SPEED_REF",
+        tier: Tier::Sim,
+        label: "Save pace ref",
+        cat: "Keeper",
+        default: 1300.0,
+        unit: "px/s",
+        // min widened 700 -> 400: the balance search's optimum sat on the old
+        // fence (docs/design/fun_metrics.md, phase 3).
+        min: 400.0,
+        max: 2000.0,
+        step: 50.0,
+        desc: "Shot pace a save is judged against; higher makes keepers softer.",
+    },
+    TunableDef {
+        id: "CATCH_EVEN_QUALITY",
+        tier: Tier::Sim,
+        label: "Catch coin-flip q",
+        cat: "Keeper",
+        default: 0.45,
+        unit: "quality",
+        min: 0.2,
+        max: 0.8,
+        step: 0.02,
+        desc: "Save quality at which a catch and a parry are equally likely.",
+    },
+    TunableDef {
+        id: "KEEPER_RESPECT_DIST",
+        tier: Tier::Sim,
+        label: "Keeper ring",
+        cat: "Keeper",
+        default: 120.0,
+        unit: "px",
+        min: 60.0,
+        max: 180.0,
+        step: 10.0,
+        desc: "Radius attackers keep off a keeper holding the ball.",
+    },
+    TunableDef {
+        id: "KEEPER_HOLD_HUMAN",
+        tier: Tier::Sim,
+        label: "Keeper hold limit s",
+        cat: "Keeper",
+        default: 5.0,
+        unit: "s",
+        min: 2.0,
+        max: 10.0,
+        step: 0.5,
+        desc: "Seconds a human-controlled keeper may hold before a forced release.",
+    },
+    TunableDef {
+        id: "PUNT_MAX",
+        tier: Tier::Sim,
+        label: "Max punt range",
+        cat: "Keeper",
+        default: 640.0,
+        unit: "px",
+        min: 400.0,
+        max: 900.0,
+        step: 20.0,
+        desc: "Range of a fully charged keeper punt.",
+    },
+    // AI
+    TunableDef {
+        id: "AI_SHOOT_RANGE",
+        tier: Tier::Sim,
+        label: "AI shoot range",
+        cat: "AI",
+        default: 240.0,
+        unit: "px",
+        min: 160.0,
+        // max widened 340 -> 480 (half pitch): the balance search's optimum
+        // sat on the old fence (docs/design/fun_metrics.md, phase 3).
+        max: 480.0,
+        step: 10.0,
+        desc: "Distance from goal inside which the AI shoots.",
+    },
+    TunableDef {
+        id: "AI_HEADER_RANGE",
+        tier: Tier::Sim,
+        label: "AI header range",
+        cat: "AI",
+        default: 200.0,
+        unit: "px",
+        min: 120.0,
+        // max widened 300 -> 420: the balance search's optimum sat on the
+        // old fence (docs/design/fun_metrics.md, phase 3).
+        max: 420.0,
+        step: 10.0,
+        desc: "Distance from goal inside which the AI attacks a cross with its head.",
+    },
+    TunableDef {
+        id: "CROSS_MIN_SPACE",
+        tier: Tier::Sim,
+        label: "Cross space need",
+        cat: "AI",
+        default: 30.0,
+        unit: "px",
+        min: 10.0,
+        max: 60.0,
+        step: 5.0,
+        desc: "Space an AI wide player needs before it crosses.",
+    },
+    TunableDef {
+        id: "LOOSE_MAGNET",
+        tier: Tier::Sim,
+        label: "Loose-ball magnet",
+        cat: "AI",
+        default: 90.0,
+        unit: "px",
+        min: 40.0,
+        max: 160.0,
+        step: 10.0,
+        desc: "Radius inside which AI players chase a loose ball.",
+    },
+    TunableDef {
+        id: "TRIANGLE_DIST",
+        tier: Tier::Sim,
+        label: "Triangle pass range",
+        cat: "AI",
+        default: 170.0,
+        unit: "px",
+        min: 120.0,
+        max: 260.0,
+        step: 10.0,
+        desc: "Preferred distance for a short AI support pass.",
+    },
+    TunableDef {
+        id: "STAND_WAKE",
+        tier: Tier::Sim,
+        label: "Positional calm",
+        cat: "AI",
+        default: 34.0,
+        unit: "px",
+        min: 16.0,
+        max: 80.0,
+        step: 2.0,
+        desc: "Slack an AI player tolerates around its positional anchor.",
+    },
+    TunableDef {
+        id: "AI_SPRINT_SPACE",
+        tier: Tier::Sim,
+        label: "Sprint into space",
+        cat: "AI",
+        default: 70.0,
+        unit: "px",
+        min: 60.0,
+        max: 240.0,
+        step: 10.0,
+        desc: "Open space ahead that makes an AI player sprint.",
+    },
+    TunableDef {
+        id: "AI_JUKE_DIST",
+        tier: Tier::Sim,
+        label: "Juke reaction range",
+        cat: "AI",
+        default: 44.0,
+        unit: "px",
+        min: 30.0,
+        max: 90.0,
+        step: 2.0,
+        desc: "Defender proximity that triggers an AI carrier's juke.",
+    },
+    TunableDef {
+        id: "AI_JUKE_CD",
+        tier: Tier::Sim,
+        label: "Juke cooldown s",
+        cat: "AI",
+        default: 2.0,
+        unit: "s",
+        min: 0.6,
+        max: 5.0,
+        step: 0.2,
+        desc: "Seconds an AI carrier waits between jukes.",
+    },
+    // Replay. Presentation by nature (see the module doc's tier 2), but kept
+    // in tier 1 for now because they have shipped in the F1 panel's "Replay"
+    // tab since before this registry existed and moving them is a visible
+    // panel change, not a refactor. Neither id is read by any `gc-sim` code:
+    // `packages/render/src/replay.ts` restates both values on the TypeScript
+    // side. They are the clearest existing example of a knob that cannot move
+    // any metric — `tests/knob_contract.rs` uses one as the red demonstration
+    // that the knob-moves-metric helper actually fails.
+    TunableDef {
+        id: "REPLAY_SLOWMO",
+        tier: Tier::Sim,
+        label: "Replay speed x",
+        cat: "Replay",
+        default: 0.35,
+        unit: "x",
+        min: 0.1,
+        max: 1.0,
+        step: 0.05,
+        desc: "Playback rate of a goal replay. NOT WIRED into the sim: \
+               presentation, and a tier-2 candidate.",
+    },
+    TunableDef {
+        id: "REPLAY_SECONDS",
+        tier: Tier::Sim,
+        label: "Replay length s",
+        cat: "Replay",
+        default: 4.0,
+        unit: "s",
+        min: 2.0,
+        max: 8.0,
+        step: 0.5,
+        desc: "Length of the replay window. NOT WIRED into the sim: \
+               presentation, and a tier-2 candidate.",
+    },
+];
+
+/// Every authored tier-3 AI membership band-set.
+///
+/// Each set is substituted as a whole (`gc_sim::tunable_registry`'s
+/// `substitute_band_set`); there is deliberately no path that edits one edge.
+pub static BAND_SETS: &[BandSet] = &[
+    BandSet {
+        id: "keeper_save_style",
+        version: "v1",
+        desc: "Classifies a save into smother / spread / central / stretch by \
+               how close the striker is and how far the keeper must reach.",
+        edges: &[
+            BandEdge {
+                id: "smother_distance",
+                value: 26.0,
+                desc: "At or inside this striker distance the keeper smothers instead of diving.",
+            },
+            BandEdge {
+                id: "spread_distance",
+                value: 78.0,
+                desc: "Between the smother edge and this one the keeper spreads.",
+            },
+            BandEdge {
+                id: "central_reach_fraction",
+                value: 0.4,
+                desc: "Dive distance below this fraction of reach is central, not a stretch.",
+            },
+        ],
+    },
+    BandSet {
+        id: "keeper_engagement",
+        version: "v1",
+        desc: "Classifies a threat into contain / advance by how close it is \
+               and whether a defender already owns it.",
+        edges: &[
+            BandEdge {
+                id: "defender_handoff_distance",
+                value: 120.0,
+                desc: "Inside this the keeper takes the threat over from an engaged defender.",
+            },
+            BandEdge {
+                id: "advance_threat_distance",
+                value: 200.0,
+                desc: "Outside this the keeper neither contains nor advances.",
+            },
+        ],
+    },
+];
+
+/// Every registered balance metric, **in fold order**.
+///
+/// The fun score is a geometric mean, and floating-point multiplication is not
+/// associative, so this order is load-bearing: it is the exact order the score
+/// multiplies desirabilities in, and reordering it changes the score's last
+/// bits. `gc_sim::metric_registry` folds in this order and
+/// `tests/metric_registry.rs` pins the resulting scores.
+pub static METRICS: &[MetricDef] = &[
+    MetricDef {
+        id: "goals_total",
+        band: [0.0, 2.0, 5.0, 8.0],
+        direction: MetricDirection::Banded,
+        desc: "Goals scored by both sides in one match.",
+    },
+    MetricDef {
+        id: "shots_per_goal",
+        // zero_hi sits at "catastrophic", not "bad": search needs gradient out
+        // here (the baseline lives around 18 — see the doc's baseline
+        // signature).
+        band: [1.0, 2.5, 6.0, 25.0],
+        direction: MetricDirection::Banded,
+        desc: "Outfield strikes at goal per goal scored.",
+    },
+    MetricDef {
+        id: "save_rate",
+        band: [0.15, 0.45, 0.75, 0.95],
+        direction: MetricDirection::Banded,
+        desc: "Share of on-target attempts the keeper stops.",
+    },
+    MetricDef {
+        id: "pass_completion",
+        band: [0.25, 0.55, 0.85, 1.001],
+        direction: MetricDirection::Banded,
+        desc: "Share of attempted passes that reach a team-mate.",
+    },
+    MetricDef {
+        id: "turnovers_per_min",
+        // SETTLED possession changes (see `gc_sim::metrics::SETTLE_HOLD`) —
+        // raw ownership flicker runs ~40x higher and means nothing.
+        band: [0.3, 1.0, 5.0, 10.0],
+        direction: MetricDirection::Banded,
+        desc: "Settled-possession turnovers per minute.",
+    },
+    MetricDef {
+        id: "possession_balance",
+        band: [0.1, 0.35, 0.65, 0.9],
+        direction: MetricDirection::Banded,
+        desc: "Home's share of owned ball time.",
+    },
+    MetricDef {
+        id: "longest_drought_s",
+        band: [-1.0, 0.0, 35.0, 80.0],
+        direction: MetricDirection::Banded,
+        desc: "Longest stretch with no goal and no clear chance, in seconds.",
+    },
+    MetricDef {
+        id: "decided_late",
+        band: [0.05, 0.4, 1.0, f64::INFINITY],
+        direction: MetricDirection::Banded,
+        desc: "Fraction of the match elapsed when the winner led for good.",
+    },
+];

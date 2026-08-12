@@ -288,7 +288,7 @@ pub fn descriptor() -> Vec<OutfieldAiPolicyRow> {
     // why live values are kept in an owned `Tuning`, separate from this
     // static list); `descriptor` never takes a `Tuning` at all, so a
     // live nudge structurally cannot reach this function.
-    for knob in tuning::KNOBS {
+    for knob in tuning::KNOBS.iter() {
         if knob.cat == KNOB_CATEGORY {
             rows.push(row(format!("tuning.{}", knob.key), num(knob.default)));
         }
