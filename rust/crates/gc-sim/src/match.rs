@@ -36,6 +36,7 @@ use crate::ai;
 use crate::ball_flight::{
     self, AIR_FRICTION, BALL_RADIUS, FRICTION, GRAVITY, GROUND_GRAB_HEIGHT, in_mouth,
 };
+use crate::ball_prediction::BallPredictor;
 use crate::brain;
 use crate::combat;
 use crate::combat_feasibility;
@@ -4448,12 +4449,26 @@ fn end_dive(p: &mut MatchPlayer) {
 /// must not mean diving early. So a shot always visibly travels from the
 /// shooter's boot to the keeper's glove — no teleports, no gloves closing
 /// on empty air.
+///
+/// The contact HEIGHT that decides on-target comes from
+/// [`crate::ball_prediction::BallPredictor::position_at_time`], an
+/// authoritative query against the shared prediction service — never the
+/// closed-form ballistic fallback ([`crate::ball_prediction::BallEstimate`]),
+/// which this function cannot even reach: the two types don't convert (#486).
+/// A shot whose arrival falls outside the service's horizon/budget defers
+/// the commit to a later tick rather than guessing.
 #[allow(clippy::too_many_lines)]
 fn attempt_save(s: &mut MatchState, tune: &Tuning) {
     let speed = s.ball_vel.length();
     if speed < 1.0 || s.ball_vel.x == 0.0 {
         return; // a dead or purely-vertical ball is not an on-target shot
     }
+    // One predictor for the whole call, not one per keeper: at most one
+    // keeper's "toward this goal" gate is ever true for a given ball
+    // velocity, but sharing the instance means a second candidate's query
+    // (same ball, same tick) reuses the first's buffer instead of re-running
+    // scratch ticks the cache already has (#486).
+    let mut predictor = BallPredictor::default();
     for ki in 0..s.players.len() {
         let keeper_idx = (ki + 1) as i64;
         let keeper = s.players[ki].clone();
@@ -4515,12 +4530,31 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
         // moment the save actually resolves.
         let eta_contact =
             keeper::travel_time((dxa - KEEPER_HANDS).max(0.0) * x_frac, speed, k_fric);
-        // Height when it reaches the keeper's line, at the real arrival
-        // time (the geometric t is fine for y — friction shrinks both
-        // velocity components equally, so the path stays straight — but
-        // gravity runs on the clock).
+        // Height when it reaches the keeper's line, at the real arrival time
+        // (the geometric t is fine for y — friction shrinks both velocity
+        // components equally, so the path stays straight). The height is
+        // NOT fine to solve by hand: a gravity-only quadratic ignores drag
+        // and the ground bounce, so it can place a shot under the bar (or
+        // over it) that the real stepped trajectory would not — the exact
+        // failure mode #486 exists to close. Query the shared prediction
+        // service instead: it steps the ball through the same
+        // `ball_flight::step` the live sim runs, so this answer cannot
+        // drift from what the ball will actually do.
         let tz = eta.unwrap_or(t);
-        let z_cross = s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz;
+        let Some(sample) = predictor.position_at_time(s, tz) else {
+            // The real trajectory doesn't resolve inside the service's
+            // horizon/budget — only possible for a shot so slow `tz` runs
+            // past `predict.max_horizon` (2s). Conservative and deliberate:
+            // do not commit this tick rather than guess with the old
+            // gravity-only formula. `attempt_save` runs every live tick and
+            // `tz` only shrinks as the ball closes in, so a genuine
+            // on-target shot still resolves on a later tick, well before it
+            // reaches the line — this defers the commit, it never causes a
+            // miss. See `tests/keeper_prediction.rs`'s
+            // `a_query_that_cannot_resolve_inside_the_horizon_defers_the_commit_instead_of_guessing`.
+            continue;
+        };
+        let z_cross = sample.z;
         let on_target = y_goal >= goal.y - SAVE_PAD
             && y_goal <= goal.y + goal.h + SAVE_PAD
             && z_cross < CROSSBAR
