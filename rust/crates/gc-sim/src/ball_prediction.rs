@@ -860,7 +860,12 @@ fn ball_fingerprint(state: &MatchState) -> u64 {
         hasher.update(&value.to_bits().to_be_bytes());
     }
     hasher.update(&state.owner.unwrap_or(0).to_be_bytes());
-    u64::from_str_radix(&hasher.hex(), 16).expect("fnv1a64 renders 16 hex digits")
+    // `finish()`, not `hex()` + `from_str_radix`: this fingerprint is
+    // compared with `==` on every single query (`sync()` calls this
+    // unconditionally), so a `String` allocation here is not a rebuild-only
+    // cost -- it is a per-query one. See `gc-sim/tests/ball_prediction_alloc.rs`
+    // for the coverage that caught it.
+    hasher.finish()
 }
 
 /// The closed-form ballistic estimate: constant-velocity ground travel,
