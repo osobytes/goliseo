@@ -214,7 +214,7 @@ needs the same change in the same PR:**
 | --- | --- | --- |
 | `network_input_frame_lua_reference.txt` | `gc-sim/tests/differential.rs` | `input_frame`'s wire format and `network_conditions`' RNG use |
 | `match_snapshot_case_a_lua_reference.txt`, `..._case_b_...` | `gc-sim/tests/match_snapshot_differential.rs` | serialized snapshot state and its hash |
-| `input_tape_lua_reference.txt` | `gc-sim/tests/input_tape_differential.rs` | the tape's identity words, its five frame wires, and its tick-zero boundary hash. The post-step boundary hashes are still in the fixture and are still read as data, but are no longer compared to stepped output — see below |
+| `input_tape_lua_reference.txt` | `gc-sim/tests/input_tape_differential.rs` | the tape's identity words, its five frame wires, and its tick-zero boundary hash. **This fixture is split across both classes** — its four post-step boundary hashes are trajectory, and are compared in that file's separately named `the_stepped_boundaries_still_hash_match_the_reference_lua_run`, which is class A. See "A fixture may be split" below |
 | `protocol_lua_reference.txt`, `fake_relay_lua_reference.txt`, `match_driver_lua_reference.txt`, `coordinator_desync_lua_reference.txt` | `gc-netcode/tests/{protocol,fake_relay,match_driver,coordinator}.rs` | the online protocol's encodings, relay ordering, driver stepping, and desync-package construction. `match_driver`'s consumer compares the delivery protocol — status, confirmation arithmetic, checkpoint cadence, boundary zero — not the correction counts or post-kickoff digests recorded beside them |
 | `frame_buffer_lua_reference.txt` (Rust) and `frame_buffer_lua_reference.ts` (TypeScript) | `gc-render/tests/frame_buffer_differential.rs`, `ts/packages/render/src/frame_buffer.spec.ts` | the `RenderFrame` payload's field order, widths and version word — read by two languages, so this is the closest of the behavioral vectors to an encoding vector in kind. Both consumers now read the frozen rows rather than re-simulating them |
 
@@ -233,8 +233,33 @@ format vector: **recover the state from the vector; do not reproduce it.**
 Read the frozen row back and re-encode it, check the wire in both directions,
 assert the protocol's shape rather than a simulated magnitude, and where a
 hash is genuinely worth pinning across languages, pin the one taken *before*
-the first step. None of that needed a retirement — rule 5's "get what the
-test was actually for out of the frozen part" is the whole fix.
+the first step. Almost all of that needed no retirement — rule 5's "get what
+the test was actually for out of the frozen part" is the fix.
+
+### A fixture may be split between the two classes
+
+`input_tape_lua_reference.txt` is the worked example, and the reason the
+rule above says "almost all". Recovering state from the vector works for
+anything the vector *encodes*; it cannot work for anything the vector only
+*hashes*. That file's `boundary_hash[1..5]` are digests of stepped state and
+the states themselves were never captured, so nothing decodes them back —
+the only way to check them is to step the simulation and hash the result,
+which is a trajectory claim by construction.
+
+So do not force a fixture into one class. Split the CONSUMER instead: keep
+the format assertions in cases that cannot be reddened by gameplay, and put
+the trajectory assertion in its own named case that says in its name and its
+failure message that it is trajectory-coupled. The payoff is diagnostic — a
+red tells you which kind of thing moved without anyone reading an assertion
+index — and procedural: the class-A part can then be retired under rule 2 on
+its own, without taking the format guarantees with it.
+
+Do not paper over the split by pointing at a nearby function that sounds
+like it covers the gap. This file's first draft dropped those four hashes
+and claimed `input_tape::validate` covered them; `validate` replays every
+frame but never hashes a boundary, so a tape with `boundary_hashes[1..]`
+zeroed still validates. An assertion you have described but not written is
+worse than one you have openly dropped.
 
 ---
 

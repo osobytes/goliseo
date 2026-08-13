@@ -49,12 +49,23 @@
 //!   resulting tape must pass `validate_structure`, which the reference
 //!   itself records as `true`.
 //!
-//! What is NOT compared to the reference is `boundary_hash[1..5]`: those are
-//! hashes of stepped state, i.e. the trajectory. Their non-vacuity is
-//! covered instead by `input_tape::validate`, which replays the tape and
-//! re-derives every boundary — a self-consistency claim that holds whatever
-//! the physics does — plus the canonical-form, length and distinctness
-//! assertions below.
+//! `boundary_hash[1..5]` — hashes of STEPPED state, i.e. the trajectory —
+//! is the one thing here that no format assertion can stand in for. It is
+//! compared to the reference in its own case,
+//! `the_stepped_boundaries_still_hash_match_the_reference_lua_run`, which is
+//! marked and documented as deliberately trajectory-coupled: #520 class A,
+//! not class B. Everything else in this file is decoupled and stays that
+//! way, so a gameplay change reddens exactly one named case here and its
+//! name says what happened.
+//!
+//! An earlier draft of this file dropped that comparison and claimed
+//! `input_tape::validate` covered it. It does not: `validate` replays every
+//! frame through `sim_match::step` but never calls `match_snapshot::hash`
+//! and never reads `tape.boundary_hashes` past the length check, so a tape
+//! with `boundary_hashes[1..]` zeroed still validates. `validate`'s own doc
+//! never claimed otherwise — the overclaim was this test's. It is asserted
+//! below for what it does prove: that every recorded frame is consumable by
+//! the simulation.
 
 use gc_data::teams;
 use gc_sim::fixed_clock;
@@ -314,11 +325,25 @@ fn the_frozen_reference_recording_is_accepted_and_structurally_valid() {
 /// `input_tape::new`'s own output, checked for the shape the format
 /// promises rather than for the trajectory it recorded.
 ///
-/// `boundary_hash[0]` is still compared to the Lua reference — it is the
-/// pre-step boundary, so it is content, not trajectory. Everything after it
-/// is checked structurally (count, canonical form, distinctness) and for
-/// self-consistency through `input_tape::validate`, which replays the tape
-/// and re-derives every boundary hash it claims.
+/// `boundary_hash[0]` is compared to the Lua reference here — it is the
+/// pre-step boundary, so it is content, not trajectory. The four stepped
+/// boundaries after it are checked structurally only (count, canonical
+/// form, distinctness); their comparison against the reference lives in
+/// `the_stepped_boundaries_still_hash_match_the_reference_lua_run` below,
+/// which is deliberately trajectory-coupled and says so.
+///
+/// WHAT `input_tape::validate` DOES AND DOES NOT PROVE. It is asserted
+/// below, and it is worth being exact about why, because an earlier draft of
+/// this file claimed it "re-derives every boundary hash" and it does not.
+/// `validate` runs `validate_structure` and then replays every frame through
+/// `sim_match::step` from the tape's own initial snapshot; it never calls
+/// `match_snapshot::hash` during that replay and never reads
+/// `tape.boundary_hashes` past the length check. Zero out
+/// `boundary_hashes[1..]` on a freshly built tape and `validate` still
+/// returns `Ok(())`. Its own doc comment claims only what it does — that
+/// every frame is consumable by the simulation — so this is a limit to know
+/// about, not a defect in it. It is the reason the stepped boundaries need
+/// their own case rather than being covered by implication here.
 #[test]
 fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
     let reference = reference();
@@ -365,10 +390,9 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
         );
     }
 
-    // The replaced trajectory comparison's actual subject: a tape's
-    // boundaries must be the ones a replay of it re-derives. This holds
-    // whatever the physics does, and fails the moment the recorded
-    // boundaries and the replayed ones disagree.
+    // Every recorded frame is consumable by the simulation from this tape's
+    // own initial snapshot — that, and only that, is what `validate` proves.
+    // See this case's doc comment.
     assert_eq!("true", expect(&reference, "validate_ok"));
     assert!(input_tape::validate(&tape, &recording.tune).is_ok());
 
@@ -382,4 +406,59 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
     )
     .expect("tape constructs");
     assert_eq!(again.boundary_hashes, tape.boundary_hashes);
+}
+
+/// DELIBERATELY TRAJECTORY-COUPLED — #520 CLASS A, NOT CLASS B.
+///
+/// Every other case in this file is a format test and none of them can be
+/// reddened by a gameplay change. This one can, and is meant to be: it
+/// asserts that stepping this build's simulation through the five recorded
+/// frames produces, at every boundary, the exact digest the real Lua port
+/// produced. That is a claim about the TRAJECTORY as well as about
+/// `match_snapshot`'s serialization, and there is no way to check it without
+/// stepping — the frozen vector records the hashes of stepped states and
+/// never recorded the states themselves, so no amount of decoding recovers
+/// them.
+///
+/// It is kept, in its own case with its own name, for two reasons. It is the
+/// only thing in the repository that pins this simulation's tick-by-tick
+/// agreement with the deleted port across a recorded input tape, and losing
+/// it silently is exactly the kind of coverage hole #518 exists to catch.
+/// And separating it means the loss is legible: a red HERE says "the
+/// simulation moved", a red in any other case in this file says "the wire
+/// moved", and nobody has to read an assertion index to tell which.
+///
+/// CONSEQUENCE FOR #520. This case belongs to the same class as
+/// `match_step_ai_ai`, `session_ai_driven` and `rollback_session`, so a
+/// deliberate sim change legitimately trips it and it needs the class-A
+/// treatment — a retirement recorded per `tools/lua_reference/README.md`
+/// rule 2 — rather than a rewrite. #520 classified the whole of
+/// `input_tape_differential` as class B; that is right for the format
+/// claims and wrong for this one assertion, which is a correction to the
+/// issue's premise rather than to its decision.
+#[test]
+fn the_stepped_boundaries_still_hash_match_the_reference_lua_run() {
+    let reference = reference();
+    let recording = recording();
+
+    let tape = input_tape::new(
+        &recording.identity,
+        &recording.initial,
+        &recording.frames,
+        &recording.tune,
+    )
+    .expect("tape constructs");
+
+    assert_eq!(tape.boundary_hashes.len(), recording.frames.len() + 1);
+    for (index, hash) in tape.boundary_hashes.iter().enumerate() {
+        assert_eq!(
+            hash,
+            expect(&reference, &format!("boundary_hash[{index}]")),
+            "boundary_hash[{index}] diverges from the reference Lua run. \
+             Unlike every other case in this file, THIS ONE IS TRAJECTORY-COUPLED \
+             by design: a deliberate simulation change trips it legitimately and \
+             it needs a recorded retirement, not a rewrite. A format regression \
+             would have reddened the wire, identity or tick-zero cases instead."
+        );
+    }
 }
