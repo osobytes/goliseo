@@ -36,17 +36,68 @@ leading a runner, a defensive contain stance — inherits that.
   Nobody authored that; it falls out of pace, strength and technique feeding
   acceleration, braking and turn rate respectively.
 
+## Carry is a modifier, not a context — a departure from #488's model
+
+**#488 enumerates seven mutually exclusive contexts:**
+
+> `jog | run | sprint | carry | sprint_carry | strafe | backpedal`
+
+There is no `carry_backpedal` in that list, and there cannot be one without
+enumerating the cross product. Implemented literally, the model has a hole
+with teeth: `resolve` has to answer *"carrying, or backing away?"* with a
+single value, and whichever it answers, the other's kinematics are discarded.
+
+The first implementation here checked the geometry first, so **a carrier who
+backed off or shielded got the empty-handed profile.** Carry's reduced top
+speed, acceleration and turn rate all vanished at precisely the moment a
+carrier is shielding — the mechanic #488 says should make body position worth
+something. The two profiles were bit-identical.
+
+What ships treats them as what they are: two independent facts about a body —
+*which way it is moving relative to where it looks*, and *whether it has the
+ball* — composed multiplicatively.
+
+```
+top_speed = dir_ctx.top_mult * carry.top_mult * base_speed
+accel     = dir_ctx.accel_mult * carry.accel_mult * base_accel * pace_curve(pace)
+...
+```
+
+- **Direction contexts** (5): `jog`, `run`, `sprint`, `strafe`, `backpedal`.
+- **Carry modes** (3): `empty`, `carry`, `sprint_carry`; `empty` composes as
+  1.0 throughout.
+- `backpedal x carry` and `strafe x sprint_carry` are now expressible. They
+  were not before.
+
+**No knob was added or removed.** `Run`'s multipliers are all `1.0`, so
+`Carry`'s defaults are unchanged and `run x carry` reproduces exactly what the
+peer-context model produced. `SprintCarry`'s four were re-derived by dividing
+the old absolute values by `Sprint`'s, so `sprint x sprint_carry` reproduces
+its old product too — their *meaning* changed from absolute to relative, and
+their descriptions say so. Only the previously unreachable cases behave
+differently, which is the entire point.
+
+> Worth recording: the authored `SprintCarry` values were already within 1–5%
+> of `Sprint x Carry` (`1.35 x 0.92 = 1.24` against an authored `1.18`, and so
+> on down all four). The composition was implicit in the numbers before it was
+> in the code, which is some evidence the peer-context enumeration was always
+> the wrong shape rather than merely an incomplete one.
+
+`shielding_costs_more_than_backing_off_empty_handed` is the mechanic in one
+tier-1 assertion, and it checks top speed, acceleration *and* turn rate —
+shielding should be a handling cost, not only a speed cost.
+
 ## The five ordered steps
 
 `gc_sim::locomotion` owns all of it, purely: no RNG, no I/O, rates as
 per-second quantities integrated over the fixed tick, so a rollback
 resimulation reproduces every arc exactly.
 
-1. **Resolve the context** — `jog`, `run`, `sprint`, `carry`, `sprint_carry`,
-   `strafe`, `backpedal` — from possession, the sprint flag, the commanded
-   throttle and the angle between commanded movement and the facing target.
-   Geometry wins over possession: a carrier backing away from where it looks
-   is backpedalling, because that is a fact about the body.
+1. **Resolve the direction context and the carry mode**, separately. The
+   direction — `jog`, `run`, `sprint`, `strafe`, `backpedal` — comes from the
+   commanded throttle, the sprint flag and the angle between commanded
+   movement and the facing target. The carry mode comes from possession.
+   Geometry decides the direction; it no longer decides the ball away.
 2. **Derive the context's kinematics** from context multipliers × stat curves
    (below).
 3. **Ease the speed scalar** toward the context target. Accel and decel are

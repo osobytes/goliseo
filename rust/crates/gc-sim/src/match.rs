@@ -3348,7 +3348,10 @@ impl LocoOpts {
 fn arrival_cap(p: &MatchPlayer, dist: f64, tune: &Tuning) -> f64 {
     let stats = locomotion::stats(p.move_speed, p.strength, p.dribble, tune);
     let profile = locomotion::profile(
-        gc_data::locomotion::LocoContext::Run,
+        locomotion::Resolution {
+            ctx: gc_data::locomotion::LocoContext::Run,
+            carry: gc_data::locomotion::CarryMode::Empty,
+        },
         p.move_speed,
         stats,
         tune,
@@ -3388,7 +3391,7 @@ fn apply_locomotion(
         locomotion::FacingIntent::Toward(v) => v,
         _ => p.facing,
     };
-    let ctx = locomotion::resolve(
+    let resolution = locomotion::resolve(
         throttle,
         opts.carrying,
         p.sprinting,
@@ -3398,7 +3401,7 @@ fn apply_locomotion(
     );
     // Step 2: derive the context's kinematic parameters for this player.
     let stats = locomotion::stats(p.move_speed, p.strength, p.dribble, tune);
-    let profile = locomotion::profile(ctx, p.move_speed, stats, tune);
+    let profile = locomotion::profile(resolution, p.move_speed, stats, tune);
     // Steps 3-5.
     let next = locomotion::step(
         locomotion::Kinematics {

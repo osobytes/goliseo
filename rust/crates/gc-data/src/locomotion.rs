@@ -44,11 +44,6 @@ pub enum LocoContext {
     Run,
     /// The sprint burst: fastest, heaviest, widest in the corners.
     Sprint,
-    /// Moving with the ball at the feet.
-    Carry,
-    /// Sprinting with the ball at the feet — slower and heavier than a free
-    /// sprint, because the touch has to keep up.
-    SprintCarry,
     /// Moving broadly across the facing target.
     Strafe,
     /// Moving broadly opposite the facing target.
@@ -57,12 +52,10 @@ pub enum LocoContext {
 
 impl LocoContext {
     /// Every context, in registration order.
-    pub const ALL: [LocoContext; 7] = [
+    pub const ALL: [LocoContext; 5] = [
         LocoContext::Jog,
         LocoContext::Run,
         LocoContext::Sprint,
-        LocoContext::Carry,
-        LocoContext::SprintCarry,
         LocoContext::Strafe,
         LocoContext::Backpedal,
     ];
@@ -74,8 +67,6 @@ impl LocoContext {
             LocoContext::Jog => "jog",
             LocoContext::Run => "run",
             LocoContext::Sprint => "sprint",
-            LocoContext::Carry => "carry",
-            LocoContext::SprintCarry => "sprint_carry",
             LocoContext::Strafe => "strafe",
             LocoContext::Backpedal => "backpedal",
         }
@@ -90,8 +81,6 @@ impl LocoContext {
 /// character.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContextKnobs {
-    /// The context these knobs describe.
-    pub ctx: LocoContext,
     /// Multiplier over the player's base move speed.
     pub top_mult: &'static str,
     /// Multiplier over the shared acceleration base.
@@ -111,55 +100,125 @@ pub struct ContextKnobs {
 /// `SPRINT_MULT` is the one the F1 panel and `tuning_presets` already ship.
 pub static CONTEXT_KNOBS: &[ContextKnobs] = &[
     ContextKnobs {
-        ctx: LocoContext::Jog,
         top_mult: "LOCO_JOG_TOP_MULT",
         accel_mult: "LOCO_JOG_ACCEL_MULT",
         decel_mult: "LOCO_JOG_DECEL_MULT",
         turn_mult: "LOCO_JOG_TURN_MULT",
     },
     ContextKnobs {
-        ctx: LocoContext::Run,
         top_mult: "LOCO_RUN_TOP_MULT",
         accel_mult: "LOCO_RUN_ACCEL_MULT",
         decel_mult: "LOCO_RUN_DECEL_MULT",
         turn_mult: "LOCO_RUN_TURN_MULT",
     },
     ContextKnobs {
-        ctx: LocoContext::Sprint,
         top_mult: "SPRINT_MULT",
         accel_mult: "LOCO_SPRINT_ACCEL_MULT",
         decel_mult: "LOCO_SPRINT_DECEL_MULT",
         turn_mult: "LOCO_SPRINT_TURN_MULT",
     },
     ContextKnobs {
-        ctx: LocoContext::Carry,
-        top_mult: "LOCO_CARRY_TOP_MULT",
-        accel_mult: "LOCO_CARRY_ACCEL_MULT",
-        decel_mult: "LOCO_CARRY_DECEL_MULT",
-        turn_mult: "LOCO_CARRY_TURN_MULT",
-    },
-    ContextKnobs {
-        ctx: LocoContext::SprintCarry,
-        top_mult: "LOCO_SPRINT_CARRY_TOP_MULT",
-        accel_mult: "LOCO_SPRINT_CARRY_ACCEL_MULT",
-        decel_mult: "LOCO_SPRINT_CARRY_DECEL_MULT",
-        turn_mult: "LOCO_SPRINT_CARRY_TURN_MULT",
-    },
-    ContextKnobs {
-        ctx: LocoContext::Strafe,
         top_mult: "LOCO_STRAFE_TOP_MULT",
         accel_mult: "LOCO_STRAFE_ACCEL_MULT",
         decel_mult: "LOCO_STRAFE_DECEL_MULT",
         turn_mult: "LOCO_STRAFE_TURN_MULT",
     },
     ContextKnobs {
-        ctx: LocoContext::Backpedal,
         top_mult: "LOCO_BACKPEDAL_TOP_MULT",
         accel_mult: "LOCO_BACKPEDAL_ACCEL_MULT",
         decel_mult: "LOCO_BACKPEDAL_DECEL_MULT",
         turn_mult: "LOCO_BACKPEDAL_TURN_MULT",
     },
 ];
+
+/// Whether the body is carrying the ball, and how hard it is working at it.
+///
+/// **This is a modifier, not a context**, and that is a deliberate departure
+/// from #488's model — see [`CARRY_KNOBS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarryMode {
+    /// Empty-handed: the direction context stands alone.
+    Empty,
+    /// Moving with the ball at the feet.
+    Carry,
+    /// Sprinting with the ball at the feet.
+    SprintCarry,
+}
+
+impl CarryMode {
+    /// Every mode, in registration order.
+    pub const ALL: [CarryMode; 3] = [CarryMode::Empty, CarryMode::Carry, CarryMode::SprintCarry];
+
+    /// Stable wire/report tag for this mode.
+    #[must_use]
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            CarryMode::Empty => "empty",
+            CarryMode::Carry => "carry",
+            CarryMode::SprintCarry => "sprint_carry",
+        }
+    }
+}
+
+/// The carry modifiers, composed multiplicatively onto whichever direction
+/// context resolved.
+///
+/// # Why this is not a context, and where it departs from #488
+///
+/// The issue enumerates seven **mutually exclusive** contexts —
+/// `jog | run | sprint | carry | sprint_carry | strafe | backpedal` — with no
+/// `carry_backpedal` among them. Implemented literally, that model has a hole
+/// with teeth: `resolve` must answer "carrying, or backing away?" with ONE
+/// value, and whichever it answers, the other's kinematics vanish. The first
+/// implementation here checked the geometry first, so **a carrier who backed
+/// off or shielded got the empty-handed profile** — carry's reduced top
+/// speed, acceleration and turn rate all disappeared at exactly the moment a
+/// carrier is shielding, which is the mechanic #488 says should make body
+/// position worth something.
+///
+/// The two axes are independent facts about a body — *which way it is moving
+/// relative to where it looks*, and *whether it has the ball* — so they
+/// compose rather than exclude. `backpedal x carry` is now expressible, and
+/// so is `strafe x sprint_carry`.
+///
+/// # What the defaults mean now
+///
+/// These are multipliers over the **direction context's** value, not over the
+/// base directly. `Run`'s multipliers are all `1.0`, so `Carry`'s numbers are
+/// unchanged and `run x carry` reproduces exactly what the peer-context model
+/// produced. `SprintCarry`'s were re-derived by dividing the old absolute
+/// values by `Sprint`'s, so `sprint x sprint_carry` also reproduces its old
+/// product. Only the cases that were previously *unreachable* behave
+/// differently, which is the point.
+///
+/// Worth recording: the authored `SprintCarry` values were already within
+/// 1-5% of `Sprint x Carry` (`1.35 x 0.92 = 1.24` against an authored `1.18`,
+/// and so on down the four). The composition was implicit in the numbers
+/// before it was in the code.
+pub static CARRY_KNOBS: &[ContextKnobs] = &[
+    ContextKnobs {
+        top_mult: "LOCO_CARRY_TOP_MULT",
+        accel_mult: "LOCO_CARRY_ACCEL_MULT",
+        decel_mult: "LOCO_CARRY_DECEL_MULT",
+        turn_mult: "LOCO_CARRY_TURN_MULT",
+    },
+    ContextKnobs {
+        top_mult: "LOCO_SPRINT_CARRY_TOP_MULT",
+        accel_mult: "LOCO_SPRINT_CARRY_ACCEL_MULT",
+        decel_mult: "LOCO_SPRINT_CARRY_DECEL_MULT",
+        turn_mult: "LOCO_SPRINT_CARRY_TURN_MULT",
+    },
+];
+
+/// The knob set for a carry mode, or `None` when the body is empty-handed.
+#[must_use]
+pub fn carry_knobs(mode: CarryMode) -> Option<&'static ContextKnobs> {
+    match mode {
+        CarryMode::Empty => None,
+        CarryMode::Carry => Some(&CARRY_KNOBS[0]),
+        CarryMode::SprintCarry => Some(&CARRY_KNOBS[1]),
+    }
+}
 
 /// A linear stat curve, as two registered control points.
 ///

@@ -53,7 +53,7 @@ use crate::tuning::Tuning;
 use gc_core::deterministic_math;
 use gc_core::vec2::Vec2;
 use gc_data::locomotion::{
-    self, BACKPEDAL_ARC_COS_KNOB, BASE_TURN_KNOB, CONTEXT_KNOBS, DIR_SNAP_SPEED_KNOB,
+    self, BACKPEDAL_ARC_COS_KNOB, BASE_TURN_KNOB, CONTEXT_KNOBS, CarryMode, DIR_SNAP_SPEED_KNOB,
     FACE_EASE_FLOOR_KNOB, FACE_TURN_MULT_KNOB, JOG_THROTTLE_KNOB, LocoContext, PACE_CURVE,
     PACE_REF_HI_KNOB, PACE_REF_LO_KNOB, REVERSE_ARC_COS_KNOB, STRAFE_ARC_COS_KNOB, STRENGTH_CURVE,
     TECHNIQUE_CURVE, TURN_EASE_KNOB, TURN_LOW_SPEED_BONUS_KNOB,
@@ -125,8 +125,12 @@ pub struct Stats {
 /// One context's derived kinematic parameters for one player.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Profile {
-    /// The context these parameters were derived for.
-    pub ctx: LocoContext,
+    /// The resolution these parameters were derived for.
+    pub res: Resolution,
+    /// Composed top-speed multiplier over base speed: direction x carry.
+    /// `step` reads this rather than re-deriving it, so the composition
+    /// exists in exactly one place.
+    pub top_mult: f64,
     /// Top speed, px/s.
     pub top_speed: f64,
     /// Acceleration from a standstill, px/s^2.
@@ -194,10 +198,25 @@ pub fn arrival_speed(distance: f64, decel: f64) -> f64 {
 }
 
 fn context_knobs(ctx: LocoContext) -> &'static locomotion::ContextKnobs {
-    CONTEXT_KNOBS
+    let index = LocoContext::ALL
         .iter()
-        .find(|k| k.ctx == ctx)
-        .expect("every LocoContext has a registered knob row")
+        .position(|c| *c == ctx)
+        .expect("every LocoContext is in ALL");
+    &CONTEXT_KNOBS[index]
+}
+
+/// One tick's resolved locomotion identity: which way the body is moving
+/// relative to where it looks, and whether it has the ball.
+///
+/// Two independent facts, kept independent. #488 modelled them as one
+/// seven-way choice; see `gc_data::locomotion::CARRY_KNOBS` for why that had
+/// to change and what it cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resolution {
+    /// Direction and gait.
+    pub ctx: LocoContext,
+    /// Ball possession, composed onto `ctx`.
+    pub carry: CarryMode,
 }
 
 /// Derive one context's kinematic parameters for one player.
@@ -226,8 +245,20 @@ fn context_knobs(ctx: LocoContext) -> &'static locomotion::ContextKnobs {
 /// them rather than minting `LOCO_BASE_ACCEL` keeps one knob per quantity
 /// instead of two that would have to agree.
 #[must_use]
-pub fn profile(ctx: LocoContext, base_speed: f64, st: Stats, tune: &Tuning) -> Profile {
-    let knobs = context_knobs(ctx);
+pub fn profile(res: Resolution, base_speed: f64, st: Stats, tune: &Tuning) -> Profile {
+    let knobs = context_knobs(res.ctx);
+    // The carry modifier multiplies the direction context rather than
+    // replacing it, so `backpedal x carry` is expressible. `Empty` composes
+    // as 1.0 in all four, which is what keeps an empty-handed body's numbers
+    // exactly what they were.
+    let carry = locomotion::carry_knobs(res.carry);
+    let carry_mult = |pick: fn(&locomotion::ContextKnobs) -> &'static str| -> f64 {
+        carry.map_or(1.0, |k| tune.value(pick(k)))
+    };
+    let top_mult = tune.value(knobs.top_mult) * carry_mult(|k| k.top_mult);
+    let accel_mult = tune.value(knobs.accel_mult) * carry_mult(|k| k.accel_mult);
+    let decel_mult = tune.value(knobs.decel_mult) * carry_mult(|k| k.decel_mult);
+    let turn_mult = tune.value(knobs.turn_mult) * carry_mult(|k| k.turn_mult);
     let pace_curve = curve(
         st.pace,
         tune.value(PACE_CURVE.lo),
@@ -243,14 +274,14 @@ pub fn profile(ctx: LocoContext, base_speed: f64, st: Stats, tune: &Tuning) -> P
         tune.value(TECHNIQUE_CURVE.lo),
         tune.value(TECHNIQUE_CURVE.hi),
     );
-    let turn =
-        tune.value(knobs.turn_mult) * tune.value(BASE_TURN_KNOB).to_radians() * technique_curve;
+    let turn = turn_mult * tune.value(BASE_TURN_KNOB).to_radians() * technique_curve;
     Profile {
-        ctx,
-        top_speed: tune.value(knobs.top_mult) * base_speed,
-        accel_start: tune.value(knobs.accel_mult) * tune.value("START_ACCEL") * pace_curve,
-        accel_run: tune.value(knobs.accel_mult) * tune.value("MOVE_ACCEL") * pace_curve,
-        decel: tune.value(knobs.decel_mult) * tune.value("MOVE_DECEL") * strength_curve,
+        res,
+        top_mult,
+        top_speed: top_mult * base_speed,
+        accel_start: accel_mult * tune.value("START_ACCEL") * pace_curve,
+        accel_run: accel_mult * tune.value("MOVE_ACCEL") * pace_curve,
+        decel: decel_mult * tune.value("MOVE_DECEL") * strength_curve,
         turn_rate: turn,
         face_rate: turn * tune.value(FACE_TURN_MULT_KNOB),
     }
@@ -276,33 +307,49 @@ pub fn resolve(
     move_dir: Vec2,
     face_target: Vec2,
     tune: &Tuning,
-) -> LocoContext {
+) -> Resolution {
+    // The two axes are answered SEPARATELY, and that is the whole fix. The
+    // first implementation returned `Backpedal` or `Strafe` before it ever
+    // consulted `carrying`, so a carrier who backed off or shielded silently
+    // got the empty-handed profile -- carry's reduced top speed, accel and
+    // turn rate all gone at the exact moment a carrier is shielding. See
+    // `gc_data::locomotion::CARRY_KNOBS` for why #488's seven mutually
+    // exclusive contexts could not express this and what replaced them.
+    let carry = if carrying {
+        if sprinting {
+            CarryMode::SprintCarry
+        } else {
+            CarryMode::Carry
+        }
+    } else {
+        CarryMode::Empty
+    };
+
     let moving = throttle > 0.0 && (move_dir.x != 0.0 || move_dir.y != 0.0);
     let looking = face_target.x != 0.0 || face_target.y != 0.0;
     if moving && looking {
         let cos = dot(move_dir.normalized(), face_target.normalized());
         if cos < tune.value(BACKPEDAL_ARC_COS_KNOB) {
-            return LocoContext::Backpedal;
+            return Resolution {
+                ctx: LocoContext::Backpedal,
+                carry,
+            };
         }
         if cos < tune.value(STRAFE_ARC_COS_KNOB) {
-            return LocoContext::Strafe;
+            return Resolution {
+                ctx: LocoContext::Strafe,
+                carry,
+            };
         }
     }
-    if carrying {
-        return if sprinting {
-            LocoContext::SprintCarry
-        } else {
-            LocoContext::Carry
-        };
-    }
-    if sprinting {
-        return LocoContext::Sprint;
-    }
-    if throttle < tune.value(JOG_THROTTLE_KNOB) {
+    let ctx = if sprinting {
+        LocoContext::Sprint
+    } else if throttle < tune.value(JOG_THROTTLE_KNOB) {
         LocoContext::Jog
     } else {
         LocoContext::Run
-    }
+    };
+    Resolution { ctx, carry }
 }
 
 /// Rotate `from` toward `to` (both unit) by at most `max_angle` **radians**.
@@ -458,7 +505,7 @@ pub fn step(k: Kinematics, cmd: &Command, prof: &Profile, dt: f64, tune: &Tuning
     // Step 3/4 target selection. The context multiplier scales the caller's
     // situational command; `commanded` already carries stun, wind-up, combat
     // and arrival easing.
-    let target_full = commanded * tune.value(context_knobs(prof.ctx).top_mult);
+    let target_full = commanded * prof.top_mult;
     let mut dir = dir0;
     let mut target = 0.0;
     let mut reversing = false;

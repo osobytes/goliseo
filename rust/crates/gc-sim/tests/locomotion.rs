@@ -18,7 +18,7 @@
 //!   two claims the context table would otherwise make silently.
 
 use gc_core::vec2::Vec2;
-use gc_data::locomotion::{CONTEXT_KNOBS, LocoContext, TURN_EASE_KNOB};
+use gc_data::locomotion::{CONTEXT_KNOBS, CarryMode, LocoContext, TURN_EASE_KNOB};
 use gc_data::tunables::{SIM_TUNABLES, Tier};
 use gc_sim::locomotion::{self, Command, FacingIntent, Kinematics};
 use gc_sim::tuning::Tuning;
@@ -34,9 +34,26 @@ fn tune() -> Tuning {
     Tuning::new()
 }
 
+fn empty_run() -> locomotion::Resolution {
+    locomotion::Resolution {
+        ctx: LocoContext::Run,
+        carry: CarryMode::Empty,
+    }
+}
+
 fn profile_for(ctx: LocoContext, tune: &Tuning) -> locomotion::Profile {
+    profile_of(ctx, CarryMode::Empty, tune)
+}
+
+/// A profile for one direction context composed with one carry mode.
+fn profile_of(ctx: LocoContext, carry: CarryMode, tune: &Tuning) -> locomotion::Profile {
     let stats = locomotion::stats(BASE_SPEED, STRENGTH, DRIBBLE, tune);
-    locomotion::profile(ctx, BASE_SPEED, stats, tune)
+    locomotion::profile(
+        locomotion::Resolution { ctx, carry },
+        BASE_SPEED,
+        stats,
+        tune,
+    )
 }
 
 fn knob(id: &str) -> &'static gc_data::tunables::TunableDef {
@@ -382,37 +399,113 @@ fn holding_facing_leaves_it_untouched_while_the_body_moves() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn every_context_is_reachable_from_the_resolver() {
+fn every_context_and_carry_mode_is_reachable_from_the_resolver() {
     let tune = tune();
     let forward = Vec2::new(1.0, 0.0);
     let sideways = Vec2::new(0.0, 1.0);
     let backward = Vec2::new(-1.0, 0.0);
-    let cases: [(LocoContext, f64, bool, bool, Vec2); 7] = [
-        (LocoContext::Jog, 0.3, false, false, forward),
-        (LocoContext::Run, 1.0, false, false, forward),
-        (LocoContext::Sprint, 1.0, false, true, forward),
-        (LocoContext::Carry, 1.0, true, false, forward),
-        (LocoContext::SprintCarry, 1.0, true, true, forward),
-        (LocoContext::Strafe, 1.0, false, false, sideways),
-        (LocoContext::Backpedal, 1.0, false, false, backward),
+    // Direction and carry are now two independent axes, so reachability has
+    // to be shown on both. The carry column is the half that #488's
+    // seven-context model could not express at all.
+    let cases: [(LocoContext, CarryMode, f64, bool, bool, Vec2); 9] = [
+        (
+            LocoContext::Jog,
+            CarryMode::Empty,
+            0.3,
+            false,
+            false,
+            forward,
+        ),
+        (
+            LocoContext::Run,
+            CarryMode::Empty,
+            1.0,
+            false,
+            false,
+            forward,
+        ),
+        (
+            LocoContext::Sprint,
+            CarryMode::Empty,
+            1.0,
+            false,
+            true,
+            forward,
+        ),
+        (
+            LocoContext::Run,
+            CarryMode::Carry,
+            1.0,
+            true,
+            false,
+            forward,
+        ),
+        (
+            LocoContext::Sprint,
+            CarryMode::SprintCarry,
+            1.0,
+            true,
+            true,
+            forward,
+        ),
+        (
+            LocoContext::Strafe,
+            CarryMode::Empty,
+            1.0,
+            false,
+            false,
+            sideways,
+        ),
+        (
+            LocoContext::Backpedal,
+            CarryMode::Empty,
+            1.0,
+            false,
+            false,
+            backward,
+        ),
+        // The two that were unreachable before: a carrier who is not moving
+        // straight ahead.
+        (
+            LocoContext::Strafe,
+            CarryMode::Carry,
+            1.0,
+            true,
+            false,
+            sideways,
+        ),
+        (
+            LocoContext::Backpedal,
+            CarryMode::SprintCarry,
+            1.0,
+            true,
+            true,
+            backward,
+        ),
     ];
-    for (want, throttle, carrying, sprinting, move_dir) in cases {
+    for (ctx, carry, throttle, carrying, sprinting, move_dir) in cases {
         let got = locomotion::resolve(throttle, carrying, sprinting, move_dir, forward, &tune);
         assert_eq!(
             got,
-            want,
-            "throttle {throttle}, carrying {carrying}, sprinting {sprinting}, moving {move_dir:?} \
-             must resolve as {}",
-            want.wire_str()
+            locomotion::Resolution { ctx, carry },
+            "throttle {throttle}, carrying {carrying}, sprinting {sprinting}, moving \
+             {move_dir:?} must resolve as {} x {}",
+            ctx.wire_str(),
+            carry.wire_str()
         );
     }
 }
 
+/// Geometry decides the DIRECTION context; it does not decide away the ball.
+///
+/// This test used to assert the opposite, in as many words: "a carrier backing
+/// away from where it is looking is backpedalling. That is a fact about the
+/// body, not about the ball." The first half is still true. The second half
+/// was the defect — it justified throwing the carry information away, so a
+/// shielding carrier silently got the empty-handed profile, and #488's
+/// seven mutually exclusive contexts had no way to say otherwise.
 #[test]
-fn geometry_beats_possession_when_classifying_a_context() {
-    // A carrier backing away from where it is looking is backpedalling. That
-    // is a fact about the body, not about the ball, and it is only expressible
-    // because facing is an independent target.
+fn geometry_picks_the_direction_without_discarding_the_ball() {
     let tune = tune();
     let got = locomotion::resolve(
         1.0,
@@ -422,7 +515,54 @@ fn geometry_beats_possession_when_classifying_a_context() {
         Vec2::new(1.0, 0.0),
         &tune,
     );
-    assert_eq!(got, LocoContext::Backpedal);
+    assert_eq!(
+        got,
+        locomotion::Resolution {
+            ctx: LocoContext::Backpedal,
+            carry: CarryMode::SprintCarry,
+        },
+        "a sprinting carrier backing away is backpedalling AND carrying"
+    );
+}
+
+/// **The mechanic, in one assertion.** A carrier backing into pressure must be
+/// measurably slower than the same player doing the same thing empty-handed.
+///
+/// This is what #488 means by making body position worth something, and under
+/// the seven-context model it was not merely untested — it was unexpressible,
+/// and the two profiles were bit-identical. Every one of the four kinematic
+/// quantities has to pay, not just top speed, or shielding is a speed penalty
+/// rather than a handling one.
+#[test]
+fn shielding_costs_more_than_backing_off_empty_handed() {
+    let tune = tune();
+    let empty = profile_of(LocoContext::Backpedal, CarryMode::Empty, &tune);
+    let carrying = profile_of(LocoContext::Backpedal, CarryMode::Carry, &tune);
+
+    assert!(
+        carrying.top_speed < empty.top_speed,
+        "backing off with the ball must be slower than without it: {} vs {}",
+        carrying.top_speed,
+        empty.top_speed
+    );
+    assert!(
+        carrying.accel_run < empty.accel_run,
+        "a shielding carrier must build speed more slowly"
+    );
+    assert!(
+        carrying.turn_rate < empty.turn_rate,
+        "a shielding carrier must turn wider"
+    );
+
+    // And the same for a sprinting carrier who has to back out of a lost
+    // duel, which is the other half of the case that was unreachable.
+    let sprint_empty = profile_of(LocoContext::Backpedal, CarryMode::Empty, &tune);
+    let sprint_carry = profile_of(LocoContext::Backpedal, CarryMode::SprintCarry, &tune);
+    assert!(
+        sprint_carry.top_speed < sprint_empty.top_speed
+            && sprint_carry.turn_rate < sprint_empty.turn_rate,
+        "backing out while sprint-carrying must cost speed and handling"
+    );
 }
 
 #[test]
@@ -477,8 +617,8 @@ fn strafe_and_backpedal_move_off_the_facing_line() {
 fn carry_contexts_differ_from_their_empty_handed_counterparts() {
     let tune = tune();
     // Same command, same ticks, four profiles: only the context differs.
-    let travelled = |ctx: LocoContext| {
-        let profile = profile_for(ctx, &tune);
+    let travelled = |ctx: LocoContext, carry: CarryMode| {
+        let profile = profile_of(ctx, carry, &tune);
         let mut k = Kinematics {
             run_vel: Vec2::new(0.0, 0.0),
             facing: Vec2::new(1.0, 0.0),
@@ -492,10 +632,11 @@ fn carry_contexts_differ_from_their_empty_handed_counterparts() {
         (distance, k.run_vel.length())
     };
 
-    let (run_distance, run_top) = travelled(LocoContext::Run);
-    let (carry_distance, carry_top) = travelled(LocoContext::Carry);
-    let (sprint_distance, sprint_top) = travelled(LocoContext::Sprint);
-    let (sprint_carry_distance, sprint_carry_top) = travelled(LocoContext::SprintCarry);
+    let (run_distance, run_top) = travelled(LocoContext::Run, CarryMode::Empty);
+    let (carry_distance, carry_top) = travelled(LocoContext::Run, CarryMode::Carry);
+    let (sprint_distance, sprint_top) = travelled(LocoContext::Sprint, CarryMode::Empty);
+    let (sprint_carry_distance, sprint_carry_top) =
+        travelled(LocoContext::Sprint, CarryMode::SprintCarry);
 
     assert!(
         carry_top < run_top && carry_distance < run_distance,
@@ -512,7 +653,7 @@ fn carry_contexts_differ_from_their_empty_handed_counterparts() {
     );
 
     // The difference is not only top speed: turning with the ball is heavier.
-    let carry = profile_for(LocoContext::Carry, &tune);
+    let carry = profile_of(LocoContext::Run, CarryMode::Carry, &tune);
     let run = profile_for(LocoContext::Run, &tune);
     assert!(
         carry.turn_rate < run.turn_rate,
@@ -530,8 +671,8 @@ fn profiles_are_derived_from_stats_rather_than_authored_per_character() {
     // Two players, same context, differing only in their stat block.
     let quick = locomotion::stats(260.0, 0.2, 0.2, &tune);
     let deliberate = locomotion::stats(100.0, 0.9, 0.9, &tune);
-    let quick_profile = locomotion::profile(LocoContext::Run, 260.0, quick, &tune);
-    let deliberate_profile = locomotion::profile(LocoContext::Run, 100.0, deliberate, &tune);
+    let quick_profile = locomotion::profile(empty_run(), 260.0, quick, &tune);
+    let deliberate_profile = locomotion::profile(empty_run(), 100.0, deliberate, &tune);
 
     assert!(
         quick_profile.top_speed > deliberate_profile.top_speed,
