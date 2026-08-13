@@ -563,24 +563,3 @@ fn the_shipped_defaults_land_inside_the_proposed_band() {
         def.band[2]
     );
 }
-
-#[test]
-#[ignore = "temporary probe"]
-fn probe_time_to_reverse() {
-    let seeds = seeds(24);
-    for knob in gc_sim::tunable_registry::shipped().sweepable_ids() {
-        if !knob.starts_with("LOCO_") {
-            continue;
-        }
-        let o = knob_contract::knob_moves_metric(&KnobMoveOpts {
-            knob,
-            metric: "time_to_reverse",
-            seeds: &seeds,
-            duration: None,
-            perturbation: Some(1.0),
-            expect: ExpectedShift::Unstated,
-            direction: Some(Perturb::Up),
-        });
-        println!("CENSUS {}", o.report);
-    }
-}
