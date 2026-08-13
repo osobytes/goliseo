@@ -1,5 +1,12 @@
 # Making the #100 browser render benchmark trustworthy (W16-B)
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 A prior pass at `scripts/browser_render_bench.py` produced numbers nobody would
 stand behind. Three specific reasons, and what changed for each, followed by
 the evidence this pass actually collected — with the caveats that evidence

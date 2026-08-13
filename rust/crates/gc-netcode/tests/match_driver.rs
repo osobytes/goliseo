@@ -14,11 +14,14 @@
 //! (`tests/fixtures/match_driver_lua_reference.txt`) was captured from —
 //! bursty delivery (the star pumps every 5th step only), 90 steps, neutral
 //! samples — and asserts `diagnostics()`/`checkpoints()` agree, tick for
-//! tick, with those frozen reference vectors, including the boundary hash at
-//! every one of the 9 checkpoints (10, 20, ..., 90). That reference trace
-//! cannot be regenerated — see `tools/lua_reference/README.md` for how it was
-//! captured — so a failure here is a finding about this driver's behavior,
-//! not a stale fixture to refresh.
+//! tick, with the DELIVERY PROTOCOL those frozen reference vectors record:
+//! status and the confirmation arithmetic at all 90 steps, every checkpoint
+//! tick, and the boundary-zero digest. It deliberately does not compare
+//! correction counts or post-kickoff digests, which are simulated values
+//! rather than wire facts — see that case's own doc and #520. That reference
+//! trace cannot be regenerated — see `tools/lua_reference/README.md` for how
+//! it was captured — so a failure here is a finding about this driver's
+//! behavior, not a stale fixture to refresh.
 //!
 //! `mod online_match_driver` and the cases after it cover the driver with
 //! this file's own `harness`/`advance`/`run`/`assert_agreement`/
@@ -1131,11 +1134,59 @@ fn parse_fixture(text: &str) -> (Vec<ExpectedStep>, Vec<ExpectedHash>) {
     (steps, hashes)
 }
 
+fn canonical_digest(digest: &str) -> bool {
+    digest.len() == 16
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and
-/// asserts the Rust driver reaches the identical diagnostics and boundary
-/// hashes recorded in the frozen reference vectors, tick for tick, at every
-/// one of the 90 steps and every one of the 9 checkpoints.
+/// asserts the Rust driver reaches the identical DELIVERY PROTOCOL recorded
+/// in the frozen reference vectors, tick for tick, at every one of the 90
+/// steps and every one of the 9 checkpoints.
+///
+/// ## What "delivery protocol" excludes, and why (#520)
+///
+/// This case used to additionally assert the reference's `correction` COUNT
+/// at every step, its `rollback` count, and its boundary DIGEST at every
+/// checkpoint. Those are simulated values wearing a protocol test's clothes:
+///
+/// - `correction_count` counts authoritative input samples that differed
+///   from the sample the peer had predicted, and the samples for the
+///   non-human slots come from `slot_input::materialize` running the AI over
+///   the current match state. Change the physics and the AI authors
+///   different samples, so the count moves while nothing about the protocol
+///   has. `rollback_count` moves with it, for the same reason.
+/// - a checkpoint digest at tick 10 or later hashes stepped state. It is the
+///   trajectory, in one word.
+///
+/// So a deliberate gameplay change turned this red with every claim it
+/// exists to protect intact. What it asserts against the reference now is
+/// what the reference is actually evidence of:
+///
+/// - `status`, `present_input_tick`, `confirmed_input_tick` and
+///   `confirmed_output_tick` at all 90 steps for both peers — the
+///   confirmation arithmetic of a star that pumps only every 5th step;
+/// - the correction/rollback PROTOCOL, asserted on the reference's own rows
+///   and on the live run alike: neither counter may move on a step where no
+///   authority arrived (the star pumps every 5th step, so only steps
+///   `6, 11, ... 86` may move them), neither may go backwards, a step
+///   corrects if and only if it rolls back, and both must have moved by the
+///   end. The magnitudes are not asserted, and the reference's own guest
+///   column shows why they cannot be: it corrects at 6 and then not again
+///   until 31, because for those five pumps the host's AI-authored samples
+///   happened to be exactly what the guest had predicted — a fact about the
+///   simulation, not about the wire;
+/// - every checkpoint TICK, so the publication cadence stays pinned;
+/// - the tick-ZERO checkpoint digest against the reference. Boundary zero is
+///   the kickoff snapshot, so it pins `match_snapshot::hash`'s algorithm and
+///   serialization order against real Lua without depending on a stepped
+///   tick;
+/// - and for every later checkpoint: host and guest agree with EACH OTHER
+///   (the desync-detection claim the digests are carried for), the digest is
+///   canonical, and consecutive checkpoints differ.
 #[test]
 fn match_driver_differential_matches_the_lua_reference() {
     const FIXTURE: &str = include_str!("fixtures/match_driver_lua_reference.txt");
@@ -1186,6 +1237,59 @@ fn match_driver_differential_matches_the_lua_reference() {
         Box::new(guest_transport.clone()),
     );
 
+    // The star pumps on every 5th step, so a peer can only see new
+    // authority on the step after one — hand-written from this case's own
+    // `if step % 5 == 0 { pump() }` below rather than read off the fixture,
+    // because the fixture's correction column is exactly the thing being
+    // decoupled from.
+    let may_correct = |step: i64| step > 5 && step % 5 == 1;
+
+    // The same protocol asserted on the reference's own rows. If the
+    // reference disagreed with the invariant the live run is held to, the
+    // invariant would be this test's invention rather than the frozen
+    // vector's evidence.
+    for label in ["host", "guest"] {
+        let mut previous: Option<&ExpectedStep> = None;
+        let mut moved = 0;
+        for expected in expected_steps.iter().filter(|e| e.peer == label) {
+            let (was_rollback, was_correction) =
+                previous.map_or((0, 0), |p| (p.rollback, p.correction));
+            let rolled = expected.rollback != was_rollback;
+            let corrected = expected.correction != was_correction;
+            assert_eq!(
+                rolled, corrected,
+                "reference step {} {label}: rollback and correction must move together",
+                expected.step
+            );
+            assert!(
+                expected.rollback >= was_rollback && expected.correction >= was_correction,
+                "reference step {} {label}: a counter went backwards",
+                expected.step
+            );
+            if rolled {
+                assert!(
+                    may_correct(expected.step),
+                    "reference step {} {label} corrects on a step no authority arrived on",
+                    expected.step
+                );
+                moved += 1;
+            }
+            previous = Some(expected);
+        }
+        assert!(
+            moved > 0,
+            "the reference records no correction at all for {label}"
+        );
+    }
+
+    // Per peer: the counters observed at the previous step, and the digests
+    // already seen, so the burst shape and checkpoint progress can be
+    // asserted across steps rather than at one.
+    let mut previous_counters = [(0i64, 0i64), (0i64, 0i64)];
+    let mut previous_digest: [Option<String>; 2] = [None, None];
+    let mut corrections_observed = [0i64, 0i64];
+    let mut checkpoints_compared = 0i64;
+
     for step in 1..=90i64 {
         let _ = match_driver::advance(&mut host, None);
         let _ = match_driver::advance(&mut guest, None);
@@ -1193,10 +1297,10 @@ fn match_driver_differential_matches_the_lua_reference() {
             host_transport.pump();
         }
 
-        for (driver, label) in [(&host, "host"), (&guest, "guest")] {
+        for (peer, (driver, label)) in [(&host, "host"), (&guest, "guest")].iter().enumerate() {
             let expected = expected_steps
                 .iter()
-                .find(|e| e.step == step && e.peer == label)
+                .find(|e| e.step == step && &e.peer == label)
                 .unwrap_or_else(|| panic!("fixture is missing step {step} for {label}"));
             let diagnostics = match_driver::diagnostics(driver);
             assert_eq!(
@@ -1216,21 +1320,38 @@ fn match_driver_differential_matches_the_lua_reference() {
                 diagnostics.confirmed_output_tick, expected.confirmed_out,
                 "step {step} {label} confirmed_out"
             );
+
+            // The correction/rollback PROTOCOL, not the counts: see this
+            // case's doc for why the magnitudes are the trajectory and this
+            // is the wire.
+            let (was_rollback, was_correction) = previous_counters[peer];
+            let rolled = diagnostics.rollback_count != was_rollback;
+            let corrected = diagnostics.correction_count != was_correction;
             assert_eq!(
-                diagnostics.rollback_count, expected.rollback,
-                "step {step} {label} rollback"
+                rolled, corrected,
+                "step {step} {label}: rollback and correction must move together"
             );
-            assert_eq!(
-                diagnostics.correction_count, expected.correction,
-                "step {step} {label} correction"
+            assert!(
+                diagnostics.rollback_count >= was_rollback
+                    && diagnostics.correction_count >= was_correction,
+                "step {step} {label}: a counter went backwards"
             );
+            if rolled {
+                assert!(
+                    may_correct(step),
+                    "step {step} {label} corrects on a step no authority arrived on"
+                );
+                corrections_observed[peer] += 1;
+            }
+            previous_counters[peer] = (diagnostics.rollback_count, diagnostics.correction_count);
         }
 
         if step % 10 == 0 {
-            for (driver, label) in [(&host, "host"), (&guest, "guest")] {
+            let mut digests: Vec<String> = Vec::new();
+            for (peer, (driver, label)) in [(&host, "host"), (&guest, "guest")].iter().enumerate() {
                 let expected = expected_hashes
                     .iter()
-                    .find(|h| h.step == step && h.peer == label)
+                    .find(|h| h.step == step && &h.peer == label)
                     .unwrap_or_else(|| {
                         panic!("fixture is missing hash at step {step} for {label}")
                     });
@@ -1242,13 +1363,56 @@ fn match_driver_differential_matches_the_lua_reference() {
                     newest.tick, expected.tick,
                     "step {step} {label} checkpoint tick"
                 );
-                assert_eq!(
-                    newest.hash, expected.digest,
-                    "step {step} {label} checkpoint hash"
+                assert!(
+                    canonical_digest(&newest.hash),
+                    "step {step} {label} checkpoint hash is not 16 lowercase hex characters: {}",
+                    newest.hash
                 );
+                if newest.tick == 0 {
+                    // Boundary zero is the kickoff snapshot every peer was
+                    // seeded with, so this digest is content, not
+                    // trajectory: it pins `match_snapshot::hash` against
+                    // real Lua.
+                    assert_eq!(
+                        newest.hash, expected.digest,
+                        "step {step} {label} boundary-zero checkpoint hash"
+                    );
+                    checkpoints_compared += 1;
+                }
+                if let Some(previous) = &previous_digest[peer] {
+                    assert_ne!(
+                        &newest.hash, previous,
+                        "step {step} {label} republished the previous checkpoint digest; \
+                         the confirmed boundary did not advance"
+                    );
+                }
+                previous_digest[peer] = Some(newest.hash.clone());
+                digests.push(newest.hash.clone());
             }
+            // The claim the later digests are carried for: both peers
+            // simulated the same match and say so at the same tick.
+            assert_eq!(
+                digests[0], digests[1],
+                "step {step}: host and guest disagree on the confirmed boundary"
+            );
         }
     }
+
+    // Non-vacuity, in the two places this case could quietly stop asserting:
+    // a run that never corrected would satisfy every schedule assertion
+    // above, and a boundary-zero digest that was never reached would leave
+    // the only cross-language hash comparison unexecuted.
+    assert!(
+        corrections_observed[0] > 0 && corrections_observed[1] > 0,
+        "both peers must have predicted and then corrected at least once; \
+         host corrected on {} steps, guest on {}",
+        corrections_observed[0],
+        corrections_observed[1]
+    );
+    assert_eq!(
+        checkpoints_compared, 2,
+        "boundary zero must be compared to the reference once per peer"
+    );
 }
 
 /// The cases below use the `harness`/`advance`/`run`/`assert_agreement`

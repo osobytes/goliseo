@@ -1,13 +1,45 @@
 # Design: Fun metrics & simulation-based balance search
 
-**Scope:** `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`, `sim/sweep.lua`, `main.lua`, `spec/sim/*`
+> **Every number in this document was measured before the port, and none of
+> them has been re-measured since.** The mechanism described here is live —
+> `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
+> `gc_sim::tripwire` and `gc_data::fun_baseline` are the Rust modules that
+> carry it — but the tables, sweeps, candidates and drift-log entries below
+> were all produced between **2026-07-05 and 2026-08-10** by the Lua tree on
+> LÖVE that commit `2c0d449` (#467) deleted, through a `love . --sim` /
+> `--sweep` / `--search` / `--eval` / `--tripwire` CLI that no longer exists.
+>
+> Two consequences, both of which have been read backwards at least once:
+>
+> - **The Phase 2 sensitivity table is not present-day evidence.** It was
+>   measured on 2026-07-05 against the Lua `sim/bot.lua` human proxy, on that
+>   tree's balance and that tree's mechanics. Reuse of its rankings to justify
+>   a knob today needs a fresh sweep, not a citation. §9 of `AGENTS.md` is the
+>   standard a knob claim has to meet now: `gc_sim::knob_contract::assert_moves`
+>   against a *measured* noise floor.
+> - **The fun tripwire is not currently wired into any gate.** The prose below
+>   says it runs in `check.sh` and fails the build on drift; that was true of
+>   the Lua tree. `gc_sim::tripwire` ports the measurement and comparison, but
+>   nothing calls `tripwire::measure` today, so the 30-seed signature is not
+>   checked by `./scripts/check.sh` or CI. The frozen combat-disabled Outfield
+>   AI baseline **is** still enforced, as an ordinary Rust test
+>   (`gc-sim/tests/outfield_ai_baseline.rs`, run by gate 3).
+>
+> The history is kept, not deleted: it records why the bands, the candidates
+> and the non-refresh rule are what they are.
+
+**Scope:** `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
+`gc_sim::tripwire`, and their tests under `rust/crates/gc-sim/tests/`
+(pre-port: `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`,
+`sim/sweep.lua`, `main.lua`, `spec/sim/*`)
 
 Combat evidence is governed separately by
 [`combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md). The
 soccer-only tripwire and its historical `fun` name remain regression tools;
 neither is a measurement of human enjoyment or a combat-active baseline.
 
-CLI (all headless, exit when done):
+**Pre-port CLI (deleted with the Lua tree; kept so the runs cited below can be
+read).** Every command in this document is one of these:
 
 ```
 love . --sim [n]          n matches at current defaults, metric report
@@ -18,7 +50,17 @@ love . --tripwire [write] fun-signature snapshot vs data/fun_baseline.lua
                           (in check.sh; exit 1 on drift; `write` refreshes)
 ```
 
-**Status (2026-07-10):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
+**Today there is no CLI.** The same measurements are library calls in
+`gc-sim`, reached from a Rust test or a scratch harness:
+`headless::run_batch` plays a seeded batch and `headless::report` prints it;
+`sweep::sensitivity` and `sweep::paired_delta` do the per-knob sweep;
+`tripwire::measure` / `compare` / `report` produce and check the fun
+signature, and `tripwire::serialize` emits a `gc_data::fun_baseline` literal
+to paste over `rust/crates/gc-data/src/fun_baseline.rs`;
+`outfield_ai_baseline::measure` reproduces the frozen control. Rebuilding a
+runnable entry point over them is not done — see the banner above.
+
+**Status (2026-07-10, pre-port):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
 runs 30 seeded matches in check.sh and fails the gate when any banded-metric
 mean (or the composite) drifts more than 5% from the checked-in baseline —
 the sim is deterministic per seed, so a behavior-neutral change reproduces
@@ -26,7 +68,7 @@ the snapshot exactly. On intended drift: re-run `--sim 100`, log the shift in
 the drift log below, then `love . --tripwire write`. Candidate A is validated
 (re-validated twice); B died in the 2026-07-10 re-validation. A ships as an
 F1 preset — awaiting a hands-on playtest verdict before any change to
-`sim/tuning.lua` defaults.
+`gc_sim::tuning` defaults.
 
 ## Why
 
@@ -84,7 +126,8 @@ been re-measured, and the column stays unbanded until something is.
 ## The human proxy (the big caveat)
 
 AI-vs-AI matches measure the AI ecosystem, not the player's hands. The
-controlled slot is driven by `sim/bot.lua`, a deliberately human-ish input
+controlled slot is driven by `gc_sim::bot` (measured pre-port as
+`sim/bot.lua`), a deliberately human-ish input
 driver: it re-decides only every ~0.2 s (reaction latency), adds aim noise from
 its own seeded RNG, dribbles/charges/shoots/passes with simple heuristics, and
 chases/jockeys off the ball. It can also reactively juke a committed defender,
@@ -125,7 +168,7 @@ are signal; small ones are bot artifacts until verified by hand with F1.
 4. **Tripwire — done.** A 30-seed smoke batch in `scripts/check.sh` fails loudly
    when a sim change moves a banded metric beyond the checked-in tolerance.
 
-## Baseline signature (defaults)
+## Baseline signature (defaults) — pre-port, 2026-07-09
 
 `love . --sim 100`, all knobs at defaults, 2026-07-09 (post keeper-fix — the
 original 2026-07-05 table is superseded; the shift is recorded in the drift
@@ -162,7 +205,18 @@ What the baseline says (under this bot — relative claims only):
 - `lead_changes` ≈ 0 follows directly from goal scarcity; it will only become
   meaningful once goals_total lives in its band.
 
-## Phase 2: sensitivity sweep (2026-07-05)
+## Phase 2: sensitivity sweep — pre-port, measured 2026-07-05
+
+**Provenance, because this table is the one most often mistaken for current
+evidence.** It was produced on **2026-07-05** by `love . --sweep 30` on the Lua
+tree, against that tree's `sim/bot.lua` human proxy, that tree's knob ranges,
+and a build that still capped matches at three goals (#268 removed the cap on
+2026-07-30, and the mechanics batches logged in the drift log below moved the
+baseline repeatedly afterwards). It has not been re-measured on `gc-sim`. Read
+it as the record of how the *method* was validated — including the honest
+sanity check that knobs the sim ignores came back at exactly 0.000 — not as a
+ranking you may cite for a knob today. A present-day claim that a knob moves a
+metric is made with `gc_sim::knob_contract::assert_moves` (`AGENTS.md` §9).
 
 `love . --sweep 30` — every knob to its min and max, paired against the
 default baseline (fun 0.238, goals 1.10) on seeds 1–30. Knobs that matter,
@@ -223,10 +277,11 @@ Caveats before shipping either:
   mattered. There is no goal cap any more — a match runs its 120 seconds and is
   decided on score — so neither candidate shortens one. The measurements above
   were taken under the cap and are left as recorded.
-- **Bot-relative.** All numbers are under the `sim/bot.lua` proxy. Verify by
-  playing: both candidates ship as F1-panel presets (`data/tuning_presets.lua`,
-  F4 cycles Defaults → A → B; F2 persists the choice across runs). Defaults in
-  `sim/tuning.lua` stay untouched until a candidate survives hands-on play.
+- **Bot-relative.** All numbers are under the pre-port `sim/bot.lua` proxy
+  (now `gc_sim::bot`). Verify by playing: both candidates ship as F1-panel
+  presets (`gc_data::tuning_presets`, F4 cycles Defaults → A → B; F2 persists
+  the choice across runs). Defaults in `gc_sim::tuning` stay untouched until a
+  candidate survives hands-on play.
 - `pass_completion` (~0.49) stays just below its band in every config tested —
   no knob in the current panel moves it much. If passing should feel more
   reliable, that's a *mechanics* change (lead, receiver magnetism), not a knob.
@@ -262,12 +317,12 @@ Conclusions:
 ## Frozen combat-disabled Outfield AI baseline (#59)
 
 Everything above is the **soccer fun tripwire**: a 30-seed human-proxy smoke
-test with a 5% tolerance band, checked in as `data/fun_baseline.lua`. This
+test with a 5% tolerance band, checked in as `gc_data::fun_baseline`. This
 section is a *different* artifact with a different job, and the two must not be
 confused or merged. The locked evidence contract
 (`docs/design/combat_fun_evidence_contract.md` §4.4) requires the soccer
 tripwire to stay combat-disabled and to never be refreshed from a combat
-fixture; nothing in #59 touches `data/fun_baseline.lua`.
+fixture; nothing in #59 touches `gc_data::fun_baseline`.
 
 ### Why it exists
 
@@ -280,7 +335,8 @@ combat-disabled gameplay-AI **policy id** plus a common-seed **baseline** that
 
 ### The policy id
 
-`sim/outfield_ai_policy.lua` publishes the identity, e.g.
+`gc_sim::outfield_ai_policy` (pre-port: `sim/outfield_ai_policy.lua`) publishes
+the identity, e.g.
 
 ```text
 outfield_ai_policy/v1/combat_disabled/303228d776b65a19
@@ -290,8 +346,8 @@ It is `schema / schema version / combat mode / FNV-1a-64 of a canonical
 serialization`. What gets hashed is an explicitly **declared** surface —
 `outfield_ai_policy.SURFACE` plus the `AI`-category tuning defaults — not
 whatever happens to be in the AI modules. The surface covers five modules:
-`sim/outfield_decision.lua`, `sim/outfield_press.lua`, `sim/offball_runs.lua`,
-`sim/possession_transition.lua`, and `sim/ai.lua`, whose off-ball support
+`gc_sim::outfield_decision`, `gc_sim::outfield_press`, `gc_sim::offball_runs`,
+`gc_sim::possession_transition`, and `gc_sim::ai`, whose off-ball support
 weights (`IMPORTANCE_K`, `CENTER_SIGMA`, `LANE_WIDTH`, `LANE_BLOCK`) feed
 `offball_runs`' pass-lane scoring. Declaring the surface is what makes the id
 stable in both directions:
@@ -306,13 +362,13 @@ stable in both directions:
 A live tuning-panel nudge does **not** move the id: the policy is the shipped
 balance, so `knob.default` is hashed and `tuning.values` is not.
 
-Some genuinely behavioural constants stay file-local — `sim/ai.lua`'s
-intercept-sampling grid, `sim/offball_runs.lua`'s run-shape geometry,
-`sim/outfield_press.lua`'s contain and lane weights. Changing one of those
+Some genuinely behavioural constants stay file-local — `gc_sim::ai`'s
+intercept-sampling grid, `gc_sim::offball_runs`' run-shape geometry,
+`gc_sim::outfield_press`' contain and lane weights. Changing one of those
 moves the recorded metrics but not the id on its own. **Every** module in the
 surface therefore exposes a `VERSION` as the declared landing spot for such a
-change, and `sim/outfield_ai_policy.lua` asserts at load that each one exists
-and leads its field list, so the promise cannot quietly rot. A spec checks the
+change, and `gc_sim::outfield_ai_policy` asserts that each one exists
+and leads its field list, so the promise cannot quietly rot. A test checks the
 same thing. Bumping `VERSION` is how a file-local policy change is declared.
 
 Whether or not anyone remembers to bump it, behaviour that moves play is caught
@@ -320,8 +376,9 @@ by the metric signature below. It is never absorbed.
 
 ### The baseline artifact
 
-`data/outfield_ai_baseline.lua`, produced and verified by
-`sim/outfield_ai_baseline.lua`.
+`gc_data::outfield_ai_baseline::RECORD`
+(`rust/crates/gc-data/src/outfield_ai_baseline.rs`), produced and verified by
+`gc_sim::outfield_ai_baseline`.
 
 | Field | Value |
 | --- | --- |
@@ -346,20 +403,38 @@ and `seed_hash`. `signature` covers identity plus every recorded statistic.
 
 ### Commands
 
+**Today.** The verification is an ordinary Rust test — no CLI, no flag:
+
+```sh
+cd rust && cargo test -p gc-sim --test outfield_ai_baseline
+```
+
+`outfield_ai_baseline_reproduces_the_frozen_fixture_exactly` re-runs the
+fixture through `gc_sim::outfield_ai_baseline::measure` and compares it against
+the frozen `gc_data::outfield_ai_baseline::RECORD`, so it runs inside
+`cargo test --workspace` — gate 3 of `./scripts/check.sh`, which
+`.github/workflows/ci.yml`'s `gate` job invokes rather than mirroring, so the
+two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
+`outfield_ai_baseline::serialize` over a fresh `measure` and pasting the result
+over `rust/crates/gc-data/src/outfield_ai_baseline.rs`; the ceremony below is
+what the acknowledgement flag used to enforce, and it is now enforced by review
+rather than by an argument parser.
+
+**Pre-port**, for reading the history below:
+
 ```sh
 love . --ai-baseline                          # verify (exit 1 when a metric moved)
 love . --ai-baseline write --refreeze-ack     # deliberately re-freeze
 ```
 
 Both `./scripts/check.sh` and the `quality` job in `.github/workflows/ci.yml`
-run the verification. That CI job mirrors `check.sh` by hand, so a gate added
-to only one of them is a gate that does not run; `--ai-baseline` is also listed
-in `conf.lua`'s `headless_flags`, because this check belongs to the no-display
+ran the verification on that tree; `--ai-baseline` was also listed in
+`conf.lua`'s `headless_flags`, because this check belongs to the no-display
 tier of AGENTS.md §9 and must not try to open a GL context on a CI runner.
 
 ### The non-refresh rule
 
-**A failing `love . --ai-baseline` is a finding, not a chore.** #148 and #149
+**A failing baseline comparison is a finding, not a chore.** #148 and #149
 cite this artifact as their control, so refreshing it to go green destroys the
 only record that the control moved.
 
@@ -405,11 +480,253 @@ comparison, its technique and tactic comparisons, its constant sweeps, and its
 visual review all remain open. This section freezes the control those
 experiments — and #149's calibration — measure against.
 
-## Baseline drift log
+## Baseline drift log — every entry is pre-port (2026-07-08 to 2026-08-10)
 
-Sim changes move the baseline; re-run `love . --sim 100` after touching
-`sim/match.lua` and log meaningful shifts here (this is the manual tripwire
-until phase 4 automates it).
+The ritual still stands: a sim change that moves the fun signature owes a
+100-match validation and an entry here before the baseline is refreshed. The
+commands each entry cites are the deleted Lua CLI (see the banner at the top),
+and no entry has been re-measured on `gc-sim`. Every number below is the Lua
+tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
+
+- **2026-08-11 — the keeper's dive-timing/contact-point query replaces a
+  gravity-only quadratic with a real sampled trajectory (#486, sliced from
+  #490).** `crates/gc-sim/src/match.rs`'s `attempt_save` used to compute the
+  ball's height at the keeper's line as
+  `s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz` — a closed form that
+  never modeled the ground bounce, air drag, or the cage ceiling, and (for a
+  ball that has already landed) is not even bounded below zero. It now asks
+  `ball_prediction::BallPredictor::position_at_time`, an authoritative query
+  against the same `ball_flight::step` the live ball actually runs. A query
+  that cannot resolve inside `predict.max_horizon` (2.0s) — only reachable
+  for a shot decaying so close to `keeper::travel_time`'s own dead-ball
+  cutoff that `eta` is technically `Some` but implausibly large — defers the
+  commit rather than guessing; `attempt_save` runs every live tick and `tz`
+  only shrinks as the ball closes in, so the shot still resolves once it's
+  inside the horizon (`crates/gc-sim/tests/keeper_prediction.rs`).
+
+  This moved the `combat_disabled_control_a` baseline
+  (`gc_sim::outfield_ai_baseline`, seeds 20001..20060, n=60, paired: same
+  seeds, same fixture, before/after this change only):
+
+  | metric | before (v1) | after (v2) | delta |
+  | --- | --- | --- | --- |
+  | fun | 0.291774 | 0.283436 | -0.008338 |
+  | goals_total | 1.916667 | 1.750000 | -0.166667 |
+  | goals_home | 0.633333 | 0.633333 | +0.000000 |
+  | goals_away | 1.283333 | 1.116667 | -0.166667 |
+  | shots | 31.766667 | 32.200000 | +0.433333 |
+  | shots_per_goal | 19.656918 | 21.732390 | +2.075472 |
+  | save_rate | 0.892550 | 0.910569 | +0.018019 |
+  | passes | 32.633333 | 33.966667 | +1.333333 |
+  | pass_completion | 0.583350 | 0.570084 | -0.013266 |
+  | turnovers_per_min | 8.222948 | 8.258094 | +0.035146 |
+  | possession_balance | 0.544171 | 0.542468 | -0.001703 |
+  | longest_drought_s | 11.483333 | 11.718056 | +0.234722 |
+  | decided_late | 0.647152 | 0.596003 | -0.051148 |
+  | lead_changes | 0.100000 | 0.083333 | -0.016667 |
+  | margin | 1.116667 | 1.083333 | -0.033333 |
+  | duration | 113.612778 | 116.696667 | +3.083889 |
+
+  (`ai_dribble_*` and `ai_jukes` also moved; omitted here as noise
+  downstream of the same shots/possession shift, not evidence about the
+  keeper itself.)
+
+  **The direction is not what #487 wants, and that is reported here rather
+  than hidden.** #487 records `save_rate` at 0.82-0.89 against a healthy
+  band of 0.45-0.75 — already far too high — and asks a physically honest
+  keeper to plausibly move it. It did move, materially (+0.018, about 2% of
+  its own value), but *up*, away from the band, not down; `goals_total` fell
+  in step (-0.17) and `shots_per_goal` rose (+2.08). Balance tuning itself is
+  explicitly out of scope for this change (owned in parallel by #493's
+  tunable-registry work), so nothing here was adjusted to chase the band —
+  but the direction deserves an honest account rather than a shrug.
+
+  **Tested with the evidence contract's own instrument, not a bare
+  significance threshold.** An earlier draft of this entry used
+  `knob_contract`'s `NOISE_SIGMAS = 2.0` — a magnitude-only "is this knob
+  wired" threshold — and concluded "not a regression" from failing to clear
+  it. A statistics review caught the error:
+  `docs/design/combat_fun_evidence_contract.md:563-564` states outright that
+  *"'Not significant' is not evidence of non-inferiority or equivalence"*,
+  and that document's own §4.4 already carries a **preregistered**,
+  locked-before-this-change one-sided non-inferiority margin for `save rate`
+  (`95% upper bound B-A < +0.04; B absolute < 0.95`) and for `goals`
+  (`95% lower bound B-A > -0.10`). Re-run against those, not an invented
+  margin — reusing a real, already-locked instrument rather than choosing a
+  new margin after looking at the data, which is exactly what a NI test is
+  supposed to prevent.
+
+  **The structural argument comes first — this is a proof for its subcase,
+  not a sample, and it is scoped honestly: it covers the grounded/landed
+  case, not every case.** For a grounded or already-landed ball
+  (`ball_z <= 0, ball_vz <= 0`, true of every candidate this fixture's shots
+  reach), the deleted formula `old_z = ball_z + ball_vz*tz -
+  0.5*GRAVITY*tz*tz` is strictly decreasing and unbounded below in `tz`: it
+  never models the ground bounce, so once the real ball has landed, `old_z`
+  keeps falling through the floor while the real trajectory settles or
+  bounces back up, meaning `old_z <= z_real` for every `tz` past landing.
+  The on-target check (`z_cross < CROSSBAR && z_cross <= KEEPER_AIR_GRAB`)
+  is upper-bound-only, so `old_z <= z_real` implies `new_on_target =>
+  old_on_target` — for this subcase, the deleted formula can only ever be
+  wrongly *permissive*, never wrongly restrictive. **This is a proof for the
+  landed subcase specifically, not a universal guarantee.** The pre-bounce,
+  still-rising or still-falling-but-not-yet-landed case is a different
+  shape (`old_z` and the live discrete step both integrate the same pure
+  gravity, so they track each other up to the `+0.5 * GRAVITY * dt * t`
+  discretization bias discussed further down) and is argued informally
+  there, not folded into this formal claim. `keeper_shadow_classifier.rs`'s
+  frozen-fixture `new_only == 0` (0 of 9,376 candidates go the other way)
+  is empirical confirmation covering both cases as this fixture happens to
+  exercise them, not a substitute for extending the proof itself.
+
+  **The classifier, now committed and pinned
+  (`crates/gc-sim/tests/keeper_shadow_classifier.rs`).** Every candidate save
+  evaluation on the official 60-seed fixture, real `attempt_save` logic,
+  deleted formula computed alongside (never read for a decision):
+  9,376 candidates — 3,105 `agree_true`, 6,021 `agree_false`, 227
+  `disagree_deferred` (old says on target, the query hadn't resolved yet —
+  resolves into an identical real commit one tick later almost every time,
+  per `keeper_prediction.rs`'s constructed case), 23 `disagree_height` (old
+  says on target, the resolved real height says otherwise — the failure mode
+  #486 names, directly measured), 0 `new_only`. Per-match: 6/60 matches touch
+  `disagree_height`, 25/60 touch `disagree_deferred`, 30/60 (50%) touch
+  either.
+
+  **Byte-identical reconciliation (this was previously asserted, not shown
+  — the arithmetic).** 43/60 (72%) matches are byte-identical between old
+  and new code on the paired run below; 17/60 (28%) differ. If only
+  `disagree_height` caused divergence, "touched" would be 6/60 (10%),
+  nowhere near 28%. Folding in `disagree_deferred` reaches 30/60 (50%) —
+  on the correct side of 28% to explain it, since a one-tick RNG-stream
+  shift (which is what a `disagree_deferred` episode resolving one tick
+  later than the old formula would have IS) cascades into a different state
+  hash for the rest of a deterministic match without changing anything a
+  viewer would call different, and not every such cascade need move the
+  final rounded `save_rate`/`goals_total` pair. Deferred episodes, not
+  disagreement episodes, are the dominant driver of the split — confirming
+  what the review flagged, not what the earlier draft implied.
+
+  **Non-inferiority results, paired, both seed blocks (control arm: the
+  deleted formula bypassed in place, per the recipe below):**
+
+  | metric | block | n | paired Δ (B-A) | SE | one-sided 95% bound | margin | NI verdict | approx. MDE (80% power) |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | save_rate | official 20001..20060 | 60 | +0.0180 | 0.0109 | upper +0.0362 | < +0.04 | **passes** | 0.030 |
+  | save_rate | supplementary 50001..50200 | 200 | -0.0025 | 0.0027 | upper +0.0019 | < +0.04 | **passes** | 0.008 |
+  | goals_total | official 20001..20060 | 60 | -0.1667 | 0.0895 | lower -0.3162 | > -0.10 | **fails** (inconclusive) | 0.251 |
+  | goals_total | supplementary 50001..50200 | 200 | +0.0800 | 0.0508 | lower -0.0040 | > -0.10 | **passes** | 0.142 |
+
+  MDE convention: `Δ ± (z_0.975 + z_0.80) · SE ≈ 2.80 · SE` — a **two-sided**
+  z at 80% power (`1.96 + 0.84`), not the one-sided `1.645 + 0.84 ≈ 2.49`
+  more usual for an NI test's own MDE. The two-sided choice is the more
+  conservative of the two (it reports a slightly larger, harder-to-clear
+  MDE); it changes no verdict above, but is named here so the number does
+  not need reverse-engineering.
+
+  `save_rate` clears the repository's own preregistered harm bound on BOTH
+  blocks — the one-sided 95% bound stays under +0.04 even on the least
+  favorable evidence available, and the B-absolute catastrophe floor
+  (`<0.95`; measured 0.9106 / 0.9076) holds on both too. That is a genuinely
+  strong claim, not a power statement: save_rate is non-inferior to the old
+  code by this repository's own standard.
+
+  `goals_total` does **not** clear its margin on the official 60-seed block
+  alone — the 95% lower bound (-0.316) sits well below the -0.10 harm
+  floor, so that evidence cannot rule out a real drop. It does clear on the
+  200-seed block. Read together with the MDE column: at n=60 the smallest
+  goals_total shift this test could reliably resolve is ≈0.25 goals/match,
+  well above the classifier's own bound on the mechanism's size (23
+  `disagree_height` candidates, touching 6/60 matches, only 2 tied to a goal
+  within 3s) — so the honest reading is **underpowered on the official
+  block, not evidence of harm**, corroborated by the 200-seed block not
+  reproducing any drop at all.
+
+  **The asymmetry between the two verdicts is the load-bearing fact here,
+  and it is worth stating on its own rather than leaving it implicit in the
+  MDE column.** `save_rate`'s NI test is **adequately powered**: its MDE
+  (0.030 at 60 seeds, 0.008 at 200) sits *below* the `0.04` margin on both
+  blocks, so this test could actually have detected harm near the boundary
+  and did not — the pass is a real result about the metric, not an artifact
+  of a test too weak to fail. `goals_total`'s NI test is **structurally
+  underpowered**: its MDE (0.251 at 60 seeds, 0.142 at 200) is 1.4-2.5×
+  its own `0.10` margin, so it could not have confirmed harm-free even in
+  principle at either sample size — the failure on the 60-seed block is
+  uninformative about whether a real effect exists, not evidence that one
+  does. Read side by side, "one metric passed, one failed" is the wrong
+  takeaway; the honest one is "one test could answer its question, the
+  other could not."
+
+  **No multiplicity correction applied** across the 2 metrics × 2 blocks
+  above, unlike the evidence contract's own Holm-adjusted procedure for its
+  full metric family. Naming it rather than silently borrowing only the
+  favorable parts of the contract's machinery: a correction would only make
+  the already-failing goals_total/official-block row harder to pass, not
+  easier, so it does not change which claims are made above, but a reader
+  should not read "two blocks, two metrics, mostly passing" as a formally
+  adjusted family result.
+
+  **Conclusion.** `save_rate` is non-inferior to the old formula against
+  this repository's own preregistered margin, confirmed on two independent
+  seed blocks — that claim is made without qualification. `goals_total` is
+  **not** confirmed non-inferior on the official 60-seed block by itself;
+  the honest statement there is "no shift detected at this sample size,
+  and the sample is underpowered to detect a shift this mechanism's own
+  measured rate could plausibly produce" — a power statement, not a
+  null-effect statement, and not "not a regression." The mechanism itself
+  (§ above) is real, structurally one-directional, and directly measured;
+  whether it moves `goals_total` at population scale remains open at n=60
+  and is not supported by the 200-seed block either. Nothing here was tuned
+  to make any number look better.
+
+  A second, smaller, mechanistically distinct effect exists: for a ball
+  already in flight, the deleted formula and the live step function agree
+  exactly on ballistic height *except* for the discretization gap between a
+  continuous quadratic and the 60Hz semi-implicit Euler `ball_flight::step`
+  actually runs (before any bounce), a `+0.5 * GRAVITY * dt * t` systematic
+  *upward* bias in the live/predicted height relative to the old formula. It
+  pushes in the opposite direction from the bounce mechanism above (some
+  genuinely-in-flight shots read as *less* reachable, now correctly) and is
+  folded into the same results above.
+
+  **Control-arm recipe, for reproducing the paired rows above.** Bypass the
+  predictor in `attempt_save` in place (uncommitted; restore before
+  committing anything else): replace the `let Some(sample) = ...else {
+  ...continue; }; let z_cross = sample.z;` block with
+  `let z_cross = s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz;` —
+  i.e. the exact line this PR deletes, fed the same `tz` the real code
+  computes. Run `outfield_ai_baseline::measure`/`headless::run_batch` with
+  the fixture's declared options against both the bypassed tree and the real
+  one, on the same seeds, and pair per seed. This is mechanically
+  unambiguous from the diff (`crates/gc-sim/src/match.rs`'s `feat` commit
+  shows exactly the line removed) even though the bypass itself is never
+  committed — the classifier above is the committed, re-derivable half of
+  this investigation; the paired significance table is the uncommitted half,
+  reproducible from this recipe.
+
+  Re-frozen as `baseline_version = 2`
+  (`crates/gc-data/src/outfield_ai_baseline.rs`), measured with
+  `gc_sim::outfield_ai_baseline::measure(&MeasureOpts { baseline_version:
+  Some(2), ..MeasureOpts::default() })` and pasted via `::serialize` per
+  that module's own re-freeze protocol (this repository still has no runner
+  that drives the re-run automatically).
+
+  **Landed on top of #487's identity-only re-pin, carrying both effects.**
+  #487 (the tunable registry, merged as `ded59d2`) added `PASS_RANGE_MIN` to
+  the shipped knob set and re-pinned `tuning_hash`/`fixture_hash`/`signature`
+  for that reason alone — `baseline_version` stayed `1`, and every recorded
+  stat reproduced bit-for-bit, because #487 changed no default's value.
+  Rebasing this change onto that merged head conflicts on the same three
+  identity fields `#487` touched, since both re-pins write `signature`.
+  Re-running `measure`+`serialize` against the merged head (rather than
+  hand-resolving the conflict toward either side) picks up both effects at
+  once: `tuning_hash`/`fixture_hash` land on #487's post-registry values
+  (`815f8929cfce068e` / `483fe1d1297befc1` — identical to what #487 itself
+  recorded, confirmed by diffing this recording's stats block against the
+  pre-rebase one: byte-for-byte identical except `signature`, which is
+  derived from identity and so moves whenever identity does) *and* every
+  stat reflects this change's real keeper-behavior shift. `baseline_version`
+  moves straight from `1` to `2` — #487's re-pin never got its own recorded
+  version bump, so there is no `1.5` to pass through.
 
 - **2026-08-10 — a keeper's dive ends when it takes possession (#450).**
   `dive_timer` used to outlive the catch, so on the tick a keeper released the

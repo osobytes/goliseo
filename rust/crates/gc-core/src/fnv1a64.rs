@@ -54,6 +54,19 @@ impl Fnv1a64State {
     pub fn hex(&self) -> String {
         format!("{:016x}", self.0)
     }
+
+    /// The raw accumulated state, with no string round trip.
+    ///
+    /// For a caller that wants the `u64` and nothing else -- a cache key, a
+    /// fingerprint compared with `==` -- `hex()` followed by
+    /// `u64::from_str_radix` is a `String` allocation and a parse to recover
+    /// a value this type already holds. `finish()` is that shortcut: same
+    /// bits `hex()` would render, zero allocation, named after
+    /// `std::hash::Hasher::finish` for the same reason that method exists.
+    #[must_use]
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 /// One-shot FNV-1a-64 hash of `bytes`, rendered as lowercase hex.

@@ -1,5 +1,13 @@
 # OMP-3 manual-connect lobby
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 The lobby is the developer-facing route that turns the
 [session protocol](session_protocol.md), the
 [coordinator](session_coordinator.md), and the
@@ -15,10 +23,10 @@ ownership invariant, no readiness barrier, and no countdown.
 
 | Module | Purity | Responsibility |
 | --- | --- | --- |
-| `game.screens.lobby_model` | pure | Session state, commands, effects, and the derived view. |
-| `game.screens.lobby` | pure | `layout` / `update` over the model, per AGENTS.md §9. |
-| `game.screens.online_lobby` | impure | Owns the star, the clipboard, the tick clock, and drawing. |
-| `game.online.lobby_link` | impure | Control-wire framing and the manual signaling handshake. |
+| `@gc/screens`' `lobby_model.ts` | pure | Session state, commands, effects, and the derived view. |
+| `@gc/screens`' `lobby.ts` | pure | `layout` / `update` over the model, per AGENTS.md §9. |
+| `@gc/screens`' `online_lobby.ts` | impure | Owns the star, the clipboard, the tick clock, and drawing. |
+| `@gc/online`'s `lobby_link.ts` | impure | Control-wire framing and the manual signaling handshake. |
 
 `lobby_model.command(model, command)` returns a fresh model and an ordered list
 of effects. Effects are the only way the lobby touches the world: `open_star`,
