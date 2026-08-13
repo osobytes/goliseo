@@ -69,16 +69,30 @@
 //   site vanishes, not just a hypothetical one -- so it gets two independent
 //   defenses, not one. First, `stripCommentsAndStrings` blanks `//` line
 //   comments and `"..."` string-literal content before any brace is counted,
-//   so the shape review actually found (a stray `{`/`}` sitting inside a
+//   so the shape review first found (a stray `{`/`}` sitting inside a line
 //   comment) cannot perturb the count. It does NOT strip raw strings
 //   (`r"..."`, `r#"..."#`), byte strings, char literals, or `/* block */`
 //   comments -- second defense: if depth has not returned to 0 by the next
-//   line that looks like another top-level `fn` (same or lesser indentation
-//   as the exempt function's own declaration), that is a hard failure, never
-//   "the body must just be long". So an unhandled construct still cannot
-//   silently widen the exemption into the next function -- it just fails
-//   loudly instead of being stripped away quietly. A parse that finds zero
-//   `.rs` files, or that cannot locate `noise_floor`'s body at all (for
+//   line that looks like ANY `fn` declaration, AT ANY INDENTATION, that is a
+//   hard failure, never "the body must just be long". This has no ceiling on
+//   purpose: an earlier version bounded it to "same or lesser indentation
+//   than the exempt function's own declaration", reasoning that a NESTED
+//   `fn` (deeper indentation) was presumably a legitimate inner item and
+//   should not trip it -- review then found a compensating pair of stray
+//   char literals (`'{'` at the exempt function's own indentation, `'}'`
+//   nested four spaces deeper inside a sibling method in the next `impl`
+//   block) that landed brace depth on that DEEPER function's real closing
+//   brace, so the ceiling let the widened exemption through in total
+//   silence: `sites=0`, no error. The ceiling is gone. The residual cost is
+//   real, not hypothetical: a `fn` legitimately nested inside the exempt
+//   function's own body now also trips this and forces a hard fail, same as
+//   an unhandled construct would. That is accepted on purpose -- it costs a
+//   reviewer a moment to special-case, a silent pass costs the audit its
+//   purpose entirely, and `noise_floor`/its allowlisted callers do not nest
+//   functions today. So an unhandled construct, at any nesting depth,
+//   cannot silently widen the exemption into the next function -- it just
+//   fails loudly instead of being stripped away quietly. A parse that finds
+//   zero `.rs` files, or that cannot locate `noise_floor`'s body at all (for
 //   either reason above), is a hard error, never a quiet pass.
 //
 //   node scripts/check_unstated_knob_shift.mjs                 -- check this repo
@@ -283,14 +297,19 @@ function stripCommentsAndStrings(line) {
 // `text`, found by counting braces -- over comment- and string-stripped text,
 // see `stripCommentsAndStrings` -- from its `fn` declaration line. Not a real
 // parser -- see the header's "FRAGILITY, STATED HONESTLY". Bounded: if the
-// brace depth has not returned to 0 by the next line that looks like another
-// top-level `fn` (same or lesser indentation than `fnName`'s own
-// declaration), that is treated as a parse failure, not as "the body must
-// just be long" -- this is what stops an unhandled construct (a block
-// comment, a raw string) from silently widening the exemption into a second
-// function. Returns `null` if the function cannot be found, its braces never
-// balance, or that boundary is crossed; callers must treat `null` as a hard
-// failure, never as "found nothing to exempt".
+// brace depth has not returned to 0 by the next line that looks like ANY
+// `fn` declaration, at ANY indentation, that is treated as a parse failure,
+// not as "the body must just be long" -- this is what stops an unhandled
+// construct (a block comment, a raw string, a char literal) from silently
+// widening the exemption into a second function, at any nesting depth, not
+// just a sibling top-level one. No indentation ceiling: a legitimately
+// nested `fn` declared inside `fnName`'s own body would also trip this and
+// force a hard fail rather than being exempted -- an intentional trade, the
+// same one the rest of this function already makes, because a hard fail
+// costs a reviewer a moment and a silent pass costs the audit its purpose.
+// Returns `null` if the function cannot be found, its braces never balance,
+// or that boundary is crossed; callers must treat `null` as a hard failure,
+// never as "found nothing to exempt".
 function functionBodyLineRange(text, fnName) {
   const lines = text.split("\n");
   const declRe = new RegExp(`\\bfn\\s+${fnName}\\s*\\(`);
@@ -303,20 +322,16 @@ function functionBodyLineRange(text, fnName) {
   }
   if (startLine === -1) return null;
 
-  const startIndent = lines[startLine].match(/^\s*/)[0].length;
-
   let depth = 0;
   let opened = false;
   for (let i = startLine; i < lines.length; i += 1) {
-    if (i > startLine) {
-      const indent = lines[i].match(/^\s*/)[0].length;
-      if (indent <= startIndent && FN_DECL_RE.test(lines[i])) {
-        // Another top-level `fn` reached before our own braces balanced --
-        // the count is off (an unhandled comment/string construct, almost
-        // certainly), and continuing would exempt straight into this next
-        // function's body. Refuse rather than guess.
-        return null;
-      }
+    if (i > startLine && FN_DECL_RE.test(lines[i])) {
+      // Another `fn` declaration reached before our own braces balanced --
+      // the count is off (an unhandled comment/string/char-literal
+      // construct, almost certainly), and continuing would exempt straight
+      // into this next function's body, at whatever depth it sits. Refuse
+      // rather than guess, regardless of its indentation relative to ours.
+      return null;
     }
     for (const ch of stripCommentsAndStrings(lines[i])) {
       if (ch === "{") {
@@ -756,36 +771,101 @@ fn locomotion_top_speed_moves_sprint_distance() {
     }
   }
 
-  // BLOCKING FINDING 2 (PR #511 review): a stray brace hidden inside a
-  // `/* block comment */` -- a construct stripCommentsAndStrings does not
-  // recognize, see FRAGILITY, STATED HONESTLY -- must never let the
-  // exemption's brace count silently rebalance inside the NEXT function. It
-  // must hard-fail at the top-level `fn` boundary instead. Before that fix,
-  // this fixture's exemption silently widened past noise_floor's real end
-  // and into knob_moves_metric, swallowing whatever sat there.
+  // BLOCKING FINDING 2 (PR #511 review). A single, UNCOMPENSATED stray brace
+  // does not discriminate this fix from its absence: with nothing to
+  // rebalance it, depth never returns to 0 for the rest of the file either
+  // way, so even the ORIGINAL pre-fix code (no stripping, no boundary check
+  // at all) falls off the end of the loop and returns `null` -- the same
+  // "could not locate noise_floor's function body" a correct fix produces,
+  // for an entirely different reason. That fixture used to live here and
+  // passed against both. The shape that actually separates them is a
+  // COMPENSATING PAIR: one stray `{` in a `/* block comment */` inside
+  // `noise_floor` (block comments are not stripped, see FRAGILITY, STATED
+  // HONESTLY), one stray `}` in a block comment inside `knob_moves_metric`'s
+  // real content -- chosen so the extra +1/-1 cancel out and depth lands
+  // EXACTLY on `knob_moves_metric`'s own true closing brace. Against the
+  // original pre-fix code this reads as a perfectly balanced (wrongly
+  // widened) exemption: no error, a smuggled call site inside
+  // `knob_moves_metric` silently vanishes, `sites=0`. Against the current
+  // boundary check, `knob_moves_metric`'s declaration line is reached while
+  // depth is still 1 (not 0, from the first stray brace), which fires the
+  // boundary immediately, before the compensating brace is ever read.
   {
-    const braceInComment = new Map(files);
-    braceInComment.set(
-      KNOB_CONTRACT_SRC,
-      FIXTURE_KNOB_CONTRACT_SRC.replace(
-        "    let opts = KnobMoveOpts {",
-        "    /* a stray brace hides in this block comment: { */\n    let opts = KnobMoveOpts {",
-      ),
+    // Isolated to KNOB_CONTRACT_SRC alone (not `files`, which also carries
+    // the unrelated tests file and its 2 always-legitimate call sites) --
+    // otherwise a comparison against pre-fix code reads noise from those
+    // unrelated sites instead of the exemption's own silent widening.
+    const compensatingBracesText = FIXTURE_KNOB_CONTRACT_SRC.replace(
+      "    let opts = KnobMoveOpts {",
+      "    /* a stray brace hides in this block comment: { */\n    let opts = KnobMoveOpts {",
+    ).replace(
+      "pub fn knob_moves_metric(opts: &KnobMoveOpts) -> Outcome {",
+      "pub fn knob_moves_metric(opts: &KnobMoveOpts) -> Outcome {\n" +
+        '    let smuggled = KnobMoveOpts { knob: "SMUGGLED_BLOCK", metric: "m", expect: ExpectedShift::Unstated };\n' +
+        "    /* a compensating stray brace hides here: } */",
     );
-    if (braceInComment.get(KNOB_CONTRACT_SRC) === FIXTURE_KNOB_CONTRACT_SRC) {
+    const compensatingBraces = new Map([[KNOB_CONTRACT_SRC, compensatingBracesText]]);
+    if (compensatingBracesText === FIXTURE_KNOB_CONTRACT_SRC) {
       console.error(
-        "FAIL: the brace-in-comment fixture edit did not change anything -- the scenario no longer reproduces the shape",
+        "FAIL: the compensating-brace-pair fixture edit did not change anything -- the scenario no longer reproduces the shape",
       );
       ok = false;
     } else {
       ok =
         expectRed(
-          "a stray brace in a comment cannot widen the exemption past the next function",
-          braceInComment,
-          FIXTURE_ALLOWLIST,
+          "a compensating stray-brace pair across two block comments cannot widen the exemption into the next function",
+          compensatingBraces,
+          [],
           /could not locate noise_floor's function body/,
         ) && ok;
     }
+  }
+
+  // BLOCKING FINDING 1, SECOND REVIEW ROUND (PR #511). The boundary check
+  // used to fire only for a next `fn` at the SAME OR LESSER indentation as
+  // the exempt function's own declaration, on the theory that a deeper
+  // indentation meant a legitimately nested item. Review then built a
+  // compensating pair of stray CHAR LITERALS -- `'{'` in `noise_floor` at
+  // indentation 0, `'}'` inside a sibling method nested four spaces deeper
+  // in the NEXT `impl` block -- and depth landed exactly on that impl
+  // block's real closing brace: the ceiling let it through in total
+  // silence, `sites=0`, no error. Not reachable in today's FLAT
+  // knob_contract.rs, but that file is about to grow -- seeded knobs in
+  // #488-#491 will very plausibly land inside an `impl` block. The ceiling
+  // is gone (see FRAGILITY, STATED HONESTLY); this fixture proves the
+  // boundary now fires regardless of the next `fn`'s indentation, so a
+  // smuggled call site nested inside that impl block is no longer hidden.
+  {
+    const nestedImplFixture = `
+//! fixture: gc_sim::knob_contract
+pub enum ExpectedShift { Increases, Decreases, Unstated }
+
+pub fn noise_floor(metric: &'static str, seeds: &[f64]) -> NoiseFloor {
+    let opts = KnobMoveOpts {
+        knob: "",
+        metric,
+        expect: ExpectedShift::Unstated,
+    };
+    let stray_open = '{'; // a stray char literal brace
+    measure(&opts)
+}
+
+pub struct Foo;
+impl Foo {
+    pub fn nested_method(&self) -> bool {
+        let smuggled = KnobMoveOpts { knob: "SMUGGLED_NESTED", metric: "m", expect: ExpectedShift::Unstated };
+        let stray_close = '}'; // a compensating stray char literal brace
+        true
+    }
+}
+`;
+    ok =
+      expectRed(
+        "a compensating char-literal brace pair cannot widen the exemption into a nested impl block, regardless of indentation",
+        new Map([[KNOB_CONTRACT_SRC, nestedImplFixture]]),
+        [],
+        /could not locate noise_floor's function body/,
+      ) && ok;
   }
 
   if (!ok) {
