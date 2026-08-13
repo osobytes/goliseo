@@ -186,16 +186,17 @@ fn determinism_evidence_migrates_only_wires_that_were_canonical_within_the_v1_bo
 }
 
 /// The campaign's **gated** half: the fixture still replays deterministically
-/// to its pinned hashes, and still covers the four headline behaviors it is
-/// evidence of.
+/// to its pinned hashes. After #512 that is all of it — the hash chain is the
+/// one thing this campaign gates on.
 ///
-/// What this test deliberately no longer asserts (#505, decision recorded on
-/// the issue): the score, the event counts and the per-window event ticks.
-/// Those are read off `result` and printed below rather than compared, so a
-/// gameplay rework can move them without failing a determinism test that has
-/// nothing to do with determinism. The reporting that replaces them is
-/// exercised by the three `the_behavioral_drift_report_*` tests, and surfaced
-/// to humans by `scripts/check.sh`'s determinism gate and
+/// What this test deliberately no longer asserts: the score, the event counts
+/// and the per-window event ticks (#505), and the coverage set (#512), each by
+/// a decision recorded on its issue. Those are read off `result` and printed
+/// below rather than compared, so a gameplay rework can move them without
+/// failing a determinism test that has nothing to do with determinism. The
+/// reporting that replaces them is exercised by the four
+/// `the_behavioral_drift_report_*` tests, and surfaced to humans by
+/// `scripts/check.sh`'s determinism gate and
 /// `ts/packages/wasm/src/determinism.spec.ts`.
 #[test]
 fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence_command() {
@@ -203,25 +204,20 @@ fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence
     let result = determinism_evidence::verify(&tune).expect("the frozen OMP-1 fixture reproduces");
     assert_eq!(result.ticks, 7201);
     assert_eq!(result.boundaries, 7202);
-    assert!(!result.coverage.goal_kickoff);
-    assert!(result.coverage.tackle);
-    assert!(result.coverage.aerial);
-    assert!(result.coverage.keeper);
-    assert!(result.coverage.full_time);
 
-    // As recorded, and as reproduced by this build: 1-0 home; 147 tackles,
-    // 180 touches, 2 headers, 1 catch; tackle at tick 24, catch at 1692,
-    // header at 1788, full time at 7200. Printed rather than asserted — if a
-    // gameplay change moved these, that is the demotion working. Restate the
-    // new values here and say why in the PR that moves them.
+    // As recorded, and as reproduced by this build: coverage
+    // tackle/aerial/keeper/full_time (never goal_kickoff — the only goal is
+    // the home side's); 1-0 home; 147 tackles, 180 touches, 2 headers, 1
+    // catch; tackle at tick 24, catch at 1692, header at 1788, full time at
+    // 7200. Printed rather than asserted — if a gameplay change moved these,
+    // that is the demotion working. Restate the new values here and say why in
+    // the PR that moves them.
     let report = determinism_evidence::report(&result);
     println!("{report}");
     println!(
         "drift vs the frozen recording: {}",
         determinism_evidence::render_drift(&result.drift)
     );
-    assert!(report.contains("coverage=tackle,aerial,keeper,full_time"));
-    assert!(!report.contains("coverage=goal_kickoff"));
 
     // The reported half must be *present*. It cannot be shown *observed* here:
     // on an unperturbed tree `result.observed` equals the fixture's own frozen
@@ -230,6 +226,10 @@ fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence
     // `the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures`
     // below exists for — do not weaken it into this test.
     assert!(report.contains("|drift="));
+    assert!(report.contains(&format!(
+        "|coverage={}|",
+        determinism_evidence::coverage_list(&result.observed.coverage)
+    )));
     assert!(report.contains(&format!(
         "|score={}-{}|",
         result.observed.score_home, result.observed.score_away
@@ -261,6 +261,10 @@ fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence
 #[test]
 fn the_behavioral_drift_report_names_a_moved_score_and_event_count() {
     let recorded = determinism_evidence::BehaviorClaims {
+        coverage: determinism_evidence::DeterminismCoverage {
+            tackle: true,
+            ..Default::default()
+        },
         score_home: 1,
         score_away: 0,
         event_counts: [("tackle".to_string(), 147), ("touch".to_string(), 180)]
@@ -295,6 +299,7 @@ fn the_behavioral_drift_report_names_a_moved_score_and_event_count() {
 #[test]
 fn the_behavioral_drift_report_names_a_gained_and_a_lost_event_kind() {
     let recorded = determinism_evidence::BehaviorClaims {
+        coverage: Default::default(),
         score_home: 1,
         score_away: 0,
         event_counts: [("catch".to_string(), 1)].into_iter().collect(),
@@ -313,14 +318,15 @@ fn the_behavioral_drift_report_names_a_gained_and_a_lost_event_kind() {
 }
 
 /// A window whose event moved, and one whose event never fired at all. The
-/// second case is the one that matters: `verify_window` still fails a window
-/// that lost its event entirely (that is coverage, and it stays gated), so a
-/// `none` here can only come from the reporter being handed an incomplete
-/// observation — which is exactly the silent-report failure this test exists
-/// to catch.
+/// second case is the one that matters, and #512 made it load-bearing:
+/// `verify_window` used to return `Err` for a window that lost its event
+/// entirely, so this rendering was unreachable from a real campaign. It is now
+/// the *only* thing that tells a reader the aerial window stopped containing a
+/// header, which is precisely the drift a 0.45% locomotion change produces.
 #[test]
 fn the_behavioral_drift_report_names_a_moved_window_event_tick() {
     let recorded = determinism_evidence::BehaviorClaims {
+        coverage: Default::default(),
         score_home: 1,
         score_away: 0,
         event_counts: std::collections::BTreeMap::new(),
@@ -348,6 +354,147 @@ fn the_behavioral_drift_report_names_a_moved_window_event_tick() {
     );
 }
 
+/// A headline behavior the recording covered and this build does not, and one
+/// it did not cover and this build does, are both named.
+///
+/// This is the reporting that replaces the `Err("fixture did not cover
+/// {name}")` loop #512 deleted from `finish_campaign`, so it is the thing that
+/// has to be demonstrated working. Delete the coverage comparison from
+/// `behavioral_drift` and only this test goes red: a campaign on a green tree
+/// observes exactly the recording's coverage, so a build that compares
+/// coverage and one that ignores it render byte-identical lines there.
+#[test]
+fn the_behavioral_drift_report_names_a_lost_and_a_gained_headline_behavior() {
+    let recorded = determinism_evidence::BehaviorClaims {
+        coverage: determinism_evidence::DeterminismCoverage {
+            tackle: true,
+            keeper: true,
+            aerial: true,
+            goal_kickoff: false,
+            full_time: true,
+        },
+        score_home: 1,
+        score_away: 0,
+        event_counts: std::collections::BTreeMap::new(),
+        window_event_ticks: Default::default(),
+    };
+    assert!(determinism_evidence::behavioral_drift(&recorded, &recorded).is_empty());
+
+    // Exactly the shape a locomotion change produces on this fixture: the
+    // frozen presses stop connecting, so the header disappears; and a build
+    // that scores at the other end gains the goal/kickoff the recording never
+    // had.
+    let observed = determinism_evidence::BehaviorClaims {
+        coverage: determinism_evidence::DeterminismCoverage {
+            aerial: false,
+            goal_kickoff: true,
+            ..recorded.coverage
+        },
+        ..recorded.clone()
+    };
+    let drift = determinism_evidence::behavioral_drift(&recorded, &observed);
+    assert_eq!(
+        determinism_evidence::render_drift(&drift),
+        "coverage.goal_kickoff:absent->covered;coverage.aerial:covered->absent"
+    );
+    assert_eq!(drift[1].claim, "coverage.aerial");
+    assert_eq!(drift[1].recorded, "covered");
+    assert_eq!(drift[1].observed, "absent");
+}
+
+/// Each behavior of the recorded coverage claim is read off the frozen field
+/// it names — one field zeroed at a time, because the resolved set cannot tell
+/// the derivations apart.
+///
+/// This is the shape the first draft of this test got wrong, and it is worth
+/// the comment. Asserting `recorded.keeper == (event_counts["catch"] > 0)`
+/// looks like it pins the derivation and pins nothing: every count in this
+/// recording is non-zero, so `catch`, `header` and `tackle` all resolve to
+/// `true`, and swapping which one `keeper` reads leaves the assertion, the
+/// rendered `coverage_list`, and every other test in this file green. It was
+/// measured staying green under exactly that mutation. Only removing a frozen
+/// field separates them.
+///
+/// The derivation is also the one part of `fixture_claims().coverage` a
+/// campaign cannot check at all: on a green tree the recording's coverage and
+/// the run's are equal by construction. (That `fixture_claims` reads the
+/// *recording* rather than the run is guaranteed by its type, not by a test:
+/// it takes no campaign and can see none.)
+#[test]
+fn the_recorded_coverage_claim_reads_each_behavior_off_its_own_frozen_field() {
+    let fixture = omp1_determinism::fixture();
+    let full = determinism_evidence::fixture_coverage(fixture);
+
+    assert_eq!(
+        full,
+        determinism_evidence::fixture_claims().coverage,
+        "fixture_claims must carry the coverage derived from the frozen fixture"
+    );
+    assert_eq!(
+        determinism_evidence::coverage_list(&full),
+        "tackle,aerial,keeper,full_time",
+        "the frozen recording's own coverage set"
+    );
+
+    // A count present but zero, and a count absent entirely, are both "this
+    // behavior did not occur" — the two ways an event kind can fall out of a
+    // recording.
+    let zeroed = |kind: &str| {
+        let mut probe = fixture.clone();
+        probe.event_counts.insert(kind.to_string(), 0);
+        determinism_evidence::fixture_coverage(&probe)
+    };
+    let removed = |kind: &str| {
+        let mut probe = fixture.clone();
+        probe.event_counts.remove(kind);
+        determinism_evidence::fixture_coverage(&probe)
+    };
+
+    assert_eq!(
+        zeroed("tackle"),
+        determinism_evidence::DeterminismCoverage {
+            tackle: false,
+            ..full
+        }
+    );
+    assert_eq!(
+        removed("catch"),
+        determinism_evidence::DeterminismCoverage {
+            keeper: false,
+            ..full
+        }
+    );
+    assert_eq!(
+        zeroed("header"),
+        determinism_evidence::DeterminismCoverage {
+            aerial: false,
+            ..full
+        }
+    );
+
+    // The two behaviors with no event kind of their own.
+    let mut probe = fixture.clone();
+    probe.windows.retain(|window| window.name != "full_time");
+    assert_eq!(
+        determinism_evidence::fixture_coverage(&probe),
+        determinism_evidence::DeterminismCoverage {
+            full_time: false,
+            ..full
+        }
+    );
+
+    let mut probe = fixture.clone();
+    probe.expected_score.away = 1;
+    assert_eq!(
+        determinism_evidence::fixture_coverage(&probe),
+        determinism_evidence::DeterminismCoverage {
+            goal_kickoff: true,
+            ..full
+        },
+        "the recorded goal/kickoff claim follows the recorded away score"
+    );
+}
+
 /// Extract one `name=value` field from a rendered `GC_DETERMINISM` line, so
 /// the assertions below compare whole field values rather than hunting for
 /// substrings that a neighbouring field could satisfy.
@@ -358,6 +505,29 @@ fn report_field(report: &str, name: &str) -> String {
         .find_map(|part| part.strip_prefix(prefix.as_str()))
         .unwrap_or_else(|| panic!("the report must carry a {name}= field"))
         .to_string()
+}
+
+/// A `DeterminismEvidenceResult` carrying `observed` as this run's observation
+/// and the drift it produces against `frozen`. Everything a campaign would
+/// otherwise have to run 7,201 ticks to produce; `report` is pure over its
+/// argument and every field is `pub`, so it costs no campaign.
+fn reported_result(
+    frozen: &determinism_evidence::BehaviorClaims,
+    observed: &determinism_evidence::BehaviorClaims,
+) -> determinism_evidence::DeterminismEvidenceResult {
+    determinism_evidence::DeterminismEvidenceResult {
+        fixture_id: "test-only".to_string(),
+        ticks: 7201,
+        boundaries: 7202,
+        final_hash: "0".to_string(),
+        sequence_digest: "0".to_string(),
+        score_home: observed.score_home,
+        score_away: observed.score_away,
+        outcome: determinism_evidence::Outcome::Away,
+        snapshot_bytes: 0,
+        drift: determinism_evidence::behavioral_drift(frozen, observed),
+        observed: observed.clone(),
+    }
 }
 
 /// `report()`'s own go-red demonstration, and the only place in this file
@@ -389,6 +559,7 @@ fn the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures() {
     // A divergence of the shape #488 and #489 actually produce: the same event
     // kinds still fire, at different counts, with a different scoreline.
     let observed = determinism_evidence::BehaviorClaims {
+        coverage: frozen.coverage,
         score_home: frozen.score_home + 3,
         score_away: frozen.score_away + 4,
         event_counts: frozen
@@ -398,21 +569,7 @@ fn the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures() {
             .collect(),
         window_event_ticks: frozen.window_event_ticks.clone(),
     };
-    let result = determinism_evidence::DeterminismEvidenceResult {
-        fixture_id: "test-only".to_string(),
-        ticks: 7201,
-        boundaries: 7202,
-        final_hash: "0".to_string(),
-        sequence_digest: "0".to_string(),
-        score_home: observed.score_home,
-        score_away: observed.score_away,
-        outcome: determinism_evidence::Outcome::Away,
-        snapshot_bytes: 0,
-        coverage: determinism_evidence::DeterminismCoverage::default(),
-        drift: determinism_evidence::behavioral_drift(&frozen, &observed),
-        observed: observed.clone(),
-    };
-    let report = determinism_evidence::report(&result);
+    let report = determinism_evidence::report(&reported_result(&frozen, &observed));
 
     let render_counts = |claims: &determinism_evidence::BehaviorClaims| {
         claims
@@ -451,6 +608,65 @@ fn the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures() {
     // And the drift that same divergence produces still reaches the line, so a
     // reader of a drifted run sees both what happened and what moved.
     assert_ne!(report_field(&report, "drift"), "none");
+}
+
+/// The same claim one field over, for the field #512 demoted: `coverage=` is
+/// **this run's** observation, not the frozen recording's.
+///
+/// It has to be its own test for the reason the one above documents at length.
+/// Until #512 `coverage=` was rendered from a top-level `result.coverage` that
+/// a gate compared against a pinned string, so an implementation echoing the
+/// fixture would have been caught by that gate. There is no such gate now:
+/// this line is the only place a reader learns which behaviors the replay
+/// produced, and on a green tree the run's coverage equals the recording's by
+/// construction, so a `report` that rendered `fixture_claims().coverage`
+/// instead would be byte-identical everywhere else in this file.
+#[test]
+fn the_report_carries_this_runs_coverage_not_the_frozen_fixtures() {
+    let frozen = determinism_evidence::fixture_claims();
+    let frozen_list = determinism_evidence::coverage_list(&frozen.coverage);
+    assert!(
+        !frozen_list.is_empty(),
+        "the frozen fixture must cover something for this test to have anything to diverge from"
+    );
+
+    // The divergence #512 was filed over: the frozen presses no longer connect,
+    // so the header and the catch stop happening, and this build scores at the
+    // other end.
+    let observed = determinism_evidence::BehaviorClaims {
+        coverage: determinism_evidence::DeterminismCoverage {
+            aerial: false,
+            keeper: false,
+            goal_kickoff: true,
+            ..frozen.coverage
+        },
+        ..frozen.clone()
+    };
+    let observed_list = determinism_evidence::coverage_list(&observed.coverage);
+    assert_ne!(
+        observed_list, frozen_list,
+        "the perturbation must actually diverge from the recording, or this test proves nothing"
+    );
+
+    let report = determinism_evidence::report(&reported_result(&frozen, &observed));
+    assert_eq!(
+        report_field(&report, "coverage"),
+        observed_list,
+        "coverage= must render this run's headline behaviors"
+    );
+    assert_ne!(
+        report_field(&report, "coverage"),
+        frozen_list,
+        "coverage= must not echo the frozen recording's coverage back"
+    );
+    // And the same divergence reaches the drift field, naming each behavior
+    // that moved with its previous and current state — the replacement for the
+    // `fixture did not cover {name}` error #512 removed.
+    assert_eq!(
+        report_field(&report, "drift"),
+        "coverage.goal_kickoff:absent->covered;coverage.aerial:covered->absent;\
+         coverage.keeper:covered->absent"
+    );
 }
 
 #[test]
@@ -642,8 +858,19 @@ fn record_omp1_derived_baseline() {
     //
     // It shares `behavioral_drift` with the campaign rather than
     // re-implementing the comparison, so the recorder can never disagree with
-    // the gate about what moved.
+    // the gate about what moved. Since #512 that includes the coverage set,
+    // which is the drift a contributor re-recording after a locomotion change
+    // most needs to see: `record` derives it from the same replayed event
+    // stream a campaign does, so `coverage.aerial covered -> absent` shows up
+    // in the warning block below.
     let observed = determinism_evidence::BehaviorClaims {
+        coverage: determinism_evidence::DeterminismCoverage {
+            tackle: recording.event_counts.get("tackle").is_some_and(|c| *c > 0),
+            keeper: recording.event_counts.get("catch").is_some_and(|c| *c > 0),
+            aerial: recording.event_counts.get("header").is_some_and(|c| *c > 0),
+            goal_kickoff: recording.event_ticks.contains_key("goal_kickoff"),
+            full_time: recording.event_ticks.contains_key("full_time"),
+        },
         score_home: recording.score_home,
         score_away: recording.score_away,
         event_counts: recording
