@@ -97,6 +97,6 @@ The list above is direction, not a shipping commitment.
   `sim/`.
 - A scalable 2D presentation remains available as a fallback until the 3D path
   passes its performance and compatibility gates.
-- `sim/` and `data/` stay independent from LÖVE.
+- `gc-sim` and `gc-data` stay independent of any renderer.
 - New breadth waits until the current loop is complete and publicly
   presentable.

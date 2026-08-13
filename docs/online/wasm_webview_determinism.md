@@ -1,5 +1,12 @@
 # wasm determinism parity across desktop webviews
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 Experiment record for [issue #342](https://github.com/osobytes/goliseo/issues/342).
 Feeds the native-desktop-route decision in
 [#329](https://github.com/osobytes/goliseo/issues/329).

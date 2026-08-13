@@ -1,5 +1,12 @@
 # Rigged 3D under LÖVE in a browser (#360)
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 **Verdict: yes in Chrome and yes in Firefox — and neither answer is the one the
 project had recorded.**
 

@@ -1,5 +1,13 @@
 # OMP-3 automated multi-client fault harness
 
+> **Partly pre-port (LÖVE/Lua).** The contract this document describes is
+> current, but it still names the Lua tree that commit `2c0d449` (#467) deleted.
+> Read `sim/foo.lua` as `rust/crates/gc-sim/src/foo.rs`, `data/foo.lua` as
+> `rust/crates/gc-data/src/foo.rs`, `sim.foo` as `gc_sim::foo`, and `game/**` /
+> `spec/**` as `ts/packages/**`. Any `love .` command, `love.*` API, or
+> `file.lua:LINE` citation is **pre-port evidence**, not something you can run
+> or open. The live tree is described by `ARCHITECTURE.md`.
+
 The milestone cannot rely on ad hoc eight-window manual testing. This harness
 launches one host plus up to seven guests, drives the complete direct-host
 lifecycle from handshake to acknowledged result and teardown, impairs delivery

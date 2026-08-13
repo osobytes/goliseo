@@ -107,7 +107,7 @@ field already exists.
 
 ### 2.1 Available authoritative inputs
 
-`sim/combat.lua` currently supplies:
+`gc_sim::combat` currently supplies:
 
 - `CombatEvent.kind`: `commit`, `projectile_spawn`, `projectile_expire`,
   `contact`, `ball_spill`, `forced`, and `guard_recoil`;
@@ -118,11 +118,11 @@ field already exists.
   forced/chain/immunity counters, and source sequence; and
 - projectile source, position, direction, and remaining lifetime.
 
-`sim/match.lua` currently supplies score, time, ball/owner state, all player
+`gc_sim::match` currently supplies score, time, ball/owner state, all player
 positions and soccer commitments, and one-tick `MatchEvent`s for shots, passes,
 touches, tackles, saves, blocks, claims, aerial actions, and jukes.
-`sim/metrics.lua` derives the existing soccer-only `MatchMetrics`, and
-`sim/tripwire.lua` compares its checked-in 30-seed signature.
+`gc_sim::metrics` derives the existing soccer-only `MatchMetrics`, and
+`gc_sim::tripwire` compares its checked-in 30-seed signature.
 
 Combat snapshot version 1 and match snapshot version 12 serialize combat state
 and events. Input tape version 2, replay, and rollback-confirmed event handling
@@ -222,7 +222,7 @@ holdout run. A and B use common random numbers.
 
 Fixture C uses the canonical slot id
 `<formation_id>/outfield/<outfield_index>` plus the exact normalized anchor
-from `data/formations.lua`; it never treats non-isomorphic formation slots as
+from `gc_data::formations`; it never treats non-isomorphic formation slots as
 the same role. Its locked logical matrix is:
 
 ```text
@@ -520,7 +520,7 @@ choosing the most favorable definition.
 
 ### 4.4 P0 soccer integrity
 
-The existing soccer tripwire and `data/fun_baseline.lua` remain combat-disabled
+The existing soccer tripwire and `gc_data::fun_baseline` remain combat-disabled
 and are never refreshed from a combat fixture. Combat evidence is a separate
 `combat_active_signature/v1` report. `MatchMetrics.fun` retains its historical
 name in the game code but is labeled **soccer-shape proxy** in every research
@@ -596,8 +596,11 @@ Normal-context scenario ids freeze every family at center and edge of its legal
 arc/range in carrier contest, carrier protection, loose-ball contest, and
 off-ball lane/shot contexts, with each legal movement, juke, guard, or spacing
 response. They run at `960x540` and `1280x720`, 30/60/120 Hz presentation,
-keyboard and standard gamepad, native LÖVE 11.5 plus the recorded Chrome and
-Firefox versions, and network profiles `clean`, `omp0_parity`, and `playable`.
+keyboard and standard gamepad, and network profiles `clean`, `omp0_parity`, and
+`playable`. (The platform half of this stratum was declared pre-port as "native
+LÖVE 11.5 plus the recorded Chrome and Firefox versions". There is no native
+build any more — commit `2c0d449` (#467) deleted it — so the supported platform
+set is the recorded browser versions alone until this contract is re-declared.)
 The `stress` profile is adversarial, not a normal-context support claim.
 
 The burden pilot derives `human_actionable_floor_ticks` as the ceiling of the
@@ -681,7 +684,7 @@ counterfactual, not a claim that the target will stand still or that a hit will
 occur.
 
 The frozen mechanics rows below come directly from the family catalog. Timing
-uses the ordinary `sim.combat` transition order; `hit` is the unguarded
+uses the ordinary `gc_sim::combat` transition order; `hit` is the unguarded
 `interruption ticks / displacement px / ball spill` tuple.
 
 | Family | Activation and committed schedule | Threat geometry / travel | Actual recovery, cooldown, and hit |
