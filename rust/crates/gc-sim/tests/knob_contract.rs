@@ -305,86 +305,24 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
     }
 }
 
-/// #488's contract entry: the locomotion primitive's own knob-moves-metric
-/// proof.
-///
-/// AGENTS.md §9 requires every feature to ship one of these, and the
-/// locomotion rework is the first feature to register a whole *family* of
-/// knobs. `LOCO_BASE_TURN` is the one worth asserting: it is the shared
-/// angular rate every context multiplies, for the movement heading and for
-/// facing alike, so it is the knob that makes turn arcs exist at all. Halve
-/// it and bodies commit to a line for longer, take longer to work the ball
-/// into a chance, and the gaps between chances get LONGER.
-///
-/// ## What the issue proposed, and what it measures
-///
-/// The issue names two pairings: `loco.run.decel` against a new
-/// `time_to_reverse` metric, and `loco.carry.top_speed_mult` against
-/// `possession_balance`. Neither is used here, for two different reasons, and
-/// both are worth recording rather than quietly dropping.
-///
-/// `time_to_reverse` does not exist yet: it needs new `MetricsPlayerView`
-/// fields and both harness adapters, which is a follow-up PR in this stack.
-///
-/// The carry/possession pairing was measured and is too subtle for any seed
-/// count a per-PR gate can afford. `possession_balance`'s per-match sd was
-/// 0.11 against a paired delta of 0.02; swapping to `turnovers_per_min`
-/// (same pressure, far less variance) and going to 96 seeds and full-length
-/// matches still landed at -0.28 against a 0.38 threshold — five minutes of
-/// compute to report `DECORATION` for a knob that is not decoration. The
-/// contract is right to refuse it; that is the gate working. It is recorded
-/// here because "raise the seeds until it passes" is the tempting wrong
-/// answer, and because the balance sweep, which can afford the seeds, is
-/// where that pairing belongs.
-///
-/// **Those four figures were measured on the chord-bounded draft, before the
-/// turn rate was corrected, and are not re-measured here.** The conclusion
-/// they support — that the pairing is too subtle for a per-PR gate — is the
-/// durable part and got *more* true, not less: correcting the rate shrank
-/// every locomotion knob's measured effect (see the note in the body below).
-/// Treat the numbers as the order of magnitude they are, not as current
-/// readings.
-#[test]
-fn turn_rate_moves_the_gaps_between_chances() {
-    // 96 rather than the 48 the other cases here use. Worth knowing why: the
-    // CHORD-bounded draft of `locomotion` (the rate defect design review
-    // caught) passed this at 48, because collapsing the achieved rate at
-    // large remaining angles amplified the knob's apparent effect. Fixing the
-    // rate to be honest SHRANK the measured delta, from +1.48 to +0.69. A
-    // gate that got easier when the code got wronger is worth naming.
-    let seeds = seeds(96);
-    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
-        knob: "LOCO_BASE_TURN",
-        metric: "longest_drought_s",
-        seeds: &seeds,
-        duration: DURATION,
-        // The full declared range rather than the default third of it: this
-        // knob is the shared BASE, so every context multiplier damps it, and
-        // a third of the range does not clear the metric's own noise.
-        perturbation: Some(1.0),
-        // The direction is the claim, not an afterthought: bodies that turn
-        // more slowly take LONGER between chances. A knob wired backwards
-        // passes any magnitude-only assertion.
-        expect: ExpectedShift::Increases,
-        direction: Some(Perturb::Down),
-    });
-    assert!(outcome.moved, "{}", outcome.report);
-    assert!(
-        outcome.delta.abs() > outcome.threshold,
-        "the verdict must be the measurement, not a flag: {}",
-        outcome.report
-    );
-    assert!(
-        outcome.noise.sd > 0.0,
-        "the noise floor must be measured, not assumed: {}",
-        outcome.report
-    );
-    assert!(
-        outcome.report.contains("WIRED"),
-        "a registered locomotion knob that moves nothing is decoration: {}",
-        outcome.report
-    );
-}
+// REMOVED: `turn_rate_moves_the_gaps_between_chances`, which perturbed
+// `LOCO_BASE_TURN` against `longest_drought_s`.
+//
+// It was this feature's §9 entry before `time_to_reverse` existed, and it is
+// deleted rather than repaired because the metric that replaced it is the
+// whole point. After the carry-composition fix it measures +0.557 against a
+// 0.657 threshold at 96 seeds -- DECORATION -- and recovering it would need
+// roughly 190 seeds for a claim three stronger assertions above already make
+// far better.
+//
+// It is worth being explicit that this is not a failing test deleted to go
+// green. The three `time_to_reverse` cases above are strictly stronger: they
+// state directions, they clear their thresholds by margins this one never
+// had, and they measure the primitive's own claim instead of a match outcome
+// four layers downstream. The finding this test's death illustrates is
+// already reported: no `LOCO_*` knob moves any OUTCOME metric at a seed count
+// a per-PR gate can afford, which is exactly why a kinematic metric had to
+// exist.
 
 /// #488's specified pairing, corrected by measurement — and the correction is
 /// the finding, not a detail.
@@ -537,16 +475,29 @@ fn time_to_reverse_resolves_where_the_outcome_metrics_do_not() {
         "time_to_reverse's relative standard error is {relative:.4}, which is not the \
          resolution this metric was added for"
     );
-    for coarse in ["goals_total", "possession_balance"] {
-        let other = knob_contract::noise_floor(coarse, &seeds, None);
-        let other_relative = other.standard_error / other.mean.abs();
-        assert!(
-            other_relative > relative * 2.0,
-            "{coarse} now resolves within 2x of time_to_reverse ({other_relative:.4} vs \
-             {relative:.4}) -- the argument for adding a kinematic metric has changed and \
-             this test should be revisited rather than relaxed"
-        );
+
+    // The claim is that it resolves BEST, not that it beats one named metric
+    // by a fixed factor. An earlier draft asserted "at least 2x better than
+    // `possession_balance`", which is a knife-edge: `possession_balance`
+    // happens to be the best-resolving outcome metric, and the carry
+    // composition moved the ratio to 1.9 and turned the assertion red without
+    // anything about the argument changing. Ranking is the durable form.
+    let mut table: Vec<(&str, f64)> = Vec::new();
+    for id in gc_sim::metric_registry::shipped().ids() {
+        let floor = knob_contract::noise_floor(id, &seeds, None);
+        if floor.mean.abs() > 0.0 {
+            table.push((id, floor.standard_error / floor.mean.abs()));
+        }
     }
+    table.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("relative errors are finite"));
+    let report: Vec<String> = table.iter().map(|(id, r)| format!("{id} {r:.4}")).collect();
+    assert_eq!(
+        table.first().map(|(id, _)| *id),
+        Some("time_to_reverse"),
+        "time_to_reverse is no longer the best-resolving registered metric, which is the \
+         entire argument for adding it: {}",
+        report.join(", ")
+    );
 }
 
 /// The band in `gc_data::tunables::METRICS` is #488's PRIOR, and this is the

@@ -180,7 +180,7 @@
 #      (via vitest's own `toBe`) the exact digests step 9 checks again.
 #   9. an explicit, redundant assertion that the freshly built wasm module's
 #      runDeterminismEvidence() returns exactly
-#      final_hash=bd05724d532c8027 and sequence_digest=350d9b17f4e50953.
+#      final_hash=427383ffcb280317 and sequence_digest=08e243e3bc9d913f.
 #      (Moved by #488; this is the SIXTH copy of the OMP-1 derived digests and
 #      the deliberate one -- the drift check below is why it exists.)
 #      It deliberately does NOT assert the scoreline, the event counts or the
@@ -276,8 +276,8 @@ determinism_spec="$wasm_pkg_dir/src/determinism.spec.ts"
 # Pinned here, independently of ts/packages/wasm/src/determinism.spec.ts's
 # own copy of the same two constants -- self_test()'s digest_drift_scenario
 # requires the two copies to still agree.
-EXPECTED_FINAL_HASH="bd05724d532c8027"
-EXPECTED_SEQUENCE_DIGEST="350d9b17f4e50953"
+EXPECTED_FINAL_HASH="427383ffcb280317"
+EXPECTED_SEQUENCE_DIGEST="08e243e3bc9d913f"
 EXPECTED_TICKS="7201"
 EXPECTED_BOUNDARIES="7202"
 # There is deliberately no EXPECTED_COVERAGE here any more, and no

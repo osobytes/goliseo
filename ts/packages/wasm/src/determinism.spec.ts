@@ -31,7 +31,7 @@
 // constant. Fix the code, never these lines. If wasm and native AGREE and
 // both differ from the constants below, the constants are simply stale and
 // belong in the same commit as the JSON re-record. Under #488 they agreed at
-// `bd05724d532c8027`, which is the only reason these two lines were touched.
+// `427383ffcb280317`, which is the only reason these two lines were touched.
 //
 // Requires `pnpm --filter @gc/wasm build` to have run first so
 // `dist/pkg/gc_wasm.cjs` exists.
@@ -40,8 +40,8 @@ import { describe, expect, it } from "vitest";
 
 import { loadSimHost } from "./index.ts";
 
-const EXPECTED_FINAL_HASH = "bd05724d532c8027";
-const EXPECTED_SEQUENCE_DIGEST = "350d9b17f4e50953";
+const EXPECTED_FINAL_HASH = "427383ffcb280317";
+const EXPECTED_SEQUENCE_DIGEST = "08e243e3bc9d913f";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
