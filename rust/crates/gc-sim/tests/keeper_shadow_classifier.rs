@@ -25,11 +25,12 @@
 //!   `disagree_deferred` (`new_resolved` false — the query just hadn't
 //!   resolved yet at this tick) and `disagree_height` (`new_resolved` true
 //!   but `new_on_target` false — a genuine, resolved height disagreement).
-//! - `new_only` (old false, new true): structurally impossible — see the
-//!   proof below — and asserted to be exactly zero, not just observed to be.
+//! - `new_only` (old false, new true): proven impossible for the
+//!   grounded/landed subcase — see below — and asserted to be exactly zero
+//!   on this fixture, not just observed to be.
 //! - `agree_false`: both say not on target.
 //!
-//! ## Why `new_only` is proven zero, not just measured zero
+//! ## Why `new_only` is proven zero for its subcase, not just measured zero
 //!
 //! For a grounded or already-landed ball (`ball_z <= 0`, `ball_vz <= 0`,
 //! true for every candidate this fixture's shots reach), the deleted
@@ -44,9 +45,16 @@
 //! real height clears both upper bounds, the deleted formula's strictly
 //! lower value clears them too: `new_on_target => old_on_target`. The
 //! contrapositive is `!old_on_target => !new_on_target` — `new_only` cannot
-//! happen. This is a structural argument about the shape of the two
-//! formulas, not a sampling result; the frozen fixture's 9,376-observation
-//! `new_only == 0` below is corroboration, not the proof.
+//! happen, FOR THIS SUBCASE. This is a structural argument about the shape
+//! of the two formulas for a landed ball, not a sampling result and not a
+//! universal guarantee: the pre-bounce, still-airborne case is a different
+//! shape (both integrate the same pure gravity and track each other up to
+//! the `+0.5 * GRAVITY * dt * t` discretization bias between a continuous
+//! formula and the live discrete step — see `docs/design/fun_metrics.md`'s
+//! drift log) and is argued informally there, not proven here. The frozen
+//! fixture's 9,376-observation `new_only == 0` below is empirical
+//! confirmation covering both cases as this fixture happens to exercise
+//! them, not a substitute for extending the proof to the airborne case.
 //!
 //! ## Byte-identical reconciliation (blocking item 3, PR #501)
 //!

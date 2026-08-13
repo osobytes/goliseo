@@ -556,21 +556,28 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   new margin after looking at the data, which is exactly what a NI test is
   supposed to prevent.
 
-  **The structural argument comes first — this is a proof, not a sample.**
-  For a grounded or already-landed ball (`ball_z <= 0, ball_vz <= 0`, true of
-  every candidate this fixture's shots reach), the deleted formula
-  `old_z = ball_z + ball_vz*tz - 0.5*GRAVITY*tz*tz` is strictly decreasing
-  and unbounded below in `tz`: it never models the ground bounce, so once
-  the real ball has landed, `old_z` keeps falling through the floor while
-  the real trajectory settles or bounces back up, meaning `old_z <= z_real`
-  for every `tz` past landing. The on-target check
-  (`z_cross < CROSSBAR && z_cross <= KEEPER_AIR_GRAB`) is upper-bound-only,
-  so `old_z <= z_real` implies `new_on_target => old_on_target` — the
-  deleted formula can only ever be wrongly *permissive*, never wrongly
-  restrictive. This is a claim about the shape of the two formulas, provable
-  without running anything; `keeper_shadow_classifier.rs`'s frozen-fixture
-  `new_only == 0` (0 of 9,376 candidates go the other way) is corroboration
-  of that proof, not the proof itself.
+  **The structural argument comes first — this is a proof for its subcase,
+  not a sample, and it is scoped honestly: it covers the grounded/landed
+  case, not every case.** For a grounded or already-landed ball
+  (`ball_z <= 0, ball_vz <= 0`, true of every candidate this fixture's shots
+  reach), the deleted formula `old_z = ball_z + ball_vz*tz -
+  0.5*GRAVITY*tz*tz` is strictly decreasing and unbounded below in `tz`: it
+  never models the ground bounce, so once the real ball has landed, `old_z`
+  keeps falling through the floor while the real trajectory settles or
+  bounces back up, meaning `old_z <= z_real` for every `tz` past landing.
+  The on-target check (`z_cross < CROSSBAR && z_cross <= KEEPER_AIR_GRAB`)
+  is upper-bound-only, so `old_z <= z_real` implies `new_on_target =>
+  old_on_target` — for this subcase, the deleted formula can only ever be
+  wrongly *permissive*, never wrongly restrictive. **This is a proof for the
+  landed subcase specifically, not a universal guarantee.** The pre-bounce,
+  still-rising or still-falling-but-not-yet-landed case is a different
+  shape (`old_z` and the live discrete step both integrate the same pure
+  gravity, so they track each other up to the `+0.5 * GRAVITY * dt * t`
+  discretization bias discussed further down) and is argued informally
+  there, not folded into this formal claim. `keeper_shadow_classifier.rs`'s
+  frozen-fixture `new_only == 0` (0 of 9,376 candidates go the other way)
+  is empirical confirmation covering both cases as this fixture happens to
+  exercise them, not a substitute for extending the proof itself.
 
   **The classifier, now committed and pinned
   (`crates/gc-sim/tests/keeper_shadow_classifier.rs`).** Every candidate save
@@ -609,6 +616,13 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   | goals_total | official 20001..20060 | 60 | -0.1667 | 0.0895 | lower -0.3162 | > -0.10 | **fails** (inconclusive) | 0.251 |
   | goals_total | supplementary 50001..50200 | 200 | +0.0800 | 0.0508 | lower -0.0040 | > -0.10 | **passes** | 0.142 |
 
+  MDE convention: `Δ ± (z_0.975 + z_0.80) · SE ≈ 2.80 · SE` — a **two-sided**
+  z at 80% power (`1.96 + 0.84`), not the one-sided `1.645 + 0.84 ≈ 2.49`
+  more usual for an NI test's own MDE. The two-sided choice is the more
+  conservative of the two (it reports a slightly larger, harder-to-clear
+  MDE); it changes no verdict above, but is named here so the number does
+  not need reverse-engineering.
+
   `save_rate` clears the repository's own preregistered harm bound on BOTH
   blocks — the one-sided 95% bound stays under +0.04 even on the least
   favorable evidence available, and the B-absolute catastrophe floor
@@ -626,6 +640,21 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   within 3s) — so the honest reading is **underpowered on the official
   block, not evidence of harm**, corroborated by the 200-seed block not
   reproducing any drop at all.
+
+  **The asymmetry between the two verdicts is the load-bearing fact here,
+  and it is worth stating on its own rather than leaving it implicit in the
+  MDE column.** `save_rate`'s NI test is **adequately powered**: its MDE
+  (0.030 at 60 seeds, 0.008 at 200) sits *below* the `0.04` margin on both
+  blocks, so this test could actually have detected harm near the boundary
+  and did not — the pass is a real result about the metric, not an artifact
+  of a test too weak to fail. `goals_total`'s NI test is **structurally
+  underpowered**: its MDE (0.251 at 60 seeds, 0.142 at 200) is 1.4-2.5×
+  its own `0.10` margin, so it could not have confirmed harm-free even in
+  principle at either sample size — the failure on the 60-seed block is
+  uninformative about whether a real effect exists, not evidence that one
+  does. Read side by side, "one metric passed, one failed" is the wrong
+  takeaway; the honest one is "one test could answer its question, the
+  other could not."
 
   **No multiplicity correction applied** across the 2 metrics × 2 blocks
   above, unlike the evidence contract's own Holm-adjusted procedure for its
