@@ -541,72 +541,138 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   tunable-registry work), so nothing here was adjusted to chase the band —
   but the direction deserves an honest account rather than a shrug.
 
-  **Tested directly, not just traced — and the verdict is that this 60-seed
-  block's shift does not survive an independent, larger sample.** Two
-  separate instruments, both temporary and removed before this landed
-  (neither is committed):
+  **Tested with the evidence contract's own instrument, not a bare
+  significance threshold.** An earlier draft of this entry used
+  `knob_contract`'s `NOISE_SIGMAS = 2.0` — a magnitude-only "is this knob
+  wired" threshold — and concluded "not a regression" from failing to clear
+  it. A statistics review caught the error:
+  `docs/design/combat_fun_evidence_contract.md:563-564` states outright that
+  *"'Not significant' is not evidence of non-inferiority or equivalence"*,
+  and that document's own §4.4 already carries a **preregistered**,
+  locked-before-this-change one-sided non-inferiority margin for `save rate`
+  (`95% upper bound B-A < +0.04; B absolute < 0.95`) and for `goals`
+  (`95% lower bound B-A > -0.10`). Re-run against those, not an invented
+  margin — reusing a real, already-locked instrument rather than choosing a
+  new margin after looking at the data, which is exactly what a NI test is
+  supposed to prevent.
 
-  1. **A shadow classifier inside `attempt_save`.** At every candidate save
-     evaluation on this same 60-seed fixture, the deleted formula's verdict
-     was computed alongside the real one (never read for a decision) and
-     classified against 8,407 candidate ticks (35 distinct shot episodes hit
-     the deferred case, 7 hit a genuine height disagreement, 0 went the other
-     way — the deleted formula never *misses* a shot the real one would
-     catch, confirming it is a strict superset). Of the 35 deferred episodes,
-     34 resolve into an identical real commit within one tick once `tz`
-     crosses the horizon — the deferral is real but consequence-free almost
-     every time it fires, exactly as `keeper_prediction.rs` proves for one
-     constructed case. Of the 7 genuine-disagreement episodes, only 2 were
-     followed by a goal within 3 seconds. This *is* the failure mode #486
-     names — the deleted formula would have offered the keeper a save
-     attempt on a ball that had already bounced out of reach — but it fires
-     roughly once per 8-9 matches, not every match, which is too rare to
-     move a 60-seed aggregate on its own.
-  2. **A paired significance test, reusing #487's `knob_contract` machinery
-     (`mean_sd`, `NOISE_SIGMAS = 2.0`) even though there is no knob to
-     perturb here — old vs. new is a discrete code branch, not a tunable, so
-     the two arms were run by temporarily bypassing the predictor query in
-     place (uncommitted) rather than through `KnobMoveOpts`.** On the
-     official, pinned 60-seed block (`20001..20060`): paired `save_rate`
-     delta `+0.0180`, SE `0.0109`, **t = 1.66σ** — directionally the same
-     number as the table above (as it must be, same seeds), but *below*
-     `NOISE_SIGMAS`. `goals_total`: delta `-0.167`, SE `0.089`, t = -1.86σ.
-     Neither clears the bar this repository's own convention uses to call a
-     shift real rather than noise. On an independent 200-seed block
-     (`50001..50200`, well clear of every reserved range —
-     `outfield_ai_baseline_keeps_its_seeds_clear_of_every_other_locked_block`
-     enumerates them), the picture does not just fail to replicate, it
-     **flips sign**: paired `save_rate` delta `-0.0025`, SE `0.0027`, t =
-     -0.93σ; `goals_total` delta `+0.080`, SE `0.051`, t = 1.57σ. 144/200
-     matches (72%) are byte-identical between old and new code, matching the
-     60-seed block's ~72% unaffected rate — consistent with a rare,
-     narrowly-scoped mechanism, not a systematic shift. A single outlier
-     match (`+0.60` save_rate) dominates a meaningful share of the 60-seed
-     block's total; that is a sampling-noise signature, not a population
-     effect.
+  **The structural argument comes first — this is a proof, not a sample.**
+  For a grounded or already-landed ball (`ball_z <= 0, ball_vz <= 0`, true of
+  every candidate this fixture's shots reach), the deleted formula
+  `old_z = ball_z + ball_vz*tz - 0.5*GRAVITY*tz*tz` is strictly decreasing
+  and unbounded below in `tz`: it never models the ground bounce, so once
+  the real ball has landed, `old_z` keeps falling through the floor while
+  the real trajectory settles or bounces back up, meaning `old_z <= z_real`
+  for every `tz` past landing. The on-target check
+  (`z_cross < CROSSBAR && z_cross <= KEEPER_AIR_GRAB`) is upper-bound-only,
+  so `old_z <= z_real` implies `new_on_target => old_on_target` — the
+  deleted formula can only ever be wrongly *permissive*, never wrongly
+  restrictive. This is a claim about the shape of the two formulas, provable
+  without running anything; `keeper_shadow_classifier.rs`'s frozen-fixture
+  `new_only == 0` (0 of 9,376 candidates go the other way) is corroboration
+  of that proof, not the proof itself.
 
-  **Conclusion: this is not a regression.** The mechanism in #1 is real,
-  measured, and unambiguously in the correctness direction (the keeper no
-  longer offers a save attempt on a ball it can't reach) — but it is too
-  rare (roughly one disagreement episode per match, only ~12% of episodes
-  producing any downstream goal) to reliably move `save_rate`/`goals_total`
-  one way or the other on any seed sample tried, official or supplementary.
-  The 60-seed table above is accurate as recorded and the re-freeze below is
-  correct as measured — the pinned seed block is what it is — but it should
-  be read as **this particular seed block's noise**, not as evidence this
-  change pushes the game away from #487's target band. Nothing here was
-  tuned to make either number look better; both the 60-seed and the 200-seed
-  results are reported as measured.
+  **The classifier, now committed and pinned
+  (`crates/gc-sim/tests/keeper_shadow_classifier.rs`).** Every candidate save
+  evaluation on the official 60-seed fixture, real `attempt_save` logic,
+  deleted formula computed alongside (never read for a decision):
+  9,376 candidates — 3,105 `agree_true`, 6,021 `agree_false`, 227
+  `disagree_deferred` (old says on target, the query hadn't resolved yet —
+  resolves into an identical real commit one tick later almost every time,
+  per `keeper_prediction.rs`'s constructed case), 23 `disagree_height` (old
+  says on target, the resolved real height says otherwise — the failure mode
+  #486 names, directly measured), 0 `new_only`. Per-match: 6/60 matches touch
+  `disagree_height`, 25/60 touch `disagree_deferred`, 30/60 (50%) touch
+  either.
 
-  A second, smaller, mechanistically distinct effect exists but is even
-  smaller: for a ball already in flight, the deleted formula and the live
-  step function agree exactly on ballistic height *except* for the
-  discretization gap between a continuous quadratic and the 60Hz
-  semi-implicit Euler `ball_flight::step` actually runs (before any bounce),
-  a `+0.5 * GRAVITY * dt * t` systematic *upward* bias in the live/predicted
-  height relative to the old formula. It pushes in the opposite direction
-  from #1 (some genuinely-in-flight shots read as *less* reachable, now
-  correctly) and is folded into the same near-zero net result above.
+  **Byte-identical reconciliation (this was previously asserted, not shown
+  — the arithmetic).** 43/60 (72%) matches are byte-identical between old
+  and new code on the paired run below; 17/60 (28%) differ. If only
+  `disagree_height` caused divergence, "touched" would be 6/60 (10%),
+  nowhere near 28%. Folding in `disagree_deferred` reaches 30/60 (50%) —
+  on the correct side of 28% to explain it, since a one-tick RNG-stream
+  shift (which is what a `disagree_deferred` episode resolving one tick
+  later than the old formula would have IS) cascades into a different state
+  hash for the rest of a deterministic match without changing anything a
+  viewer would call different, and not every such cascade need move the
+  final rounded `save_rate`/`goals_total` pair. Deferred episodes, not
+  disagreement episodes, are the dominant driver of the split — confirming
+  what the review flagged, not what the earlier draft implied.
+
+  **Non-inferiority results, paired, both seed blocks (control arm: the
+  deleted formula bypassed in place, per the recipe below):**
+
+  | metric | block | n | paired Δ (B-A) | SE | one-sided 95% bound | margin | NI verdict | approx. MDE (80% power) |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | save_rate | official 20001..20060 | 60 | +0.0180 | 0.0109 | upper +0.0362 | < +0.04 | **passes** | 0.030 |
+  | save_rate | supplementary 50001..50200 | 200 | -0.0025 | 0.0027 | upper +0.0019 | < +0.04 | **passes** | 0.008 |
+  | goals_total | official 20001..20060 | 60 | -0.1667 | 0.0895 | lower -0.3162 | > -0.10 | **fails** (inconclusive) | 0.251 |
+  | goals_total | supplementary 50001..50200 | 200 | +0.0800 | 0.0508 | lower -0.0040 | > -0.10 | **passes** | 0.142 |
+
+  `save_rate` clears the repository's own preregistered harm bound on BOTH
+  blocks — the one-sided 95% bound stays under +0.04 even on the least
+  favorable evidence available, and the B-absolute catastrophe floor
+  (`<0.95`; measured 0.9106 / 0.9076) holds on both too. That is a genuinely
+  strong claim, not a power statement: save_rate is non-inferior to the old
+  code by this repository's own standard.
+
+  `goals_total` does **not** clear its margin on the official 60-seed block
+  alone — the 95% lower bound (-0.316) sits well below the -0.10 harm
+  floor, so that evidence cannot rule out a real drop. It does clear on the
+  200-seed block. Read together with the MDE column: at n=60 the smallest
+  goals_total shift this test could reliably resolve is ≈0.25 goals/match,
+  well above the classifier's own bound on the mechanism's size (23
+  `disagree_height` candidates, touching 6/60 matches, only 2 tied to a goal
+  within 3s) — so the honest reading is **underpowered on the official
+  block, not evidence of harm**, corroborated by the 200-seed block not
+  reproducing any drop at all.
+
+  **No multiplicity correction applied** across the 2 metrics × 2 blocks
+  above, unlike the evidence contract's own Holm-adjusted procedure for its
+  full metric family. Naming it rather than silently borrowing only the
+  favorable parts of the contract's machinery: a correction would only make
+  the already-failing goals_total/official-block row harder to pass, not
+  easier, so it does not change which claims are made above, but a reader
+  should not read "two blocks, two metrics, mostly passing" as a formally
+  adjusted family result.
+
+  **Conclusion.** `save_rate` is non-inferior to the old formula against
+  this repository's own preregistered margin, confirmed on two independent
+  seed blocks — that claim is made without qualification. `goals_total` is
+  **not** confirmed non-inferior on the official 60-seed block by itself;
+  the honest statement there is "no shift detected at this sample size,
+  and the sample is underpowered to detect a shift this mechanism's own
+  measured rate could plausibly produce" — a power statement, not a
+  null-effect statement, and not "not a regression." The mechanism itself
+  (§ above) is real, structurally one-directional, and directly measured;
+  whether it moves `goals_total` at population scale remains open at n=60
+  and is not supported by the 200-seed block either. Nothing here was tuned
+  to make any number look better.
+
+  A second, smaller, mechanistically distinct effect exists: for a ball
+  already in flight, the deleted formula and the live step function agree
+  exactly on ballistic height *except* for the discretization gap between a
+  continuous quadratic and the 60Hz semi-implicit Euler `ball_flight::step`
+  actually runs (before any bounce), a `+0.5 * GRAVITY * dt * t` systematic
+  *upward* bias in the live/predicted height relative to the old formula. It
+  pushes in the opposite direction from the bounce mechanism above (some
+  genuinely-in-flight shots read as *less* reachable, now correctly) and is
+  folded into the same results above.
+
+  **Control-arm recipe, for reproducing the paired rows above.** Bypass the
+  predictor in `attempt_save` in place (uncommitted; restore before
+  committing anything else): replace the `let Some(sample) = ...else {
+  ...continue; }; let z_cross = sample.z;` block with
+  `let z_cross = s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz;` —
+  i.e. the exact line this PR deletes, fed the same `tz` the real code
+  computes. Run `outfield_ai_baseline::measure`/`headless::run_batch` with
+  the fixture's declared options against both the bypassed tree and the real
+  one, on the same seeds, and pair per seed. This is mechanically
+  unambiguous from the diff (`crates/gc-sim/src/match.rs`'s `feat` commit
+  shows exactly the line removed) even though the bypass itself is never
+  committed — the classifier above is the committed, re-derivable half of
+  this investigation; the paired significance table is the uncommitted half,
+  reproducible from this recipe.
 
   Re-frozen as `baseline_version = 2`
   (`crates/gc-data/src/outfield_ai_baseline.rs`), measured with
