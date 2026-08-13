@@ -237,7 +237,14 @@ const SCENARIOS: [OnlineCombatPhaseScenario; 7] = [
             separation_px: 36.0,
             row_spacing_px: 120.0,
         },
-        steps: 240,
+        // 240 -> 480 under #488: a body with momentum closes and re-closes a
+        // duel more slowly than one that could reverse on a frame, so a
+        // budget calibrated against instant reversal stopped reaching a
+        // knockback inside the window. The scenario's INTENT is unchanged --
+        // it still measures corrections that resimulate a stagger tick, on
+        // the same geometry and the same family -- only the number of steps
+        // it needs to get there moved.
+        steps: 480,
         deliver_period: 5,
         hold_equipment: false,
     },
@@ -581,7 +588,11 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
             separation_px: 200.0,
             row_spacing_px: 28.0,
         },
-        steps: 240,
+        // 240 -> 480 for the same reason as the `stagger` scenario above:
+        // with momentum, 240 steps was no longer enough for this geometry to
+        // telegraph a single threat, and a probe that observes nothing proves
+        // nothing. The assertion it feeds is unchanged.
+        steps: 480,
         deliver_period: 5,
     },
 ];

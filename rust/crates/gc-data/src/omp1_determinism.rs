@@ -428,8 +428,16 @@ mod tests {
         assert_eq!(f.event_counts.get("tackle"), Some(&147));
         assert_eq!(f.event_counts.get("touch"), Some(&180));
         assert_eq!(f.expected_score, Omp1ExpectedScore { home: 1, away: 0 });
-        assert_eq!(f.expected_final_hash, "bfbb106aea5480f8");
-        assert_eq!(f.expected_sequence_digest, "0bfd0ed355f87322");
+        // These two are the DERIVED half, and they move whenever the
+        // simulation does -- re-recorded for #488 by
+        // `record_omp1_derived_baseline`. Restating them here as literals is
+        // what makes a silent JSON edit visible, so they are updated in the
+        // same commit as the JSON and never separately. NOTE: #504's
+        // documented two-step re-record command does not mention this file;
+        // a re-record that stops at the JSON leaves `gc-data`'s own unit test
+        // red, which is how this line came to be updated here.
+        assert_eq!(f.expected_final_hash, "daeb420ca7e65b87");
+        assert_eq!(f.expected_sequence_digest, "6787fe4650984880");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -446,9 +454,12 @@ mod tests {
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
         assert_eq!(boundary_hash_lines()[0], "435f262f7968d95a");
+        // Boundary 0 above is the CAPTURED initial state and is frozen; this
+        // last boundary is derived and moves with the simulation. Same
+        // re-record, same commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "bfbb106aea5480f8"
+            "daeb420ca7e65b87"
         );
     }
 

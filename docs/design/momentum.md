@@ -1,5 +1,12 @@
 # Design: Player momentum & turning radius
 
+> **Superseded in mechanism, not in intent, by `docs/design/locomotion.md`
+> (#488).** The `run_vel` field, the separate accel/decel rates and the
+> single-helper rule below all survive; the vector nudge this file describes
+> is now a speed scalar plus a heading eased independently, and facing is its
+> own target rather than a read of `run_vel`. This file stays as the record of
+> the first pass — its "Watch out for" list still applies verbatim.
+
 ## Why
 
 Constant-speed movement and instant reversals kill the core feel of a soccer

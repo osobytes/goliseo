@@ -31,11 +31,20 @@ use gc_sim::match_snapshot::{self, MatchState, PitchSize};
 use gc_sim::replay::{self, ReplayFailureCode};
 use gc_sim::tuning::Tuning;
 
+// Boundary 0 is the CAPTURED initial state and is unchanged by #488 -- the
+// locomotion rework alters how bodies move, not what a fresh match looks like.
+// Boundaries 1..3 are three stepped ticks of that state, so they move with any
+// deliberate gameplay change; these three were re-derived from this build for
+// #488. They are a self-recorded baseline, not frozen cross-implementation
+// evidence: they detect change, they cannot detect "wrong but consistently
+// wrong". What this file actually proves -- that `replay` reports the first
+// diverging boundary, rejects tampering, and refuses mismatched identities --
+// is asserted against these hashes rather than by them.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
     "07857e40c78bdd99",
-    "cc4cfb8861a4fd99",
-    "1116dde18d4e0d64",
-    "543039ce97c4d73b",
+    "d5a84b58ddccd7be",
+    "f110ef4a498c3a06",
+    "559d9c6518dd6695",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

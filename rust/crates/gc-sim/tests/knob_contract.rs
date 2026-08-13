@@ -304,3 +304,63 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
         );
     }
 }
+
+/// #488's contract entry: the locomotion primitive's own knob-moves-metric
+/// proof.
+///
+/// AGENTS.md §9 requires every feature to ship one of these, and the
+/// locomotion rework is the first feature to register a whole *family* of
+/// knobs. `LOCO_CARRY_TOP_MULT` is the one with a claim worth asserting: it
+/// is how fast a body may move with the ball at its feet relative to the same
+/// body empty-handed.
+///
+/// **The direction is the opposite of the issue's intuition, and that is the
+/// finding.** The issue reasons that a slower carrier is caught more often, so
+/// turnovers rise. Measured, lowering the multiplier LOWERS turnovers by 1.12
+/// per minute against a 1.08 threshold. The mechanism is visible in a second,
+/// independent measurement: in `gc-sim`'s own outfield AI baseline the same
+/// change raises `ai_dribble_close_share` and roughly halves
+/// `ai_dribble_heavy_losses_per_min`. A carrier moving slower relative to its
+/// own touch push keeps the ball tighter to its feet, and a ball at the feet
+/// is not a ball being nicked. The claim asserted here is the corroborated
+/// one, not the assumed one.
+///
+/// The issue proposes `possession_balance` for this knob. Measured, that is
+/// the wrong pairing at any seed count a per-PR gate can afford: the metric's
+/// per-match sd is 0.11 against a paired delta of 0.02, so 48 seeds report
+/// `DECORATION` for a knob that is demonstrably wired (the transcript is in
+/// the PR). `turnovers_per_min` reads the same pressure with a fraction of
+/// the variance, so that is what the claim is asserted against.
+///
+/// The issue also proposes a `time_to_reverse` metric with a
+/// `LOCO_RUN_DECEL_MULT` claim against it. That metric needs new
+/// `MetricsPlayerView` fields and both harness adapters, which is a follow-up
+/// PR in this stack; this test is the coverage the primitive ships with, not
+/// the coverage it ends up with.
+#[test]
+fn carrying_speed_moves_the_turnover_rate() {
+    let seeds = seeds(48);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "LOCO_CARRY_TOP_MULT",
+        metric: "turnovers_per_min",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        // The direction is the claim, not an afterthought: a slower carrier
+        // takes tighter touches and loses the ball LESS. A knob wired
+        // backwards passes any magnitude-only assertion.
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.delta.abs() > outcome.threshold,
+        "the verdict must be the measurement, not a flag: {}",
+        outcome.report
+    );
+    assert!(
+        outcome.report.contains("WIRED"),
+        "a registered locomotion knob that moves nothing is decoration: {}",
+        outcome.report
+    );
+}

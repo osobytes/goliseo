@@ -33,6 +33,7 @@ pub mod input_tape;
 pub mod keeper;
 pub mod knob_contract;
 pub mod lever_metrics;
+pub mod locomotion;
 // `match` is a Rust keyword, so the module needs a raw identifier. Refer to
 // it as `gc_sim::r#match` or bring it into scope with
 // `use gc_sim::r#match as sim_match;`.
