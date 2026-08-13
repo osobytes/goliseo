@@ -8,8 +8,9 @@
 > `file.lua:LINE` citation is **pre-port evidence**, not something you can run
 > or open. The live tree is described by `ARCHITECTURE.md`.
 
-All shapes are declared as LuaCATS types so data files are statically checked. The canonical
-declarations live next to their data; this file is the human-readable overview.
+All shapes are declared as types so content is statically checked — today as Rust structs and
+enums in `gc-data` and `gc-sim` (pre-port: LuaCATS annotations). The canonical declarations
+live next to their data; this file is the human-readable overview.
 
 ## Implemented
 
