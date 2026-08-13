@@ -36,6 +36,16 @@
 //! `env_budget.rs::measure_allocations`. The first-rebuild cost is not
 //! ignored; it gets its own pinned-ceiling test below instead of leaking
 //! into the steady-state figures.
+//!
+//! `extend_one`'s two denial exits, `ExtendStop::Horizon` and
+//! `ExtendStop::Budget`, are covered separately. Under
+//! `BallPredictionConfig::default()` a tie between them always resolves to
+//! `Horizon` (`STEP_BUDGET_DEFAULT` is pinned exactly equal to one
+//! full-horizon rebuild's tick count), so the plain steady-state tests above
+//! only ever exercise `Horizon`. The "Budget denial" section further down
+//! exercises `Budget` on its own, both via a reduced `step_budget` and via
+//! the mid-tick-mutation second rebuild that is the actual resimulated-tick
+//! shape issue #494 is about.
 
 use gc_core::vec2::Vec2;
 use gc_sim::ball_prediction::{
@@ -341,6 +351,174 @@ fn steady_state_reachable_before_arrival_allocates_nothing() {
         bytes, 0,
         "reachable_before_arrival allocated {bytes} bytes; it is pure kinematics over &self \
          and never calls sync()"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Budget denial: `extend_one` checks `ExtendStop::Horizon` before
+// `ExtendStop::Budget`, and `STEP_BUDGET_DEFAULT` is pinned exactly equal to
+// one full-horizon rebuild's tick count
+// (`the_default_budget_covers_one_full_horizon_rebuild_and_a_bounded_worst_frame`
+// in `ball_prediction.rs`) -- so under `BallPredictionConfig::default()`, a
+// tie always resolves to `Horizon`. Every steady-state test above therefore
+// exercises `ExtendStop::Horizon` only; `ExtendStop::Budget` is a distinct
+// exit out of `extend_one` (a different `flush_tail`/telemetry path) and
+// needs its own coverage. It is reachable two ways, and both are covered
+// below: a reduced `step_budget` (the shortcut also used by
+// `a_spent_budget_falls_back_for_tolerant_callers_and_refuses_authoritative_ones`
+// in `ball_prediction.rs`), and a second rebuild forced by a mid-tick ball
+// mutation spending down whatever budget the first query in that tick left
+// behind -- the actual resimulated-tick shape issue #494 is about.
+// ---------------------------------------------------------------------
+
+/// A `step_budget` well below `STEP_BUDGET_DEFAULT` (120), so a query asking
+/// for anything past what it can reach in one rebuild is refused by
+/// `ExtendStop::Budget` rather than `ExtendStop::Horizon` -- the default
+/// horizon (2.0 s) stays far out of reach at this budget, so the horizon
+/// check in `extend_one` never gets a chance to fire first.
+const BUDGET_CONSTRAINED_STEP_BUDGET: i64 = 40;
+
+fn budget_constrained_config() -> BallPredictionConfig {
+    BallPredictionConfig {
+        step_budget: BUDGET_CONSTRAINED_STEP_BUDGET,
+        ..BallPredictionConfig::default()
+    }
+}
+
+/// A predictor configured with [`BUDGET_CONSTRAINED_STEP_BUDGET`], already
+/// warmed to that budget's own steady state. The warm-up round grows the
+/// buffer out to exactly what the reduced budget allows (`40` samples) and
+/// no further -- every measured round below reproduces that exact shape,
+/// since `begin_tick()` resets `budget_left` to the same `step_budget` every
+/// time.
+fn warmed_budget_constrained() -> (BallPredictor, MatchState) {
+    let state = flying_ball_state();
+    let mut predictor = BallPredictor::new(budget_constrained_config());
+    predictor.begin_tick();
+    let horizon = predictor.config().max_horizon;
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+    (predictor, state)
+}
+
+#[test]
+fn steady_state_budget_denied_authoritative_query_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_budget_constrained();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires ExtendStop::Budget to refuse this authoritative \
+             query -- the reduced step budget cannot reach a target this far past the horizon \
+             it can afford"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "an authoritative query refused by ExtendStop::Budget allocated {bytes} bytes at \
+         steady state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
+    );
+}
+
+#[test]
+fn steady_state_budget_denied_tolerant_query_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_budget_constrained();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let estimate = predictor.estimate_position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            estimate.source,
+            BallEstimateSource::Fallback,
+            "this test's premise requires ExtendStop::Budget to force the closed-form \
+             fallback here -- the target is well inside the horizon, so only the budget \
+             (not the horizon) can be why the buffer does not reach it"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "a tolerant query degraded by ExtendStop::Budget allocated {bytes} bytes at steady \
+         state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
+    );
+}
+
+/// The shape production will actually hit: a mid-tick ball mutation (a
+/// kick, a bounce, a possession pickup -- any of the paths
+/// `every_enumerated_external_ball_mutation_path_bumps_the_generation` in
+/// `ball_prediction.rs` enumerates) bumps the generation and forces a
+/// *second* rebuild within the same live tick. That second rebuild does not
+/// get a fresh `step_budget` allowance -- `begin_tick()` is what resets
+/// `budget_left`, and it is called once per tick, not once per rebuild -- so
+/// it inherits only whatever the first query already left behind. Even
+/// under the generous *default* config, where a single rebuild per tick
+/// never spends its whole budget before reaching the horizon (by the exact
+/// equality `STEP_BUDGET_DEFAULT == horizon_ticks` pins), a second rebuild
+/// forced mid-tick can still starve into `ExtendStop::Budget`. This is
+/// exactly "every query during a resimulated tick is re-issued" from the
+/// issue: a resimulated tick's `begin_tick()` + query burst is one first
+/// rebuild, and any further ball correction replayed into the *same*
+/// resimulated tick is a second, budget-starved one.
+#[test]
+fn steady_state_second_rebuild_within_one_tick_from_a_mid_tick_mutation_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = flying_ball_state();
+    let mut predictor = BallPredictor::default();
+    let horizon = predictor.config().max_horizon;
+
+    // Warm-up (unmeasured): establish the buffer's full-horizon capacity
+    // (121 samples) so every measured round below reuses it rather than
+    // growing into it for the first time. `warmed()` isn't reused here
+    // because this test needs its own `state` handle to mutate mid-round.
+    predictor.begin_tick();
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        // First query this tick: spends most, but deliberately not all, of
+        // the default 120-tick budget (0.8 * horizon = 96 of 120 ticks),
+        // growing the buffer partway.
+        let _ = predictor.position_at_time(&state, horizon * 0.8);
+        // A mid-tick mutation: bumps the fingerprint and therefore the
+        // generation, without a new `begin_tick()`. The exact drift is
+        // irrelevant to what this test checks (step *count*, not
+        // trajectory), so a small monotonic nudge keeps every round's
+        // fingerprint distinct from the last without needing a reset.
+        state.ball_vel.x += 1.0;
+        // Second query, same tick: this rebuild only inherits the ~24
+        // ticks of budget the first query left behind (120 - 96), not a
+        // fresh 120. Asking for the full horizon again all but guarantees
+        // ExtendStop::Budget fires before ExtendStop::Horizon.
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires the second, same-tick rebuild to be denied by the \
+             leftover budget, not satisfied"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "a second, same-tick rebuild forced by a mid-tick ball mutation, denied by \
+         ExtendStop::Budget, allocated {bytes} bytes at steady state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
     );
 }
 
