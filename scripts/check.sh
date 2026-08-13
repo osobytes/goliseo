@@ -70,6 +70,23 @@
 #      records loss, bursts, duplication and reordering at all. See that
 #      script's header and self_test()'s network_profile_parity_scenario.
 #      (#472)
+#   0d. node scripts/check_unstated_knob_shift.mjs
+#      -- the fourth gate that runs here for the same reason: no toolchain, no
+#      build, seconds. #487/#493 shipped `knob_contract::assert_moves`, which
+#      makes a feature test state which DIRECTION its knob is claimed to push
+#      its metric (`ExpectedShift::Increases`/`Decreases`) so a backwards-wired
+#      knob cannot certify as WIRED. `ExpectedShift::Unstated` is a
+#      deliberately visible escape hatch back to magnitude-only checking --
+#      legitimately needed by `noise_floor`'s own internal measurement, which
+#      has no directional claim to make, but nothing stopped a feature test
+#      from reaching for it under time pressure instead of stating a
+#      direction. Four gameplay reworks (#488-#491) are about to register a
+#      dozen-plus knobs each. This greps every `expect: ExpectedShift::Unstated`
+#      call site under rust/ and requires each one outside `noise_floor`'s own
+#      body to be either fixed or a written-reason ALLOWLIST entry in that
+#      script -- a stale entry (naming a call site that no longer declines a
+#      direction) fails too. See that script's header and self_test()'s
+#      unstated_knob_shift_scenario. (#499)
 #   1. cargo fmt --all --check                                      (rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
@@ -323,6 +340,14 @@ MIN_PRESENTATION_MAPPINGS=19
 # floor unnoticed. If this legitimately grows -- another profile, another
 # tuning field, another scenario -- raise it in the same change.
 MIN_NETWORK_PROFILE_COMPARISONS=61
+
+# The same shape of floor for gate 0d (#499): a file walk that silently
+# matched nothing would find zero ExpectedShift::Unstated call sites and exit
+# 0, indistinguishable from a genuinely clean tree. 265 tracked .rs files
+# exist under rust/ when this gate was written
+# (`git ls-files -- 'rust/**/*.rs' | grep -v /target/ | wc -l`); this floor is
+# comfortably below that, the same margin every other floor here keeps.
+MIN_UNSTATED_KNOB_RUST_FILES=250
 
 # The same shape of floor for gates 5b and 7b (#471), and the reason they are
 # not just "run the tool and read its exit code".
@@ -585,6 +610,89 @@ gate_network_profile_parity() {
     fi
     echo "    $counted impairment values agree across gc-data, gc-sim and the browser transport"
     return 0
+}
+
+# Parses the one machine-readable terminator
+# scripts/check_unstated_knob_shift.mjs prints on every run, pass or fail.
+# Pure logic, no node involved -- shared by the gate and by self_test()'s
+# unstated_knob_shift_scenario, so the check the gate performs and the check
+# the self-test proves can go red are the same code rather than two copies
+# that could drift (AGENTS.md §9).
+check_unstated_knob_terminator() {
+    local terminator="$1"
+
+    if [ -z "$terminator" ]; then
+        fail_msg "the unstated-knob-shift audit produced no GC_UNSTATED_KNOB terminator -- absent evidence is not a pass"
+        return 1
+    fi
+    case "$terminator" in
+        *"|error="*)
+            fail_msg "the unstated-knob-shift audit could not run: ${terminator#*|error=}"
+            return 1
+            ;;
+    esac
+
+    local files sites unallowed stale allowlisted detail
+    files="$(printf '%s' "$terminator" | grep -o 'files=[^|]*' | cut -d= -f2)"
+    sites="$(printf '%s' "$terminator" | grep -o 'sites=[^|]*' | cut -d= -f2)"
+    unallowed="$(printf '%s' "$terminator" | grep -o 'unallowed=[^|]*' | cut -d= -f2)"
+    stale="$(printf '%s' "$terminator" | grep -o 'stale=[^|]*' | cut -d= -f2)"
+    allowlisted="$(printf '%s' "$terminator" | grep -o 'allowlisted=[^|]*' | cut -d= -f2)"
+    detail="$(printf '%s' "$terminator" | grep -o 'detail=.*' | cut -d= -f2-)"
+
+    # See all_integers(): a non-numeric field would make `-ne 0` evaluate
+    # FALSE and fall through to a pass. Every field, before any is compared.
+    if ! all_integers "$files" "$sites" "$unallowed" "$stale" "$allowlisted"; then
+        fail_msg "the unstated-knob-shift terminator is malformed (files='$files' sites='$sites' unallowed='$unallowed' stale='$stale' allowlisted='$allowlisted'): '$terminator'"
+        return 1
+    fi
+    if [ "$unallowed" -ne 0 ]; then
+        fail_msg "$unallowed ExpectedShift::Unstated call site(s) outside knob_contract's own noise_floor path are not declared in scripts/check_unstated_knob_shift.mjs's ALLOWLIST -- a knob declining to state a direction needs a written reason, or a stated direction"
+        [ -n "$detail" ] && echo "      $detail"
+        return 1
+    fi
+    if [ "$stale" -ne 0 ]; then
+        fail_msg "$stale allowlist entr(y/ies) in scripts/check_unstated_knob_shift.mjs no longer match reality -- drop them, or the allowlist rots silently and stops meaning anything"
+        [ -n "$detail" ] && echo "      $detail"
+        return 1
+    fi
+    check_min_count "unstated knob shift audit" "rust files scanned" "$files" "$MIN_UNSTATED_KNOB_RUST_FILES" || return 1
+    echo "    $sites known ExpectedShift::Unstated call site(s), $allowlisted allowlisted, 0 undeclared, 0 stale"
+    return 0
+}
+
+# Gate 0d. Every `ExpectedShift::Unstated` call site under rust/, outside
+# `knob_contract`'s own `noise_floor` path (#499). Same cost and same shape as
+# gates 0, 0b and 0c, so it runs beside them.
+#
+# `knob_contract::assert_moves` (#487/#493) makes a feature test state which
+# direction its knob is claimed to push its metric, so a knob wired backwards
+# cannot certify as WIRED. `ExpectedShift::Unstated` is the deliberately
+# visible escape hatch back to magnitude-only checking. Nothing SURFACES a
+# feature that reaches for it, and four upcoming gameplay reworks are about to
+# register a dozen-plus knobs each under time pressure -- exactly the
+# condition under which the path of least resistance gets taken quietly.
+gate_unstated_knob_shift() {
+    step "unstated knob shift audit (ExpectedShift::Unstated call sites outside knob_contract's own noise_floor path)"
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node scripts/check_unstated_knob_shift.mjs 2>&1 | tee "$log"
+    local status=$?
+
+    local terminator
+    terminator="$(strip_ansi <"$log" | grep -o 'GC_UNSTATED_KNOB|.*' | tail -n 1)"
+    rm -f "$log"
+
+    local failures=0
+    if [ "$status" -ne 0 ]; then
+        # The weakest signal here, same reasoning as gate 7b: also 0 for a walk
+        # that found no rust/**/*.rs files at all. check_unstated_knob_terminator
+        # is what actually verifies something real was audited.
+        fail_msg "node scripts/check_unstated_knob_shift.mjs exited $status"
+        failures=1
+    fi
+    check_unstated_knob_terminator "$terminator" || failures=1
+    return "$failures"
 }
 
 gate_rust_fmt() {
@@ -2072,6 +2180,136 @@ network_profile_parity_scenario() {
     return "$failures"
 }
 
+# Scenario: gate 0d (#499). Three tracks, not two, because this gate has three
+# distinct things that can silently stop working:
+#
+#   (a) the checker's own in-memory red demonstrations (`--self-test`) --
+#       proves the detection LOGIC (call-site vs. match-arm, the noise_floor
+#       exemption, staleness) can go red;
+#   (b) the REAL on-disk file walk, driven through `--repo` over mutated
+#       COPIES of the real tree -- (a) only ever exercises MemoryRepo, so
+#       DiskRepo's recursive directory walk (the thing the real gate actually
+#       runs) is otherwise never proved able to find anything, let alone go
+#       red on it. AGENTS.md §9: "a harness self-test is not a harness run";
+#   (c) `check_unstated_knob_terminator`'s own parsing, fed fabricated
+#       terminator lines -- no node involved, same shape as
+#       check_eslint_terminator's coverage in ts_lint_scenario.
+unstated_knob_shift_scenario() {
+    local dir="$1"
+    local failures=0
+    local checker="$project_root/scripts/check_unstated_knob_shift.mjs"
+    local log
+    log="$(mktemp)"
+
+    # (a)
+    if node "$checker" --self-test >"$log" 2>&1; then
+        sed 's/^/      /' "$log"
+        echo "ok  the unstated-knob-shift checker's own self-test passes (it goes red on every drift shape it claims to catch)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_unstated_knob_shift.mjs --self-test failed:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    # (b). Copy every file the real gate would scan (the whole rust/**/*.rs
+    # tree, per --list-sources) into a plain directory -- deliberately NOT a
+    # git checkout, so this also proves DiskRepo's walk needs no .git to work,
+    # exactly as it must when scripts/check.sh's on-disk scenario harness (or
+    # a plain tarball extraction) hands it one.
+    local rel
+    while IFS= read -r rel; do
+        mkdir -p "$dir/$(dirname "$rel")"
+        cp "$project_root/$rel" "$dir/$rel"
+    done < <(node "$checker" --list-sources)
+
+    if [ ! -f "$dir/rust/crates/gc-sim/src/knob_contract.rs" ]; then
+        echo "SELF-TEST FAIL: --list-sources did not name knob_contract.rs; the fixture copy is empty"
+        rm -f "$log"
+        return 1
+    fi
+
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "ok  an untouched copy of the real tree is accepted"
+    else
+        echo "SELF-TEST FAIL: an untouched COPY of the real tree was REJECTED:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+
+    # THE LOAD-BEARING CASE: a new feature test declines to state a direction
+    # and is not allowlisted. This is exactly the shape #488-#491 are about to
+    # produce a dozen-plus times each.
+    local new_site="$dir/rust/crates/gc-sim/tests/self_test_fixture_new_knob.rs"
+    cat >"$new_site" <<'EOF'
+use gc_sim::knob_contract::{self, ExpectedShift, KnobMoveOpts};
+
+#[test]
+fn self_test_fixture_knob_moves_metric() {
+    let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
+        knob: "SELF_TEST_FIXTURE_KNOB",
+        metric: "self_test_fixture_metric",
+        expect: ExpectedShift::Unstated,
+        direction: None,
+    });
+}
+EOF
+    if node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a NEW feature test declining to state a direction was ACCEPTED -- this is exactly the gap #499 exists to close"
+        failures=1
+    elif grep -q 'self_test_fixture_new_knob\.rs.*self_test_fixture_knob_moves_metric' "$log"; then
+        echo "ok  a new, undeclared Unstated call site is rejected and named"
+    else
+        echo "SELF-TEST FAIL: the new-call-site fixture was rejected, but not for the new call site:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+    rm -f "$new_site"
+
+    # THE ALLOWLIST-ROT CASE: one of the two real allowlisted call sites gets
+    # "fixed" (states a direction instead), and the allowlist entry that used
+    # to excuse it is now stale. Restored immediately after.
+    local knob_tests="$dir/rust/crates/gc-sim/tests/knob_contract.rs"
+    cp "$knob_tests" "$knob_tests.orig"
+    sed -i '0,/expect: ExpectedShift::Unstated,/s//expect: ExpectedShift::Decreases,/' "$knob_tests"
+    if ! grep -q 'expect: ExpectedShift::Decreases,' "$knob_tests"; then
+        echo "SELF-TEST FAIL: could not edit a known call site in the fixture copy; the staleness scenario no longer reproduces"
+        failures=1
+    elif node "$checker" --repo "$dir" >"$log" 2>&1; then
+        echo "SELF-TEST FAIL: a STALE allowlist entry (its call site no longer declines a direction) was ACCEPTED -- the allowlist can rot silently, which is exactly the failure #499's allowlist requirement exists to prevent"
+        failures=1
+    elif grep -q 'stale ALLOWLIST' "$log"; then
+        echo "ok  a stale allowlist entry is rejected"
+    else
+        echo "SELF-TEST FAIL: the stale-allowlist fixture was rejected, but not for staleness:"
+        sed 's/^/      /' "$log"
+        failures=1
+    fi
+    cp "$knob_tests.orig" "$knob_tests"
+
+    # (c). Pure logic, no node involved.
+    expect_fail "an undeclared call site is rejected" \
+        check_unstated_knob_terminator "GC_UNSTATED_KNOB|files=265|sites=3|unallowed=1|stale=0|allowlisted=2|detail=rust/crates/gc-sim/tests/fake.rs::fake_fn" \
+        || failures=1
+    expect_fail "a stale allowlist entry is rejected" \
+        check_unstated_knob_terminator "GC_UNSTATED_KNOB|files=265|sites=1|unallowed=0|stale=1|allowlisted=2|detail=stale:rust/crates/gc-sim/tests/knob_contract.rs::some_fn" \
+        || failures=1
+    expect_fail "a coverage count of zero is rejected (a broken walk still exits 0 over nothing found)" \
+        check_unstated_knob_terminator "GC_UNSTATED_KNOB|files=0|sites=0|unallowed=0|stale=0|allowlisted=2" \
+        || failures=1
+    expect_fail "an absent terminator is rejected, not treated as a pass" \
+        check_unstated_knob_terminator "" \
+        || failures=1
+    expect_fail "a checker-reported error is rejected" \
+        check_unstated_knob_terminator "GC_UNSTATED_KNOB|error=could not locate noise_floor's function body" \
+        || failures=1
+    expect_pass "the real gate's clean terminator is accepted" \
+        check_unstated_knob_terminator "GC_UNSTATED_KNOB|files=265|sites=2|unallowed=0|stale=0|allowlisted=2" \
+        || failures=1
+
+    rm -f "$log"
+    return "$failures"
+}
+
 # Both #471 scenarios need real eslint/prettier binaries, and `--self-test`
 # deliberately runs BEFORE the gate -- so on a fresh clone or a CI runner
 # nothing has installed them yet. Same reasoning, and same frozen-lockfile
@@ -2561,6 +2799,10 @@ self_test() {
     mkdir -p "$work/network_profile_parity"
     network_profile_parity_scenario "$work/network_profile_parity" || failures=1
 
+    echo "==> self-test: unstated knob shift audit (gate 0d)"
+    mkdir -p "$work/unstated_knob_shift"
+    unstated_knob_shift_scenario "$work/unstated_knob_shift" || failures=1
+
     echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
 
@@ -2630,6 +2872,10 @@ main() {
     # Gate 0c, beside both: the same failure shape again, for the impairment
     # profiles browser and native evidence must share (#472).
     gate_network_profile_parity || fail=1
+    # Gate 0d, beside all three: same cost, and the failure it catches is a
+    # feature test quietly declining to state its knob's direction rather than
+    # two languages disagreeing (#499).
+    gate_unstated_knob_shift || fail=1
 
     gate_rust_fmt || fail=1
     gate_rust_clippy_workspace || fail=1

@@ -5,7 +5,9 @@ small, polished showcase release over new systems or content breadth.
 
 Before starting work, read:
 
-- [AGENTS.md](AGENTS.md) for architecture, typing, style, and testing rules.
+- [AGENTS.md](AGENTS.md) for typing, style, testing, and workflow rules.
+- [ARCHITECTURE.md](ARCHITECTURE.md) for what lives where, and why the
+  Rust/TypeScript line falls where it does.
 - [docs/showcase_release.md](docs/showcase_release.md) for the committed
   product scope.
 - [docs/vision.md](docs/vision.md) for the product principles behind that
@@ -13,32 +15,46 @@ Before starting work, read:
 
 ## Set up the project
 
-GOLISEO targets LÖVE 11.5 and LuaJIT / Lua 5.1 semantics.
+GOLISEO is a Rust simulation compiled to WebAssembly plus a TypeScript
+presentation layer on three.js. There is no native build: the browser is the
+only target.
 
 ```sh
-./scripts/setup.sh
-love .
+./scripts/setup.sh                  # pinned Rust toolchain, wasm-bindgen-cli, Node, pnpm
+cd ts
+pnpm install
+pnpm --filter @gc/wasm build:web
+pnpm dev                            # then open http://localhost:5173/
 ```
 
-The setup script installs the supported development tools without `sudo` on
-x86_64 Linux. You may also install LÖVE 11.5, StyLua, and
-lua-language-server independently.
+The setup script installs the supported development tools without `sudo`, at
+the versions [rust/rust-toolchain.toml](rust/rust-toolchain.toml) and
+[ts/package.json](ts/package.json) pin — the same versions CI uses. Use pnpm,
+never npm. [README.md](README.md) has the longer version, including the
+production build.
 
 ## Before opening a pull request
 
 Run the full project gate:
 
 ```sh
-./scripts/check.sh
+./scripts/check.sh              # the gate; CI runs this exact script
+./scripts/check.sh --self-test  # prove the gate can go red
 ```
 
-It must pass formatting, strict type checks, headless tests, and the seeded
-gameplay tripwire. New behavior needs tests at the cheapest useful tier:
+It must pass formatting, lints, strict type checks on both sides, the Rust and
+vitest suites, the wasm build, and its pinned determinism digest. It takes
+minutes. New behavior needs tests at the cheapest useful tier
+([AGENTS.md](AGENTS.md) §9):
 
-- Pure simulation logic under `spec/sim/`.
-- Pure screen layout and transitions under `spec/screens/` or `spec/ui/`.
+- Pure simulation logic in `rust/crates/<crate>/tests/`.
+- Pure screen layout, hit-testing and transitions in a `*.spec.ts` beside its
+  TypeScript source.
 - Whole-flow event sequences for navigation changes.
-- Rendering smoke or visual tests only when presentation code requires them.
+- Cross-language assertions for anything that crosses the wasm boundary or the
+  wire.
+- Browser or GPU evidence only when presentation code genuinely requires it —
+  it needs a display and does not run in the gate.
 
 ## Scope and pull requests
 
@@ -49,8 +65,8 @@ milestone:
   agreed GitHub issue is welcome.
 - Adding a season, economy, transfer system, new match verb, or other parked
   feature requires a scope discussion first.
-- Content belongs in `data/`; gameplay rules belong in `sim/`; LÖVE effects
-  and mutation belong in `game/`.
+- Content belongs in `gc-data`; gameplay rules belong in `gc-sim`; rendering,
+  input and effects belong in `ts/packages/`.
 - Do not mix a refactor with an unrelated feature.
 
 Commit messages use short conventional prefixes such as `feat:`, `fix:`,
@@ -89,7 +105,7 @@ identifier, and required attribution with any third-party material.
 
 A useful report includes:
 
-- The LÖVE version and operating system.
+- The browser and version, and the operating system.
 - The exact action or input sequence.
 - What happened and what you expected.
 - Whether it reproduces from a fresh launch.

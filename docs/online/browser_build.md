@@ -1,5 +1,12 @@
 # Browser artifact
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 Galactic Cup's OMP-0 browser proof uses the `2dengine/love.js` LÖVE 11.5
 runtime. The runtime is fetched during the build rather than vendored into the
 repository or committed as generated output. The generated `player.js` is a

@@ -1,5 +1,12 @@
 # Measuring the OMP-4 relay topology in the fault harness (#245)
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 The relay topology decision moves input distribution from the player-host to a
 dedicated relay server. This page is the measurement that was taken **before**
 any server exists, using the #169 fault harness, #168's diagnostics and a third

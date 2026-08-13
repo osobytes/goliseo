@@ -81,6 +81,10 @@ pub struct RollbackLabCorruption {
     pub slot: i64,
 }
 
+/// A per-tick, read-only campaign observer; see
+/// [`RollbackLabOptions::observer`].
+pub type RollbackLabObserver = Box<dyn FnMut(i64, &RollbackLabRunState)>;
+
 /// Construction options for [`new_campaign`].
 #[derive(Default)]
 pub struct RollbackLabOptions {
@@ -107,6 +111,17 @@ pub struct RollbackLabOptions {
     /// Skip full replay validation, trusting `tape` was already validated
     /// by its producer.
     pub prevalidated_tape: bool,
+    /// Optional per-tick observer for read-only per-tick work — issuing
+    /// queries against a sim service, for example — run inside a real
+    /// campaign. Receives the tick just advanced and a **shared** reference
+    /// to the run state, so a test can drive a query-heavy consumer through
+    /// the nine-scenario matrix without `RollbackLabRunState` widening any
+    /// field to mutable access outside this module. Unlike `measure`
+    /// (above), this has exactly one call site (`step_campaign`), so it
+    /// carries none of that option's "two places, one already-shipped type"
+    /// complication. Called once per advanced input-tape frame, after that
+    /// frame's rollback/resimulation work for the tick has settled.
+    pub observer: Option<RollbackLabObserver>,
 }
 
 /// One rollback-depth histogram row.
@@ -452,6 +467,8 @@ pub struct RollbackLabCampaign {
     /// The completed result, present once the campaign has finished.
     pub result: Option<RollbackLabResult>,
     state: RollbackLabRunState,
+    /// See [`RollbackLabOptions::observer`].
+    observer: Option<RollbackLabObserver>,
 }
 
 fn digest_segment(state: &mut Fnv1a64State, value: &str) {
@@ -1393,6 +1410,7 @@ pub fn new_campaign(tape: InputTape, options: RollbackLabOptions) -> RollbackLab
         next_frame_index: 1,
         result: None,
         state,
+        observer: options.observer,
     }
 }
 
@@ -1514,6 +1532,15 @@ pub fn step_campaign(
     while index <= last_index {
         let frame = campaign.tape.frames[(index - 1) as usize];
         advance_frame(campaign, frame, corruption);
+        // `.take()`/put-back rather than a direct disjoint-field borrow:
+        // the observer is `FnMut`, so calling it needs `&mut
+        // campaign.observer` live at the same time as the `&campaign.state`
+        // argument, and the closure body's own capture is opaque to the
+        // borrow checker.
+        if let Some(mut observer) = campaign.observer.take() {
+            observer(frame.tick, &campaign.state);
+            campaign.observer = Some(observer);
+        }
         index += 1;
     }
     campaign.next_frame_index = last_index + 1;

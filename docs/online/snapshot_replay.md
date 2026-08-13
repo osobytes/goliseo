@@ -1,5 +1,13 @@
 # OMP-1 canonical snapshot and input-tape replay
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 `sim.match_snapshot`, `sim.input_tape`, and `sim.replay` provide the pure
 start-of-tick artifacts used to reproduce a fixed-slot match. They are
 diagnostic and rollback-ready building blocks; they do not implement
@@ -71,8 +79,9 @@ requires one, and a combat-enabled match cannot be captured without passing
 its companion.
 
 The allowlists reject unknown fields, and a spec compares them with the
-LuaCATS declarations in `sim/match.lua`. Adding a state field must therefore
-make a conscious snapshot-version decision. Snapshot state excludes LÖVE,
+the `MatchState` declarations in `gc_sim::match`. Adding a state field must
+therefore make a conscious snapshot-version decision. Snapshot state excludes a
+renderer,
 render/audio objects, transport state, the fixed clock's render accumulator,
 and upstream bot policy/RNG. Some captured simulation fields, such as pose
 timers and events, currently feed presentation; retaining the complete
