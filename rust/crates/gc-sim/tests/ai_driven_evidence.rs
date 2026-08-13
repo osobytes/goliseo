@@ -61,9 +61,9 @@ const FIELD_COUNT: usize = 11 + 2 * PLAYER_COUNT;
 /// `scripts/check.sh`, which assert the COMPILED WASM module reproduces
 /// them.
 /// FNV-1a-64 over the final row, derived from the recorded baseline (#520).
-pub const EXPECTED_FINAL_HASH: &str = "1fc71b997dab5d34";
+pub const EXPECTED_FINAL_HASH: &str = "26ec2871879a3695";
 /// FNV-1a-64 over every row in sequence, derived from the recorded baseline (#520).
-pub const EXPECTED_SEQUENCE_DIGEST: &str = "5fe43d81cd0ce20a";
+pub const EXPECTED_SEQUENCE_DIGEST: &str = "5aa11af0071ad03e";
 
 fn parse_row(line: &str) -> Row {
     let f: Vec<&str> = line.split('\t').collect();
