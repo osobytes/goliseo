@@ -189,6 +189,83 @@ approximation standing in for one.
 > `gc-sim/tests/locomotion.rs` round-trips every `LOCO_*` id through the blob
 > so this cannot regress silently.
 
+## Measuring it: `time_to_reverse`
+
+The eight metrics that existed before this rework are all match **outcomes** —
+goals, shots, possession, droughts. A kinematics change reaches an outcome
+only through many layers of AI decision-making, and the consequence was
+measured, not guessed: **44 of the 45 `LOCO_*` knobs reported `DECORATION`
+against every one of them** at seed counts a per-PR gate can afford. Under
+AGENTS.md §9 that is not a tuning problem to be swept away, it is the feature
+failing the knob-contract rule. So the fix is a metric that measures what the
+primitive actually claims.
+
+`time_to_reverse` is the mean seconds a body takes to complete a 180° reversal:
+armed when it is cruising at ≥80% of base speed, completed when it is back
+above 50% heading within 15° of the opposite. Two details carry weight:
+
+- **It requires the body to pass near a standstill.** That is the observable
+  signature of the reversing branch — a commanded 180° always trips it,
+  because the arc thresholds put anything past 120° there. A body that merely
+  turned a long way round keeps its pace and never comes near zero. The first
+  draft had no such gate and counted arcs too; braking is most of a real
+  reversal and almost none of an arc, so folding the populations together
+  diluted exactly the term the metric exists to measure.
+- **It is detected from the trajectory, not from a stored command.**
+  Persisting the commanded direction would add a `MatchPlayer` field, hence a
+  snapshot version bump, hence state two peers can disagree about — the same
+  argument that kept the context out of the snapshot. A reversal is fully
+  observable without it.
+
+It resolves an order of magnitude better than anything else registered,
+because it is a mean over hundreds of events per match rather than a count of
+roughly one and a half goals. Measured over 60 full-length matches:
+
+| metric | mean | sd | se/mean |
+| --- | --- | --- | --- |
+| `time_to_reverse` | 0.482 | 0.026 | **0.7%** |
+| `possession_balance` | 0.392 | 0.063 | 2.1% |
+| `turnovers_per_min` | 3.82 | 1.19 | 4.0% |
+| `goals_total` | 2.28 | 1.42 | 8.0% |
+| `shots_per_goal` | 24.6 | 14.7 | 8.1% |
+
+At the shipped defaults it measures **0.48 s**, inside #488's proposed
+0.25–0.6 s band and nearer its slow edge. The issue calls that band a prior;
+the measurement backs it.
+
+### A reversal happens in the `Backpedal` context, and three knobs cannot reach it
+
+#488 specifies the pairing "`LOCO_RUN_DECEL` up must lower `time_to_reverse`".
+Measured across the knob's whole declared range, that reports `DECORATION`.
+Not weak — **structurally wrong**, and the reason is worth knowing before
+tuning anything:
+
+`resolve` tests the movement-versus-facing geometry *before* possession and
+sprint. From the first tick of a commanded reversal the body is moving
+opposite the way it looks, so it is `Backpedal` — and facing needs about
+0.25 s to come round, against a reversal that takes about 0.48 s. So a
+reversal is roughly half backpedal, then run. That is coherent, and arguably
+the behaviour you want: reversing out of a sprint should be punished by the
+backpedal multipliers.
+
+The consequence is not coherent by accident, though, and it should be stated
+where a tuner will see it: **`LOCO_RUN_DECEL_MULT`, `LOCO_SPRINT_DECEL_MULT`
+and `LOCO_JOG_DECEL_MULT` cannot affect a reversal at all**, because all the
+braking happens in the backpedal-dominated first half. Someone reaching for
+"how hard does a running body brake" will find the knob inert in the case that
+matters most. Use `MOVE_DECEL` (the shared base, which every context
+multiplies) or `LOCO_BACKPEDAL_DECEL_MULT`.
+
+### One caution about `fun`
+
+`fun` is a geometric mean over however many metrics extract a value, so
+**adding a healthy metric raises it for every build**. `time_to_reverse` sits
+inside its band and scores 1.0, which lifts a 9-metric `fun` above the
+8-metric one arithmetically, with nothing about the game having improved.
+`fun` is therefore not comparable across metric-set versions, which is exactly
+what the AI baseline's `baseline_version` is for — and one more reason its
+re-freeze has to be deliberate.
+
 ## Watch out for
 
 Everything in `docs/design/momentum.md`'s "Watch out for" list still applies

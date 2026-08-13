@@ -1324,4 +1324,20 @@ pub static METRICS: &[MetricDef] = &[
         direction: MetricDirection::Banded,
         desc: "Fraction of the match elapsed when the winner led for good.",
     },
+    // APPENDED, not inserted: this list is deliberately unsorted and its fold
+    // order is pinned by `gc-sim/tests/metric_registry.rs`, so inserting
+    // anywhere but the end moves a hash nobody meant to move.
+    //
+    // #488's proposed band is 0.25-0.6 s and it is a PRIOR, not ground truth
+    // -- the issue says so, and the measurement is the thing that decides.
+    // The outer edges are set where a reversal stops being interesting rather
+    // than by measurement: below 0.1 s a body is effectively still snapping,
+    // which is the behaviour this whole rework removes, and past 1.2 s it is
+    // sluggish enough that no amount of positioning payoff justifies it.
+    MetricDef {
+        id: "time_to_reverse",
+        band: [0.1, 0.25, 0.6, 1.2],
+        direction: MetricDirection::Banded,
+        desc: "Mean seconds to complete a 180-degree reversal, from a run.",
+    },
 ];

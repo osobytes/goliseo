@@ -154,6 +154,7 @@ fn metric_registry_folds_in_the_authored_order() {
             "possession_balance",
             "longest_drought_s",
             "decided_late",
+            "time_to_reverse",
         ]
     );
 }
