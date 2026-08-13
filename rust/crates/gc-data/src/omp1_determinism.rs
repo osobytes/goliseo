@@ -61,6 +61,29 @@
 //! a digest. The recorder prints a warning block instead of silently
 //! folding it in.
 //!
+//! **Since #505 these three no longer FAIL a campaign either.** The
+//! repository owner's decision, recorded on that issue, split the campaign's
+//! assertions by what they prove: `expected_score`, `event_counts` and the
+//! per-window `event_tick` became a reported, non-gating summary. Gating on
+//! them turned "the simulation is deterministic" into "the simulation must
+//! keep producing this 1-0", which foreclosed #488/#489/#490/#491.
+//!
+//! **#512 finished the job.** That decision kept
+//! `gc_sim::determinism_evidence::DeterminismCoverage` — "a tackle, a catch, a
+//! header and a full time still occurred" — as a hard gate. Measurement
+//! refuted the carve-out: `frame_wires` are frozen button presses captured at
+//! the recorded tuning, so a 0.45% locomotion change puts every player
+//! somewhere slightly different and the recorded presses stop producing the
+//! header. Coverage is now reported alongside the other three, and this
+//! campaign gates on exactly one thing: the boundary-hash chain. Nothing
+//! gates headline-behavior coverage until #518's live-AI fixture lands, and
+//! that gap is stated rather than papered over.
+//!
+//! That makes these fields more important here, not less: because they are
+//! never refreshed, they stay the fixed point every future build's behavior
+//! is *reported against*. `gc_sim::determinism_evidence`'s module doc has the
+//! full split and the three channels the report reaches a human through.
+//!
 //! # What a pass proves after a re-record, and what it stops proving
 //!
 //! Before any re-record, a green OMP-1 campaign is evidence that this

@@ -39,13 +39,43 @@ describe("determinism evidence, run inside the compiled wasm module", () => {
     expect(result.sequence_digest).toBe(EXPECTED_SEQUENCE_DIGEST);
 
     // Same fixture facts the native `cargo test` asserts
-    // (`crates/gc-sim/tests/determinism_evidence.rs`), pinned here too so
-    // a divergence in match outcome — not just the two headline digests
-    // — is caught.
+    // (`crates/gc-sim/tests/determinism_evidence.rs`), pinned here too so a
+    // fixture that stopped being this fixture — not just the two headline
+    // digests — is caught.
     expect(result.ticks).toBe(7201);
     expect(result.boundaries).toBe(7202);
-    expect(result.score_home).toBe(1);
-    expect(result.score_away).toBe(0);
-    expect(result.outcome).toBe("home");
+
+    // An `expect(result.coverage).toBe("tackle,aerial,keeper,full_time")`
+    // stood here between #505 and #512. #505 put it here to replace the
+    // score/outcome assertions, on the argument that "a tackle, a catch, a
+    // header and a full time occurred" survives a deliberate gameplay rework
+    // where "the score was 1-0" does not. Measurement refuted that: OMP-1's
+    // inputs are frozen button presses, so MOVE_ACCEL 1100 → 1105 — 0.45% —
+    // makes the same presses miss the contacts that produced the header, and
+    // this line went red for a gameplay change that has nothing to do with
+    // wasm float behaviour. Do not put it back; #518 is the live-AI fixture
+    // that is meant to gate the claim instead.
+    //
+    // Reported, never asserted (#505, #512). Logged so a drifted scoreline or
+    // a lost headline behavior is still visible to whoever reads the run —
+    // vitest prints console output for a passing test, which is the point: a
+    // demoted assertion that prints nothing is a deleted assertion.
+    // `scripts/check.sh`'s determinism gate prints the same fields
+    // independently, from the same compiled module but outside vitest
+    // (AGENTS.md §9: never trust one signal).
+    console.log(
+      `OMP-1 reported, not gated: coverage=${result.coverage} ` +
+        `score=${result.score_home}-${result.score_away} ` +
+        `outcome=${result.outcome} drift=${result.behavioral_drift}`,
+    );
+    // The one thing asserted about the report: that there IS one. `undefined`
+    // means the wasm binding stopped exporting the field, which is a deleted
+    // report rather than a demoted one; an empty `behavioral_drift` means the
+    // reporting path broke, where "none" means it ran and agreed. `coverage`
+    // is deliberately allowed to be the empty string — that is a real,
+    // reportable observation ("this build covered nothing"), not a defect in
+    // the reporter, and treating it as one would re-grow the gate above.
+    expect(typeof result.coverage).toBe("string");
+    expect(result.behavioral_drift.length).toBeGreaterThan(0);
   }, 30_000);
 });

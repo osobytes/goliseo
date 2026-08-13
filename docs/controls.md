@@ -41,8 +41,9 @@ The layout obeys four rules, and a rebinding screen should re-check them:
 3. **Movement-adjacent taps stay off the movement hand.** Juke was C, which
    forced the left hand off WASD to perform a movement action, and L3, which
    means clicking the stick you are steering with.
-4. **No edge action sits on a gamepad trigger.** LÖVE reports triggers as axes,
-   so `love.gamepadpressed` never fires for one. Triggers can carry holds only,
+4. **No edge action sits on a gamepad trigger.** Triggers are reported as axes,
+   not buttons (`ts/packages/input/src/capture_gamepad.ts`), so no press event
+   fires for one. Triggers can carry holds only,
    which is why the hold-only modifier is the single control bound to one.
 
 Gamepad **B is Back in every context**, including inside a match. It used to
@@ -150,7 +151,7 @@ direct-playtest tuning panel (F1 → Replay).
 The default product shell hides tuning, bloom, and internal rematch controls.
 When the match screen is mounted directly with the `playtest` profile, press
 **F1** to pause and open the live tuning panel — the
-gameplay knobs from `sim/tuning.lua` (movement, attacking, defending, keeper,
+gameplay knobs from `gc_sim::tuning` (movement, attacking, defending, keeper,
 AI), editable mid-session the way studio balance tools work:
 
 - **↑/↓** select a knob, **←/→** adjust it (**Shift** = ×10 steps), **Tab**
@@ -165,17 +166,18 @@ AI), editable mid-session the way studio balance tools work:
 
 There is no launch flag for it, and no shipped launch reaches it. Every match
 the app mounts names its profile explicitly — a normal match is `product`
-(`game/screens/real_match.lua`) and a networked one is `online`
-(`game/screens/online_match.lua`) — so in a launched game **F1** (tuning panel),
-**R** (restart) and **B** (bloom toggle) do nothing. That includes
-`love . --quick-match`, which skips the menus but still builds the same product
-match. It is deliberate rather than a gap: release builds hide playtest-only
+(`ts/packages/screens/src/real_match.ts`) and a networked one is `online`
+(`ts/packages/screens/src/online_match.ts`) — so in a launched game **F1**
+(tuning panel), **R** (restart) and **B** (bloom toggle) do nothing. That
+includes the app shell's `quickMatch` option (`ts/packages/app/src/app.ts`),
+which skips the menus but still builds the same product match. It is deliberate rather than a gap: release builds hide playtest-only
 controls and tuning surfaces (see `docs/showcase_release.md`, "One polished
 match").
 
-`playtest` is the default `profile` of `Match.new` in `game/screens/match.lua`,
-so the only way in is to construct that screen directly and pass no profile —
-in practice the specs that mount it, such as `spec/screens/tuning_panel_spec.lua`.
+`playtest` is the default `MatchScreenOptions.profile` in
+`ts/packages/screens/src/match.ts`, so the only way in is to construct that
+screen directly and pass no profile — in practice the specs that mount it, such
+as `ts/packages/ui/src/tuning_panel.spec.ts`.
 
 ## Menus (pre-match flow)
 

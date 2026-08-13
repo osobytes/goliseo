@@ -1,9 +1,17 @@
 # OMP-2 authoritative-reference rollback laboratory
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 `sim.rollback_lab` is the transport-free convergence runner for OMP-2. It runs
 one no-delay reference match beside one impaired rollback client and proves
 that both consume the same checked-in authoritative input stream. It has no
-LÖVE, display, socket, browser, or wall-clock dependency.
+renderer, display, socket, browser, or wall-clock dependency.
 
 ## Playable development mode
 

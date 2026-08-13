@@ -181,6 +181,12 @@
 #   9. an explicit, redundant assertion that the freshly built wasm module's
 #      runDeterminismEvidence() returns exactly
 #      final_hash=bfbb106aea5480f8 and sequence_digest=0bfd0ed355f87322.
+#      It deliberately does NOT assert the scoreline, the event counts or the
+#      coverage set -- #505 demoted the first two to a report and #512 demoted
+#      coverage to the same report, so the boundary-hash chain is the one
+#      thing OMP-1 gates on. This step PRINTS the demoted half on every run
+#      (`coverage=`, `score=`, and `drift=` escalated to a block when
+#      non-empty). See check_determinism_terminator.
 #      This is the single most important assertion in the repository: it is
 #      what proves the wasm build did not perturb float behaviour. It is
 #      checked twice, independently, on purpose (AGENTS.md §9: never trust
@@ -272,7 +278,24 @@ EXPECTED_FINAL_HASH="bfbb106aea5480f8"
 EXPECTED_SEQUENCE_DIGEST="0bfd0ed355f87322"
 EXPECTED_TICKS="7201"
 EXPECTED_BOUNDARIES="7202"
-EXPECTED_OUTCOME="home"
+# There is deliberately no EXPECTED_COVERAGE here any more, and no
+# EXPECTED_OUTCOME. The history is worth the four lines, because both were
+# removed for the same reason and the second removal is easy to mistake for a
+# weakening:
+#   - Until #505 this pinned EXPECTED_OUTCOME="home", which made a locomotion
+#     change fail a determinism gate for producing a different match.
+#   - #505 replaced it with EXPECTED_COVERAGE="tackle,aerial,keeper,full_time",
+#     on the argument that a replay where nothing happens is worthless evidence
+#     even though a replay that ends 0-0 instead of 1-0 is not.
+#   - #512 removed that too, on measurement: OMP-1's inputs are frozen button
+#     presses, so MOVE_ACCEL 1100 -> 1105 (0.45%) puts every player somewhere
+#     slightly different and the recorded presses stop producing the header.
+#     With frozen inputs, WHICH behaviors occurred is a claim about one
+#     recorded scenario exactly as much as HOW MANY is.
+# Coverage is still printed on every run and a changed set arrives as
+# `coverage.<behavior>` entries in `drift=`. What is meant to gate it is a
+# live-AI fixture whose bots adapt to a tuning change -- issue #518, filed with
+# #512's decision precisely so this gap is not left as an intention.
 
 REQUIRED_WASM_BINDGEN_VERSION="0.2.118"
 REQUIRED_NODE_MAJOR=22
@@ -1376,16 +1399,31 @@ console.log(
     "|sequence_digest=" + result.sequence_digest +
     "|ticks=" + result.ticks +
     "|boundaries=" + result.boundaries +
-    "|outcome=" + result.outcome,
+    "|coverage=" + result.coverage +
+    "|score=" + result.score_home + "-" + result.score_away +
+    "|outcome=" + result.outcome +
+    "|drift=" + result.behavioral_drift,
 );
 '
 }
 
-# Compares a GC_DETERMINISM terminator line against the pinned constants.
+# Compares a GC_DETERMINISM terminator line against the pinned constants, and
+# REPORTS the fields #505 and #512 deliberately stopped gating.
 # Pure logic, no wasm involved -- shared by the real gate and self_test().
+#
+# Gated: final_hash, sequence_digest, ticks, boundaries. Plus the STRUCTURE of
+# the report: a terminator missing its `coverage=` or `drift=` field is a
+# report that was deleted rather than demoted, and that is still a failure.
+# Reported: coverage, score, outcome, drift. `drift` names every behavioral
+# claim of the frozen recording this build no longer reproduces (previous ->
+# current), including `coverage.<behavior>` since #512, and a non-empty one is
+# escalated to a block above the summary line rather than folded into it. This
+# is the primary human-visible channel for that report -- `cargo test` swallows
+# a passing test's stdout, this script does not, and CI runs this script. A
+# demoted assertion that prints nothing is a deleted assertion.
 check_determinism_terminator() {
     local terminator="$1"
-    local final_hash sequence_digest ticks boundaries outcome
+    local final_hash sequence_digest ticks boundaries coverage score outcome drift
 
     if [ -z "$terminator" ]; then
         fail_msg "determinism probe produced no GC_DETERMINISM terminator: absent evidence is not a pass"
@@ -1396,7 +1434,10 @@ check_determinism_terminator() {
     sequence_digest="$(printf '%s' "$terminator" | grep -o 'sequence_digest=[^|]*' | cut -d= -f2)"
     ticks="$(printf '%s' "$terminator" | grep -o 'ticks=[^|]*' | cut -d= -f2)"
     boundaries="$(printf '%s' "$terminator" | grep -o 'boundaries=[^|]*' | cut -d= -f2)"
+    coverage="$(printf '%s' "$terminator" | grep -o 'coverage=[^|]*' | cut -d= -f2)"
+    score="$(printf '%s' "$terminator" | grep -o 'score=[^|]*' | cut -d= -f2)"
     outcome="$(printf '%s' "$terminator" | grep -o 'outcome=[^|]*' | cut -d= -f2)"
+    drift="$(printf '%s' "$terminator" | grep -o 'drift=[^|]*' | cut -d= -f2)"
 
     local status=0
     if [ "$final_hash" != "$EXPECTED_FINAL_HASH" ]; then
@@ -1407,10 +1448,49 @@ check_determinism_terminator() {
         fail_msg "sequence_digest=$sequence_digest, want $EXPECTED_SEQUENCE_DIGEST"
         status=1
     fi
-    if [ "$ticks" != "$EXPECTED_TICKS" ] || [ "$boundaries" != "$EXPECTED_BOUNDARIES" ] || [ "$outcome" != "$EXPECTED_OUTCOME" ]; then
-        fail_msg "fixture facts drifted: ticks=$ticks boundaries=$boundaries outcome=$outcome (want $EXPECTED_TICKS/$EXPECTED_BOUNDARIES/$EXPECTED_OUTCOME)"
+    if [ "$ticks" != "$EXPECTED_TICKS" ] || [ "$boundaries" != "$EXPECTED_BOUNDARIES" ]; then
+        fail_msg "fixture facts drifted: ticks=$ticks boundaries=$boundaries (want $EXPECTED_TICKS/$EXPECTED_BOUNDARIES)"
         status=1
     fi
+    # Coverage stopped being compared in #512 -- but the FIELD is still
+    # required. A terminator that carries no coverage= is a report that lost
+    # its subject, which is how a demotion silently becomes a deletion, and
+    # `[ "$coverage" = "" ]` cannot tell that apart from a run that covered
+    # nothing (both leave the extracted value empty). Match the literal field.
+    case "$terminator" in
+    *"|coverage="*) ;;
+    *)
+        fail_msg "no coverage= field in the terminator -- the headline-behavior report was dropped, not demoted (#512)"
+        status=1
+        ;;
+    esac
+    case "$terminator" in
+    *"|drift="*) ;;
+    *)
+        fail_msg "no drift= field in the terminator -- the behavioral report was dropped, not demoted (#505)"
+        status=1
+        ;;
+    esac
+
+    # Reported, never gating (#505, #512). Printed whether the gate passed or
+    # not: a red hash chain is exactly when knowing what the match did is
+    # useful.
+    if [ "$drift" != "none" ] && [ -n "$drift" ]; then
+        echo "    ------------------------------------------------------------------"
+        echo "    BEHAVIORAL DRIFT (reported, not gating -- see issues #505, #512)"
+        echo "    The frozen OMP-1 recording's own claims about the match it"
+        echo "    captured are no longer what this build produces:"
+        printf '%s\n' "$drift" | tr ';' '\n' | sed 's/^/      /'
+        echo "    A coverage.<behavior> entry means the recording stopped"
+        echo "    exercising one of the behaviors it is evidence of. Nothing"
+        echo "    gates that until #518's live-AI fixture lands."
+        echo "    Intended? Say so in the PR that causes it, with the recorded and"
+        echo "    the new value. Unintended? It is a finding -- investigate before"
+        echo "    trusting this green gate."
+        echo "    ------------------------------------------------------------------"
+    fi
+    echo "    coverage=$coverage score=$score outcome=$outcome drift=$drift (reported, not gated)"
+
     if [ "$status" -eq 0 ]; then
         echo "    final_hash=$final_hash sequence_digest=$sequence_digest (matches the pinned OMP-1 fixture)"
     fi
@@ -1661,30 +1741,84 @@ EOF
 
 # Scenario: the determinism comparison logic itself (check_determinism_terminator),
 # fed fabricated terminators -- no wasm build involved. Proves gate 9's
-# comparison rejects a wrong final_hash, a wrong sequence_digest, a missing
-# terminator, and accepts only the real pinned pair.
+# comparison rejects a wrong final_hash, a wrong sequence_digest and a missing
+# terminator, and accepts only the real pinned digests.
+#
+# It also proves the OTHER direction, which is the whole point of #505 and #512
+# and just as capable of regressing: a drifted score/event count/window tick,
+# and since #512 a LOST HEADLINE BEHAVIOR, must NOT fail this gate, and must
+# still be reported. Both halves are pinned here because a demotion that
+# quietly became a deletion, or a demotion that quietly re-grew a gate, look
+# identical from a green run.
 digest_drift_scenario() {
     local failures=0
+    local pinned_coverage="tackle,aerial,keeper,full_time"
+    local ok_tail="ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|coverage=$pinned_coverage|score=1-0|outcome=home|drift=none"
 
     expect_fail "a wrong final_hash is rejected" \
-        check_determinism_terminator "GC_DETERMINISM|final_hash=deadbeefdeadbeef|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=deadbeefdeadbeef|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|$ok_tail" \
         || failures=1
 
     expect_fail "a wrong sequence_digest is rejected" \
-        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=cafefeedcafefeed|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=cafefeedcafefeed|$ok_tail" \
         || failures=1
 
     expect_fail "an absent terminator is rejected, not treated as a pass" \
         check_determinism_terminator "" \
         || failures=1
 
-    expect_fail "drifted fixture facts (wrong outcome) are rejected even with correct hashes" \
-        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=away" \
+    expect_pass "the real pinned set is accepted" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|$ok_tail" \
         || failures=1
 
-    expect_pass "the real pinned pair is accepted" \
-        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|outcome=$EXPECTED_OUTCOME" \
+    # The report is STRUCTURALLY required even though its contents are not
+    # compared: this is the line between demoting a claim and deleting it.
+    expect_fail "a terminator with no coverage= field is rejected (the report was dropped, not demoted)" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|score=1-0|outcome=home|drift=none" \
         || failures=1
+
+    expect_fail "a terminator with no drift= field is rejected (the report was dropped, not demoted)" \
+        check_determinism_terminator "GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|coverage=$pinned_coverage|score=1-0|outcome=home" \
+        || failures=1
+
+    # The demotion, both ways.
+    local drifted="GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|coverage=$pinned_coverage|score=0-0|outcome=draw|drift=score:1-0->0-0;event_counts.tackle:147->151"
+    expect_pass "a drifted scoreline and event count do NOT fail the gate (#505)" \
+        check_determinism_terminator "$drifted" \
+        || failures=1
+
+    local drift_output
+    drift_output="$(check_determinism_terminator "$drifted" 2>&1)"
+    if printf '%s' "$drift_output" | grep -q "BEHAVIORAL DRIFT" \
+        && printf '%s' "$drift_output" | grep -q "score:1-0->0-0" \
+        && printf '%s' "$drift_output" | grep -q "event_counts.tackle:147->151"; then
+        echo "ok  a drifted scoreline is REPORTED with its previous and current value"
+    else
+        echo "SELF-TEST FAIL: drift was demoted to silence, not to a report"
+        printf '%s\n' "$drift_output" | sed 's/^/      /'
+        failures=1
+    fi
+
+    # #512's own half: the exact terminator that failed here one commit ago.
+    # This is what MOVE_ACCEL 1100 -> 1105 produces, with the derived hashes
+    # re-recorded so the chain is green and coverage is the only thing left
+    # that could catch it.
+    local lost_coverage="GC_DETERMINISM|final_hash=$EXPECTED_FINAL_HASH|sequence_digest=$EXPECTED_SEQUENCE_DIGEST|ticks=$EXPECTED_TICKS|boundaries=$EXPECTED_BOUNDARIES|coverage=tackle,keeper,full_time|score=1-0|outcome=home|drift=coverage.aerial:covered->absent;event_counts.header:2->absent;windows.aerial.event_tick:1788->none"
+    expect_pass "lost coverage (the fixture stopped exercising a headline behavior) does NOT fail the gate (#512)" \
+        check_determinism_terminator "$lost_coverage" \
+        || failures=1
+
+    local coverage_output
+    coverage_output="$(check_determinism_terminator "$lost_coverage" 2>&1)"
+    if printf '%s' "$coverage_output" | grep -q "BEHAVIORAL DRIFT" \
+        && printf '%s' "$coverage_output" | grep -q "coverage.aerial:covered->absent" \
+        && printf '%s' "$coverage_output" | grep -q "coverage=tackle,keeper,full_time"; then
+        echo "ok  a lost headline behavior is REPORTED, with the surviving set and the behavior that went"
+    else
+        echo "SELF-TEST FAIL: coverage was demoted to silence, not to a report"
+        printf '%s\n' "$coverage_output" | sed 's/^/      /'
+        failures=1
+    fi
 
     return "$failures"
 }

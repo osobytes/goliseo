@@ -47,7 +47,7 @@ upstream sources, and no model here becomes a dependency for them.
   No future ticks, no opponent same-tick input, no hidden RNG, no resolver
   outcomes, no post-action event labels.
 - **Every field on a non-self observation must have a rendered analogue** —
-  something a human could actually see on screen. `sim/env_observation.lua` pins
+  something a human could actually see on screen. `gc_sim::env_observation` pins
   the permitted set with a render citation per field, and a test walks real
   records against it. Adding a field requires a citation, not just a type.
 - Privileged full-state observation is allowed only behind an explicit tag, and a
@@ -58,7 +58,7 @@ upstream sources, and no model here becomes a dependency for them.
 
 ## 3. Don't fool yourself
 
-- **No reward may be named `fun`.** `sim/metrics.lua`'s geometric `fun_score` is a
+- **No reward may be named `fun`.** `gc_sim::metrics`' geometric `fun_score` is a
   soccer-shape proxy, not a measure of enjoyment. Exports tag it as such, and it is
   never a training objective.
 - **Never train an agent or predictor to maximise the metric it is later used to
@@ -76,7 +76,7 @@ upstream sources, and no model here becomes a dependency for them.
   predictors. An adversarial agent is not evidence of typical human behaviour.
 - A model records the split it trained on, so it can always say what data it used.
 - Calibrate skill bands against held-out sessions. A slower reaction time is not a
-  beginner, and a weak checkpoint is not a novice. Note `sim/bot.lua` has one
+  beginner, and a weak checkpoint is not a novice. Note `gc_sim::bot` has one
   profile and one tunable parameter, and does not yet satisfy §2 — it reads raw
   `MatchState`, including other players' internal timers.
 - Don't collapse experience into one score. Predict several outcomes with
@@ -88,9 +88,10 @@ upstream sources, and no model here becomes a dependency for them.
   through direct sim, the environment, and replay.
 - Speculative or rolled-back events are never observations, and never appear as
   confirmed evidence.
-- The environment core stays pure Lua in `sim/` — no `love`, no file I/O, no
-  networking, no learning framework. Bridge and batching code lives outside
-  `sim/`. (See `AGENTS.md` §2.)
+- The environment core stays pure Rust in `gc-sim` (`env.rs`, `env_config.rs`,
+  `env_action.rs`, `env_observation.rs`, `env_reward.rs`) — no renderer, no file
+  I/O, no networking, no learning framework. Bridge and batching code lives
+  outside `gc-sim`. (See `AGENTS.md` §2.)
 
 ## Out of scope
 

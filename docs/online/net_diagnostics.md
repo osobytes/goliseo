@@ -1,5 +1,13 @@
 # OMP-3 network diagnostics and desync capture
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 Four modules, all in `game/online/`, all additive:
 
 | Module | Job |
@@ -333,7 +341,7 @@ assert(rollback_session.add_authoritative_batch(session, rows))
 `rows` de-duplicates on `(tick, slot)` — the redundancy window re-sends each row
 up to seven times and authorship is a frozen partition, so de-duplicating is
 lossless — and returns canonical `(tick, slot)` order. The spec
-`spec/game/online_desync_package_spec.lua` does exactly the above against a fresh
+`rust/crates/gc-netcode/tests/desync_package.rs` does exactly the above against a fresh
 `rollback_session` that never saw the session, and requires the reproduced hash to
 equal the captured one.
 

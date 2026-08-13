@@ -58,8 +58,8 @@ use gc_core::fnv1a64::Fnv1a64State;
 use gc_core::vec2::Vec2;
 use gc_data::network_profiles;
 use gc_data::omp2_rollback_validation::{
-    self, Omp2RollbackCombatLoadFixture, Omp2RollbackLayout, Omp2RollbackScenarioKind,
-    Omp2RollbackValidationData,
+    self, Omp2RollbackCombatLoadFixture, Omp2RollbackLayout, Omp2RollbackScenario,
+    Omp2RollbackScenarioKind, Omp2RollbackValidationData,
 };
 use gc_data::players::PlayerData;
 use gc_data::teams;
@@ -174,7 +174,14 @@ pub struct RollbackValidationResult {
     pub logical_digest: String,
 }
 
-fn sources() -> [RollbackInputSource; 8] {
+/// The canonical eight-slot local/remote ownership every case in this
+/// module's suites uses, matching [`Omp2RollbackValidationData::source_pattern`].
+///
+/// `pub` so a test driving [`scenario_tape`] directly against `rollback_lab`
+/// (rather than through this module's own case-plan machinery) does not
+/// hand-copy the `"LRRRRRRR"` pattern a second time.
+#[must_use]
+pub fn sources() -> [RollbackInputSource; 8] {
     let mut sources = [RollbackInputSource::Remote; 8];
     sources[0] = RollbackInputSource::Local;
     sources
@@ -814,6 +821,43 @@ fn scenario_cases(
     cases
 }
 
+/// Build one authored rollback scenario's normalized input tape, the same
+/// tape [`scenario_cases`] builds for its `RollbackValidationCampaign` case.
+///
+/// `pub` per ARCHITECTURE.md §3 rule 6: attaching a per-tick
+/// `rollback_lab::RollbackLabOptions::observer` (#495) to the nine-scenario
+/// matrix means driving `rollback_lab::new_campaign`/`step_campaign` for each
+/// scenario directly, because a `RollbackValidationCampaign` case spec cannot
+/// carry a `Box<dyn FnMut>` across a retried case (see `clone_options`'s
+/// comment on the same limitation for `measure`). The alternative was
+/// reconstructing `normalized_window`/`synthetic_goal_tape` a second time in
+/// a test — exactly the kind of second independent construction path
+/// `combat_load_tape` is already `pub` to avoid.
+///
+/// # Panics
+///
+/// Panics if `scenario` is a window/repeated scenario missing its boundary
+/// fields (producer invariant, ARCHITECTURE.md §3 rule 5).
+#[must_use]
+pub fn scenario_tape(scenario: &Omp2RollbackScenario, tune: &Tuning) -> InputTape {
+    if scenario.kind == Omp2RollbackScenarioKind::SyntheticGoal {
+        return synthetic_goal_tape(tune);
+    }
+    let source = determinism_evidence::fixture_tape(tune)
+        .expect("determinism evidence fixture tape is valid");
+    normalized_window(
+        &source,
+        scenario
+            .first_boundary
+            .expect("window scenarios always carry a first boundary"),
+        scenario
+            .last_boundary
+            .expect("window scenarios always carry a last boundary"),
+        scenario.id,
+        tune,
+    )
+}
+
 /// One `combat-{profile}-{seed}` case.
 ///
 /// Shared by the `Native` and `CombatProfiles` arms of [`plan_cases`] so the
@@ -1274,6 +1318,11 @@ fn clone_options(options: &RollbackLabOptions) -> RollbackLabOptions {
         corruption: options.corruption,
         measure: None,
         prevalidated_tape: options.prevalidated_tape,
+        // Same limitation as `measure`, one line up: a case spec is reused
+        // across a campaign that may retry, and `Box<dyn FnMut>` cannot be
+        // cloned. No suite built by `plan_cases` sets `observer` today, so
+        // this never silently drops a caller-supplied one.
+        observer: None,
     }
 }
 

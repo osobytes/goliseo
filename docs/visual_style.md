@@ -5,8 +5,8 @@ spaceship dashboard. It combines a quiet space backdrop with strong match-day
 hierarchy: one headline, one obvious action, compact scouting cards, and bright
 focus treatment.
 
-The implementation source of truth is `game/ui/theme.lua`; screens describe
-semantic widgets and `game/ui/draw.lua` renders them. Screens must not invent
+The implementation source of truth is `ts/packages/ui/src/theme.ts`; screens
+describe semantic widgets and `ts/packages/ui/src/draw.ts` renders them. Screens must not invent
 private palettes or duplicate component drawing.
 
 ## Palette
@@ -20,7 +20,8 @@ private palettes or duplicate component drawing.
 | White / Muted | Primary and secondary copy |
 
 Selected and focused states also change borders, fill, and markers; color is
-never the only signal. Species accents come from `data/species.lua`. Team
+never the only signal. Species accents come from `gc_data::species`
+(`rust/crates/gc-data/src/species.rs`). Team
 colors remain content data and should be reserved for team ownership, not
 general navigation.
 
@@ -45,7 +46,7 @@ Screen hierarchy is:
 - Page gutters are at least 62px; related controls use 10–18px gaps.
 - Interactive targets are at least 38px tall.
 - Content must stay inside the virtual canvas at 960×540 and scale through
-  `game/ui/viewport.lua` for larger or letterboxed windows.
+  `ts/packages/ui/src/viewport.ts` for larger or letterboxed windows.
 - Pointer coordinates are converted into virtual space before hit-testing.
 
 ## Components and states

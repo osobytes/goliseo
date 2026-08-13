@@ -1,0 +1,688 @@
+//! Allocation coverage for `gc_sim::ball_prediction` (#494).
+//!
+//! The service is designed to be called once per query per caller per tick,
+//! and every query issued during a resimulated tick is re-issued -- so its
+//! real cost multiplies by rollback depth, up to `120 x 31 = 3,720` scratch
+//! steps in the worst retained frame (see `STEP_BUDGET_DEFAULT`'s doc
+//! comment in `src/ball_prediction.rs`). Its zero-allocation behavior was
+//! previously sound only "by inspection": `Vec::clear()` retains capacity,
+//! `BallFlight`/`BallArena`/`Vec2` are all `Copy`, and `sync()` rebuilds only
+//! on an actual key change. Nothing asserted any of that -- this file does.
+//!
+//! Measured with `gc_test_alloc::CountingAllocator`, the same pattern
+//! `gc-sim/tests/env_budget.rs` uses for another hot per-tick path. See that
+//! file's module doc for why a counting `#[global_allocator]` needs its own
+//! crate (`unsafe impl GlobalAlloc`) carved out of `unsafe_code = "forbid"`,
+//! and why every test in a file that installs one takes a shared lock for
+//! its entire body (the counter is one process-wide, not thread-scoped).
+//!
+//! ## What "steady state" means here
+//!
+//! `BallPredictor::begin_tick` bumps `tick_seq`, which is half of the cache
+//! key -- so in the *realistic* worst case (a live tick, or a resimulated
+//! tick replaying it), the very first query of every tick forces a rebuild:
+//! `samples.clear()` (retains capacity) followed by regrowing the buffer
+//! back out via repeated `extend_one()`. "Steady state" is therefore not
+//! "never rebuilds" -- it is "the buffer's `Vec` capacity has already grown
+//! to the full-horizon high-water mark, so every later rebuild-and-regrow
+//! cycle reuses that capacity instead of reallocating." Each measured round
+//! below calls `begin_tick()` before its query burst for exactly that
+//! reason: skipping it would measure a cache hit that ties no tick boundary,
+//! which is not the shape a resimulated tick actually produces.
+//!
+//! Every measurement excludes fixture construction (`MatchState`,
+//! `BallPredictor::default()`) and the first rebuild-from-empty by running
+//! one unmeasured warm-up round before `ALLOC.start()` -- mirroring
+//! `env_budget.rs::measure_allocations`. The first-rebuild cost is not
+//! ignored; it gets its own pinned-ceiling test below instead of leaking
+//! into the steady-state figures.
+//!
+//! `extend_one`'s two denial exits, `ExtendStop::Horizon` and
+//! `ExtendStop::Budget`, are covered separately. Under
+//! `BallPredictionConfig::default()` a tie between them always resolves to
+//! `Horizon` (`STEP_BUDGET_DEFAULT` is pinned exactly equal to one
+//! full-horizon rebuild's tick count), so the plain steady-state tests above
+//! only ever exercise `Horizon`. The "Budget denial" section further down
+//! exercises `Budget` on its own, both via a reduced `step_budget` and via
+//! the mid-tick-mutation second rebuild that is the actual resimulated-tick
+//! shape issue #494 is about.
+
+use gc_core::vec2::Vec2;
+use gc_sim::ball_prediction::{
+    BallAxis, BallEstimateSource, BallPlane, BallPredictionConfig, BallPredictor,
+};
+use gc_sim::r#match::{self as sim_match, NewMatchOptions};
+use gc_sim::match_snapshot::{MatchState, PitchSize};
+use gc_test_alloc::CountingAllocator;
+
+/// See this file's module doc and `gc-test-alloc`/`env_budget.rs` for why
+/// this is safe alongside `gc-sim`'s own `unsafe_code = "forbid"`: this is a
+/// `[dev-dependencies]`-only crate, and a `#[global_allocator]` declared in
+/// one `tests/*.rs` file applies to that file's binary alone.
+#[global_allocator]
+static ALLOC: CountingAllocator = CountingAllocator;
+
+/// `ALLOC` is one process-wide, not thread-scoped (see `gc-test-alloc`'s own
+/// doc comment), and `cargo test` runs a binary's `#[test]` functions
+/// concurrently by default. Every test here holds this lock for its entire
+/// body so this file's tests cannot pollute each other's counts, regardless
+/// of the runner's thread count -- the same fix `env_budget.rs` applies for
+/// the same reason.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Calls `body` once unmeasured (absorbing fixture-construction and
+/// first-rebuild cost), then `ROUNDS` further times, returning the minimum
+/// bytes reported allocated on any single round. The minimum, not the mean,
+/// so that a round which happens to absorb a one-off resize does not inflate
+/// the figure. Caller must hold `TEST_LOCK` for the duration.
+const ROUNDS: usize = 9;
+
+fn measure_allocations(mut body: impl FnMut()) -> usize {
+    body();
+    let mut best = usize::MAX;
+    for _ in 0..ROUNDS {
+        ALLOC.start();
+        body();
+        best = best.min(ALLOC.allocated());
+    }
+    best
+}
+
+// ---------------------------------------------------------------------
+// Fixtures -- a loose, airborne ball with a trajectory that resolves every
+// query kind (a distance covered, an X-plane crossed, a height reached)
+// well inside the default two-second horizon. Deliberately not stepped
+// through the live simulation anywhere in this file: every test here only
+// ever queries a fixed `MatchState`, so nothing here needs the players
+// parked out of the ball's way the way `ball_prediction.rs`'s accuracy
+// fixture does.
+// ---------------------------------------------------------------------
+
+fn new_state() -> MatchState {
+    let home = gc_data::teams::get("nebula").expect("nebula is authored");
+    let away = gc_data::teams::get("orion").expect("orion is authored");
+    sim_match::new(NewMatchOptions {
+        home,
+        away,
+        field: PitchSize { w: 960.0, h: 540.0 },
+        home_formation: None,
+        tactic: None,
+        away_tactic: None,
+        duration: Some(120.0),
+        max_goals: Some(99),
+        seed: Some(733.0),
+        players_by_id: None,
+        species_by_id: None,
+        showcase_players_by_id: None,
+        human_controlled: None,
+        input_ownership: None,
+    })
+}
+
+/// A loose, airborne ball: no owner, moving +x and briefly upward before
+/// gravity brings it back down. Never mutated by anything in this file, so
+/// every round queries the exact same fingerprint -- only `tick_seq`
+/// advances, which is what forces the per-tick rebuild this file measures
+/// through.
+fn flying_ball_state() -> MatchState {
+    let mut state = new_state();
+    state.owner = None;
+    state.ball = Vec2::new(220.0, 60.0);
+    state.ball_vel = Vec2::new(520.0, -40.0);
+    state.ball_z = 90.0;
+    state.ball_vz = 120.0;
+    state.ball_spin = 0.0;
+    state.pickup_cd = 0.0;
+    state
+}
+
+/// One pass over every query kind plus the fallback flavor, per the issue's
+/// coverage requirement ("all four query kinds plus the fallback flavor,
+/// not only `position_at_time`"):
+///
+/// 1. `position_at_time` -- also the call that grows (or, once warm,
+///    re-confirms) the buffer out to just under the full horizon, so every
+///    other kind below resolves from the buffer alone.
+/// 2. `state_after_distance`
+/// 3. `time_to_cross_plane`
+/// 4. `time_to_height`
+/// 5. `estimate_position_at_time`, sampled flavor (inside the buffer)
+/// 6. `estimate_position_at_time`, fallback flavor (beyond the horizon,
+///    where an authoritative query would refuse and this one degrades)
+/// 7. `reachable_before_arrival` -- `&self`, no `sync()`, included for
+///    completeness though it was never a candidate for allocating.
+fn full_query_burst(predictor: &mut BallPredictor, state: &MatchState) {
+    let horizon = predictor.config().max_horizon;
+
+    let at = predictor
+        .position_at_time(state, horizon - 0.001)
+        .expect("resolves just inside the horizon");
+    assert!(at.time > 0.0);
+
+    let after = predictor
+        .state_after_distance(state, 50.0)
+        .expect("the ball covers 50 px well inside the horizon");
+    assert!(after.path >= 50.0);
+
+    let crossing = predictor
+        .time_to_cross_plane(
+            state,
+            BallPlane {
+                axis: BallAxis::X,
+                coord: 400.0,
+            },
+        )
+        .expect("the ball crosses x = 400 inside the horizon");
+    assert!(crossing > 0.0);
+
+    let grounded = predictor
+        .time_to_height(state, 0.0)
+        .expect("a ball thrown up comes back down inside the horizon");
+    assert!(grounded > 0.0);
+
+    let sampled = predictor.estimate_position_at_time(state, horizon * 0.5);
+    assert_eq!(sampled.source, BallEstimateSource::Sampled);
+
+    let fallback = predictor.estimate_position_at_time(state, horizon + 1.0);
+    assert_eq!(fallback.source, BallEstimateSource::Fallback);
+
+    let point = Vec2::new(state.ball.x, state.ball.y);
+    let reach = predictor.reachable_before_arrival(&state.players[0], point, 0.5);
+    assert!(reach.arrival >= 0.0);
+}
+
+/// A predictor whose sample buffer has already grown to its full-horizon
+/// high-water mark, and the fixed state it grew against. Building this is
+/// itself unmeasured (fixture construction, plus the very first rebuild --
+/// see `first_rebuild_from_an_empty_buffer` below for that cost measured on
+/// its own).
+fn warmed() -> (BallPredictor, MatchState) {
+    let state = flying_ball_state();
+    let mut predictor = BallPredictor::default();
+    predictor.begin_tick();
+    full_query_burst(&mut predictor, &state);
+    (predictor, state)
+}
+
+// ---------------------------------------------------------------------
+// Steady state: buffer already grown to horizon size. Each round still
+// calls `begin_tick()`, because that is what a resimulated tick actually
+// does -- see the module doc's "What 'steady state' means here".
+// ---------------------------------------------------------------------
+
+#[test]
+fn steady_state_full_query_burst_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        full_query_burst(&mut predictor, &state);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "a steady-state burst covering all four query kinds plus the fallback flavor \
+         allocated {bytes} bytes; the service is documented as zero-allocation per query \
+         once the buffer has grown to the horizon"
+    );
+}
+
+#[test]
+fn steady_state_position_at_time_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let _ = predictor.position_at_time(&state, horizon - 0.001);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "position_at_time allocated {bytes} bytes at steady state"
+    );
+}
+
+#[test]
+fn steady_state_state_after_distance_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let _ = predictor.state_after_distance(&state, 50.0);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "state_after_distance allocated {bytes} bytes at steady state"
+    );
+}
+
+#[test]
+fn steady_state_time_to_cross_plane_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let _ = predictor.time_to_cross_plane(
+            &state,
+            BallPlane {
+                axis: BallAxis::X,
+                coord: 400.0,
+            },
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "time_to_cross_plane allocated {bytes} bytes at steady state"
+    );
+}
+
+#[test]
+fn steady_state_time_to_height_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let _ = predictor.time_to_height(&state, 0.0);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "time_to_height allocated {bytes} bytes at steady state"
+    );
+}
+
+#[test]
+fn steady_state_estimate_position_at_time_sampled_flavor_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let estimate = predictor.estimate_position_at_time(&state, horizon * 0.5);
+        assert_eq!(estimate.source, BallEstimateSource::Sampled);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "estimate_position_at_time (sampled flavor) allocated {bytes} bytes at steady state"
+    );
+}
+
+#[test]
+fn steady_state_estimate_position_at_time_fallback_flavor_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let estimate = predictor.estimate_position_at_time(&state, horizon + 1.0);
+        assert_eq!(estimate.source, BallEstimateSource::Fallback);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "estimate_position_at_time (fallback flavor) allocated {bytes} bytes at steady state -- \
+         the closed-form fallback in `fallback_estimate` takes no `Vec`/`String`/heap input, so \
+         this is measuring `sync()` alone"
+    );
+}
+
+#[test]
+fn steady_state_reachable_before_arrival_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (predictor, state) = warmed();
+    let point = Vec2::new(state.ball.x, state.ball.y);
+
+    let bytes = measure_allocations(|| {
+        let _ = predictor.reachable_before_arrival(&state.players[0], point, 0.5);
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "reachable_before_arrival allocated {bytes} bytes; it is pure kinematics over &self \
+         and never calls sync()"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Budget denial: `extend_one` checks `ExtendStop::Horizon` before
+// `ExtendStop::Budget`, and `STEP_BUDGET_DEFAULT` is pinned exactly equal to
+// one full-horizon rebuild's tick count
+// (`the_default_budget_covers_one_full_horizon_rebuild_and_a_bounded_worst_frame`
+// in `ball_prediction.rs`) -- so under `BallPredictionConfig::default()`, a
+// tie always resolves to `Horizon`. Every steady-state test above therefore
+// exercises `ExtendStop::Horizon` only; `ExtendStop::Budget` is a distinct
+// exit out of `extend_one` (a different `flush_tail`/telemetry path) and
+// needs its own coverage. It is reachable two ways, and both are covered
+// below: a reduced `step_budget` (the shortcut also used by
+// `a_spent_budget_falls_back_for_tolerant_callers_and_refuses_authoritative_ones`
+// in `ball_prediction.rs`), and a second rebuild forced by a mid-tick ball
+// mutation spending down whatever budget the first query in that tick left
+// behind -- the actual resimulated-tick shape issue #494 is about.
+// ---------------------------------------------------------------------
+
+/// A `step_budget` well below `STEP_BUDGET_DEFAULT` (120), so a query asking
+/// for anything past what it can reach in one rebuild is refused by
+/// `ExtendStop::Budget` rather than `ExtendStop::Horizon` -- the default
+/// horizon (2.0 s) stays far out of reach at this budget, so the horizon
+/// check in `extend_one` never gets a chance to fire first.
+const BUDGET_CONSTRAINED_STEP_BUDGET: i64 = 40;
+
+fn budget_constrained_config() -> BallPredictionConfig {
+    BallPredictionConfig {
+        step_budget: BUDGET_CONSTRAINED_STEP_BUDGET,
+        ..BallPredictionConfig::default()
+    }
+}
+
+/// A predictor configured with [`BUDGET_CONSTRAINED_STEP_BUDGET`], already
+/// warmed to that budget's own steady state. The warm-up round grows the
+/// buffer out to exactly what the reduced budget allows (`40` samples) and
+/// no further -- every measured round below reproduces that exact shape,
+/// since `begin_tick()` resets `budget_left` to the same `step_budget` every
+/// time.
+fn warmed_budget_constrained() -> (BallPredictor, MatchState) {
+    let state = flying_ball_state();
+    let mut predictor = BallPredictor::new(budget_constrained_config());
+    predictor.begin_tick();
+    let horizon = predictor.config().max_horizon;
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+    (predictor, state)
+}
+
+#[test]
+fn steady_state_budget_denied_authoritative_query_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_budget_constrained();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires ExtendStop::Budget to refuse this authoritative \
+             query -- the reduced step budget cannot reach a target this far past the horizon \
+             it can afford"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "an authoritative query refused by ExtendStop::Budget allocated {bytes} bytes at \
+         steady state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
+    );
+}
+
+#[test]
+fn steady_state_budget_denied_tolerant_query_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_budget_constrained();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let estimate = predictor.estimate_position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            estimate.source,
+            BallEstimateSource::Fallback,
+            "this test's premise requires ExtendStop::Budget to force the closed-form \
+             fallback here -- the target is well inside the horizon, so only the budget \
+             (not the horizon) can be why the buffer does not reach it"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "a tolerant query degraded by ExtendStop::Budget allocated {bytes} bytes at steady \
+         state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
+    );
+}
+
+/// The shape production will actually hit: a mid-tick ball mutation (a
+/// kick, a bounce, a possession pickup -- any of the paths
+/// `every_enumerated_external_ball_mutation_path_bumps_the_generation` in
+/// `ball_prediction.rs` enumerates) bumps the generation and forces a
+/// *second* rebuild within the same live tick. That second rebuild does not
+/// get a fresh `step_budget` allowance -- `begin_tick()` is what resets
+/// `budget_left`, and it is called once per tick, not once per rebuild -- so
+/// it inherits only whatever the first query already left behind. Even
+/// under the generous *default* config, where a single rebuild per tick
+/// never spends its whole budget before reaching the horizon (by the exact
+/// equality `STEP_BUDGET_DEFAULT == horizon_ticks` pins), a second rebuild
+/// forced mid-tick can still starve into `ExtendStop::Budget`. This is
+/// exactly "every query during a resimulated tick is re-issued" from the
+/// issue: a resimulated tick's `begin_tick()` + query burst is one first
+/// rebuild, and any further ball correction replayed into the *same*
+/// resimulated tick is a second, budget-starved one.
+#[test]
+fn steady_state_second_rebuild_within_one_tick_from_a_mid_tick_mutation_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = flying_ball_state();
+    let mut predictor = BallPredictor::default();
+    let horizon = predictor.config().max_horizon;
+
+    // Warm-up (unmeasured): establish the buffer's full-horizon capacity
+    // (121 samples) so every measured round below reuses it rather than
+    // growing into it for the first time. `warmed()` isn't reused here
+    // because this test needs its own `state` handle to mutate mid-round.
+    predictor.begin_tick();
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        // First query this tick: spends most, but deliberately not all, of
+        // the default 120-tick budget (0.8 * horizon = 96 of 120 ticks),
+        // growing the buffer partway.
+        let _ = predictor.position_at_time(&state, horizon * 0.8);
+        // A mid-tick mutation: bumps the fingerprint and therefore the
+        // generation, without a new `begin_tick()`. The exact drift is
+        // irrelevant to what this test checks (step *count*, not
+        // trajectory), so a small monotonic nudge keeps every round's
+        // fingerprint distinct from the last without needing a reset.
+        state.ball_vel.x += 1.0;
+        // Second query, same tick: this rebuild only inherits the ~24
+        // ticks of budget the first query left behind (120 - 96), not a
+        // fresh 120. Asking for the full horizon again all but guarantees
+        // ExtendStop::Budget fires before ExtendStop::Horizon.
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires the second, same-tick rebuild to be denied by the \
+             leftover budget, not satisfied"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "a second, same-tick rebuild forced by a mid-tick ball mutation, denied by \
+         ExtendStop::Budget, allocated {bytes} bytes at steady state"
+    );
+    assert!(
+        predictor.telemetry().budget_exhaustions > 0,
+        "this test's premise requires the budget branch to actually fire at least once"
+    );
+}
+
+// ---------------------------------------------------------------------
+// First-rebuild growth: measured and pinned, not left unbounded.
+// ---------------------------------------------------------------------
+
+// Measured on this machine (System/glibc allocator, debug profile), taking
+// the minimum of `ROUNDS = 9` rounds after one unmeasured warm-up call, per
+// `measure_allocations`, reproduced to the exact byte across repeated
+// `cargo test` process invocations (both `--test-threads=1` and the default
+// concurrent runner, since `TEST_LOCK` serializes this file's tests either
+// way):
+//
+//   first rebuild (0 -> full horizon, 121 samples @ 64 B each)   8,192 B
+//   ceiling                                                     10,240 B (10 KiB, 1.25x)
+//
+// 8,192 B is `Vec<BallSample>` growing by doubling from empty to a capacity
+// of 128 (`BallSample` is 64 bytes: `time`/`z`/`vz`/`path` at 8 B each plus
+// two `Vec2` at 16 B each) -- the smallest power-of-two capacity that fits
+// 121 samples (one `t = 0` plus 120 scratch ticks at the default horizon and
+// stride). The margin is headroom for the kind of drift that is not a
+// regression -- a `rustc`/allocator/dependency bump nudging the growth
+// curve -- not for "this grew because a query path now allocates on every
+// call"; that failure mode is exactly what the steady-state tests above
+// already catch, at an exact zero rather than a ceiling. Re-measure and
+// re-derive the ceiling (`cargo test -p gc-sim --test ball_prediction_alloc
+// -- --nocapture` prints the raw figure via the `eprintln!` below) rather
+// than adjusting the margin to make a new number pass -- same policy as
+// `env_budget.rs`.
+
+#[test]
+fn first_rebuild_from_an_empty_buffer_grows_within_a_pinned_ceiling() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state = flying_ball_state();
+    let horizon = BallPredictionConfig::default().max_horizon;
+
+    // Every round below is deliberately a *fresh* `BallPredictor`: this
+    // measures growing `samples` from empty out to the full-horizon
+    // high-water mark, which only ever happens once per predictor's
+    // lifetime (every rebuild after this one reuses the capacity, per the
+    // steady-state tests above). `measure_allocations`'s "one unmeasured
+    // warm-up round" therefore does not defeat this test -- it just costs
+    // one extra fresh predictor, still measuring the same first-rebuild
+    // shape as every other round.
+    let bytes = measure_allocations(|| {
+        let mut predictor = BallPredictor::default();
+        predictor.begin_tick();
+        let _ = predictor
+            .position_at_time(&state, horizon - 0.001)
+            .expect("resolves just inside the horizon");
+    });
+
+    eprintln!("MEASURED first-rebuild growth (position_at_time to full horizon): {bytes} bytes");
+    const CEILING: usize = 10 * 1024;
+    assert!(
+        bytes < CEILING,
+        "growing the sample buffer from empty to the full horizon allocated {bytes} bytes \
+         (ceiling {CEILING}, measured 8,192 B with a 1.25x margin -- see this test's section \
+         comment)"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Go-red demonstration (AGENTS.md §9): a standing test proving this file's
+// harness would actually catch a per-query allocation, not only a
+// commit-message transcript of a manual patch-and-revert (the shape PR #502
+// established for this repo: "red demonstrations are now standing tests").
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_steady_state_guard_actually_detects_a_deliberate_allocation() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed();
+
+    // Stands in for exactly the class of regression the zero-byte
+    // assertions above exist to catch: some query path performing a heap
+    // allocation it has no business making. `black_box` on both the
+    // allocation and its use keeps the optimizer from proving the value
+    // unused and eliding the allocation entirely.
+    const POISON_BYTES: usize = 64;
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        full_query_burst(&mut predictor, &state);
+        let poison: Vec<u8> = std::hint::black_box(Vec::with_capacity(POISON_BYTES));
+        std::hint::black_box(&poison);
+    });
+
+    assert!(
+        bytes >= POISON_BYTES,
+        "the harness failed to observe a deliberate {POISON_BYTES}-byte allocation inside the \
+         measured window (observed {bytes} bytes) -- if this fires, the zero-allocation \
+         assertions in this file are not actually protecting anything"
+    );
+}
+
+// ---------------------------------------------------------------------
+// flush_tail's own push_cursor() call -- distinct from the inline push
+// inside extend_one -- is unreachable from every fixture above. All of them
+// use `sample_stride = 1` (the default), under which a successful
+// `extend_one` always pushes exactly at the point a subsequent stop would
+// otherwise flush, so `stored + TIME_EPSILON < cursor_time` is never true at
+// a stop. This is the same shape as the `ExtendStop::Budget` gap fixed
+// earlier in this file's history: a default config value making a branch
+// unreachable from the whole suite. `ball_prediction.rs` already has
+// fixtures with `sample_stride > 1` (`:204`, `:613`), so this borrows the
+// shape rather than inventing a new one.
+// ---------------------------------------------------------------------
+
+/// Chosen so a stop lands strictly mid-stride: `MID_STRIDE_STEP_BUDGET %
+/// MID_STRIDE_SAMPLE_STRIDE != 0` (`40 % 3 == 1`), so the last inline push
+/// inside `extend_one` lands at step 39 (a multiple of 3) and the
+/// `ExtendStop::Budget` stop lands at step 40 -- one tick later, not itself
+/// a stride multiple, which is exactly the gap `flush_tail`'s own push
+/// exists to close. Verified directly before writing this test (not merely
+/// inferred from the arithmetic): a throwaway instrumented run reported
+/// `sample_count() == 15`, one more than the 14 inline pushes (`t = 0` plus
+/// multiples of 3 up to 39) would produce on their own.
+const MID_STRIDE_SAMPLE_STRIDE: i64 = 3;
+const MID_STRIDE_STEP_BUDGET: i64 = 40;
+
+fn mid_stride_config() -> BallPredictionConfig {
+    BallPredictionConfig {
+        step_budget: MID_STRIDE_STEP_BUDGET,
+        sample_stride: MID_STRIDE_SAMPLE_STRIDE,
+        ..BallPredictionConfig::default()
+    }
+}
+
+fn warmed_mid_stride() -> (BallPredictor, MatchState) {
+    let state = flying_ball_state();
+    let mut predictor = BallPredictor::new(mid_stride_config());
+    predictor.begin_tick();
+    let horizon = predictor.config().max_horizon;
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+    (predictor, state)
+}
+
+#[test]
+fn steady_state_flush_tail_push_mid_stride_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_mid_stride();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires the same budget-denied stop as the tests above, \
+             this time landing mid-stride so flush_tail's own push_cursor() fires"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "flush_tail's push_cursor(), reached by a stop landing mid-stride, allocated {bytes} \
+         bytes at steady state"
+    );
+    assert_eq!(
+        predictor.sample_count(),
+        15,
+        "this test's premise requires flush_tail's push to have actually fired (14 inline \
+         pushes plus 1 from flush_tail); if this is 14, the mid-stride stop stopped landing on \
+         a stride boundary and no longer exercises the branch this test is for"
+    );
+}

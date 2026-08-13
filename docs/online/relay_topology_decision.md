@@ -1,5 +1,12 @@
 # Online topology decision: dedicated relay
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 Status: **accepted in direction, scope open**, by the repository owner on 2026-07-27. Supersedes the
 inherited host-star for OMP-4 onward. OMP-3 ships as built.
 
