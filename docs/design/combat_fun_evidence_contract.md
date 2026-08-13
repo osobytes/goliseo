@@ -597,10 +597,11 @@ arc/range in carrier contest, carrier protection, loose-ball contest, and
 off-ball lane/shot contexts, with each legal movement, juke, guard, or spacing
 response. They run at `960x540` and `1280x720`, 30/60/120 Hz presentation,
 keyboard and standard gamepad, and network profiles `clean`, `omp0_parity`, and
-`playable`. (The platform half of this stratum was declared pre-port as "native
-LÖVE 11.5 plus the recorded Chrome and Firefox versions". There is no native
-build any more — commit `2c0d449` (#467) deleted it — so the supported platform
-set is the recorded browser versions alone until this contract is re-declared.)
+`playable`. (The platform half of this stratum was declared pre-port as the
+then-native engine plus the recorded Chrome and Firefox versions. There is no
+native build any more — commit `2c0d449` (#467) deleted it — so the supported
+platform set is the recorded browser versions alone until this contract is
+re-declared.)
 The `stress` profile is adversarial, not a normal-context support claim.
 
 The burden pilot derives `human_actionable_floor_ticks` as the ceiling of the

@@ -93,8 +93,8 @@ The list above is direction, not a shipping commitment.
 - Boot-to-kickoff should be fast; setup should not outlast the match.
 - At most two attribute-modifying layers may be active in a match.
 - Content is data; mechanisms are code.
-- Rigged 3D presentation stays in `game/`; gameplay outcomes stay in pure
-  `sim/`.
+- Rigged 3D presentation stays in `ts/packages/render`; gameplay outcomes stay
+  in pure `gc-sim`.
 - A scalable 2D presentation remains available as a fallback until the 3D path
   passes its performance and compatibility gates.
 - `gc-sim` and `gc-data` stay independent of any renderer.

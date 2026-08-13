@@ -410,22 +410,22 @@ Before progression or content breadth, the fixed slice must demonstrate:
 The architecture stays one-directional:
 
 ```text
-data/
+gc-data
     player identity, presentation ids, fixed loadouts, family ids
         |
         v
-sim/
+gc-sim
     validates intents and resolves guard/stagger/knockback/ball_spill
         |
         v
-game/
+ts/packages/render
     maps states to clips, attachments, VFX, SFX, camera, and HUD
 ```
 
-- `sim/` never imports Menori, KayKit data, GLB files, bone names, or animation
-  durations.
-- `game/` owns the animation controller, loops, one-shots, priorities,
-  crossfades, and deterministic resets.
+- `gc-sim` never imports three.js, character assets, GLB files, bone names, or
+  animation durations.
+- `ts/packages/render` owns the animation controller, loops, one-shots,
+  priorities, crossfades, and deterministic resets.
 - Runtime assets are glTF 2.0 binary (`.glb`). Editable production sources stay
   as `.blend`.
 - A semantic clip manifest maps game verbs to source tracks; match code does
