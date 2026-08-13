@@ -61,6 +61,20 @@
 //! a digest. The recorder prints a warning block instead of silently
 //! folding it in.
 //!
+//! **Since #505 these three no longer FAIL a campaign either.** The
+//! repository owner's decision, recorded on that issue, split the campaign's
+//! assertions by what they prove: the boundary-hash chain and
+//! `gc_sim::determinism_evidence::DeterminismCoverage` stay hard gates, while
+//! `expected_score`, `event_counts` and the per-window `event_tick` become a
+//! reported, non-gating summary. Gating on them turned "the simulation is
+//! deterministic" into "the simulation must keep producing this 1-0", which
+//! foreclosed #488/#489/#490/#491.
+//!
+//! That makes these fields more important here, not less: because they are
+//! never refreshed, they stay the fixed point every future build's behavior
+//! is *reported against*. `gc_sim::determinism_evidence`'s module doc has the
+//! full split and the three channels the report reaches a human through.
+//!
 //! # What a pass proves after a re-record, and what it stops proving
 //!
 //! Before any re-record, a green OMP-1 campaign is evidence that this

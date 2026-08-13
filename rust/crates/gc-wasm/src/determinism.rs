@@ -40,14 +40,33 @@ pub struct DeterminismEvidence {
     pub outcome: String,
     /// Encoded byte length of the final canonical snapshot.
     pub snapshot_bytes: f64,
+    #[wasm_bindgen(getter_with_clone)]
+    /// The headline behaviors this campaign observed, comma-joined in
+    /// `goal_kickoff,tackle,aerial,keeper,full_time` order — the **gated**
+    /// half of #505's split, exposed so a caller can assert on it instead of
+    /// on the scoreline.
+    pub coverage: String,
+    #[wasm_bindgen(getter_with_clone)]
+    /// Every recorded behavioral claim this build no longer reproduces,
+    /// rendered by `gc_sim::determinism_evidence::render_drift`: `"none"`, or
+    /// `claim:recorded->observed` entries joined by `;`.
+    ///
+    /// **Reported, never gating** — but a caller that drops it on the floor
+    /// has deleted the assertion rather than demoted it. `scripts/check.sh`
+    /// and `determinism.spec.ts` both surface it.
+    pub behavioral_drift: String,
 }
 
 /// Run a complete OMP-1 determinism campaign against the frozen 7,201-tick
 /// fixture, exactly as `gc_sim::determinism_evidence::verify` does natively,
-/// and return its evidence. The caller compares `final_hash` and
-/// `sequence_digest` against the pinned native-build digests; this function
-/// makes no claim about what they should be — see this crate's report for
-/// what was actually observed under wasm.
+/// and return its evidence. The caller compares `final_hash`,
+/// `sequence_digest` and `coverage` against the pinned native-build values;
+/// this function makes no claim about what they should be — see this crate's
+/// report for what was actually observed under wasm.
+///
+/// `score_home`/`score_away`/`outcome` and `behavioral_drift` are the
+/// *reported*, non-gating half (#505): a caller must surface them, not assert
+/// on them.
 ///
 /// # Errors
 ///
@@ -73,5 +92,7 @@ pub fn run_determinism_evidence() -> Result<DeterminismEvidence, JsValue> {
         score_away: result.score_away as f64,
         outcome: outcome.to_string(),
         snapshot_bytes: result.snapshot_bytes as f64,
+        coverage: determinism_evidence::coverage_list(&result.coverage),
+        behavioral_drift: determinism_evidence::render_drift(&result.drift),
     })
 }

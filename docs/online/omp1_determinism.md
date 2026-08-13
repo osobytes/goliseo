@@ -51,6 +51,31 @@ floating-point countdown rather than a change to the 60 Hz authority. OMP-2
 must preserve this recorded boundary or deliberately replace the countdown
 with an integer tick budget and version the fixture.
 
+**What a campaign gates on is narrower than what it checks** (#505). The
+repository owner's decision, recorded on that issue, splits the campaign's
+assertions by what they prove:
+
+| Gated — the run goes red | Reported — printed, never red |
+| --- | --- |
+| every boundary hash, `expected_final_hash`, `expected_sequence_digest`, two independent replays agreeing, every restore window replaying to its pinned hashes | `expected_score` |
+| `DeterminismCoverage`: a tackle, a catch, a header and a full time still **occurred**, and each window still contains the event it is scoped around | `event_counts` |
+| | each window's `event_tick` |
+
+The line is *"these behaviors occurred"* against *"exactly 147 tackles
+occurred and the score was 1-0"*. The scoreline and the tackle count are
+incidental properties of the scenario that happened to be recorded, not the
+determinism guarantee the fixture exists to provide, and gating on them
+foreclosed every queued gameplay rework (#488, #489, #490, #491).
+
+A moved claim is reported as **drift** — the recorded value and the current
+one, side by side — through three channels: `scripts/check.sh`'s determinism
+gate (`drift=` on the `GC_DETERMINISM` line, escalated to a `BEHAVIORAL DRIFT`
+block when non-empty), `ts/packages/wasm/src/determinism.spec.ts`'s log line,
+and the `record_omp1_derived_baseline` recorder's warning block. Drift is not
+self-evidently fine: read it the way a drifted boundary hash is read —
+intended, or a finding? If intended, record it in the PR that causes it, with
+the previous value and the new one.
+
 ## Hash and repeated-run result
 
 Every boundary is encoded with canonical snapshot version 11 and hashed with
@@ -68,15 +93,17 @@ The authoritative values are:
 boundaries=7202
 final_hash=bfbb106aea5480f8
 sequence_digest=0bfd0ed355f87322
-score=1-0
-outcome=home
+coverage=tackle,aerial,keeper,full_time
 final_snapshot_bytes=21820
 ```
 
-The complete match produced:
+The complete match produced — **reported, not gated** since #505; these are
+the values current drift is measured against:
 
 ```text
+score=1-0 outcome=home
 catch=1 claim=3 header=2 pass=4 reception=1 shot=2 tackle=147 touch=180
+window event ticks: tackle=24 keeper=1692 aerial=1788 full_time=7200
 ```
 
 These values were last refreshed for

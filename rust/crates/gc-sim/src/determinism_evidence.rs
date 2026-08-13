@@ -67,6 +67,59 @@
 //! the previous baseline held. See [`gc_data::omp1_determinism`]'s module
 //! doc for the full split, and for what a green campaign stops proving once
 //! its baseline is self-recorded.
+//!
+//! ## What a campaign gates on, and what it only reports (#505)
+//!
+//! A third split, and it cuts across the two above. The repository owner's
+//! decision on #505 separates the campaign's assertions by *what they
+//! actually prove*:
+//!
+//! | | **Gated** — a failing check is an `Err` | **Reported** — surfaced, never an `Err` |
+//! | --- | --- | --- |
+//! | Determinism | boundary-hash chain, `expected_final_hash`, `expected_sequence_digest`, both fresh replays agreeing, every restore window replaying to its pinned hashes | |
+//! | Behavior | [`DeterminismCoverage`] — a tackle, a catch, a header and a full time **occurred**; each window still contains the event it is scoped around | `expected_score`, `event_counts`, and the per-window `event_tick` — *how many* and *exactly when* |
+//!
+//! The line is `"these behaviors occurred"` (gated) against `"exactly 147
+//! tackles occurred and the score was 1-0"` (reported). The scoreline and the
+//! tackle count are incidental properties of the scenario that happened to be
+//! recorded, not the guarantee this fixture exists to provide; gating on them
+//! turned "the simulation is deterministic" into "the simulation must keep
+//! producing this 1-0", which foreclosed every queued gameplay rework
+//! (#488/#489/#490/#491) and is not a contract anyone chose.
+//!
+//! ### How a contributor is meant to notice a reported drift
+//!
+//! **A demoted assertion that prints nothing is a deleted assertion.** So the
+//! reporting is the load-bearing half of that demotion, and it is deliberately
+//! not routed through `cargo test`, whose stdout is swallowed for a passing
+//! test. Every claim above that moved shows up as a [`BehavioralDrift`] entry
+//! carrying the recorded value *and* the observed one, and reaches a human
+//! through **three** independent channels, per AGENTS.md §9's "never trust one
+//! signal":
+//!
+//! 1. `scripts/check.sh`'s determinism gate prints the `drift=` field of the
+//!    `GC_DETERMINISM` terminator on **every** run, and escalates a non-empty
+//!    one to a multi-line `BEHAVIORAL DRIFT` block above the gate's own
+//!    summary line. Mirrored in `.github/workflows/ci.yml` by virtue of that
+//!    job calling this script.
+//! 2. `ts/packages/wasm/src/determinism.spec.ts` logs the same field from the
+//!    compiled wasm module, which vitest prints for a passing test.
+//! 3. `record_omp1_derived_baseline` — the re-record command — prints the
+//!    identical comparison before it emits a document, because re-recording
+//!    the derived hashes is exactly the moment a contributor is deciding
+//!    whether a behavior change was intended.
+//!
+//! A drift entry is *not* self-evidently fine. Read it the way a drifted
+//! boundary hash is read: intended, or a finding? If it was intended, say so
+//! in the PR that causes it, with the recorded value and the new one — that is
+//! the #500 rule (the decision, the superseding change, and the last commit at
+//! which the previous claim held), and it is now the only thing standing where
+//! an `Err` used to.
+//!
+//! The fixture's recorded claims are **never refreshed** — `rerecorded_json`
+//! still copies `expected_score`, `event_counts` and `windows` verbatim and
+//! verifies it did. So drift is measured against the original recording for
+//! good, not against the last build that happened to run.
 
 use crate::fixed_clock;
 use crate::input_frame::{
@@ -81,6 +134,7 @@ use gc_core::fnv1a64::Fnv1a64State;
 use gc_data::omp1_determinism;
 use gc_data::teams;
 use indexmap::IndexMap;
+use std::collections::BTreeMap;
 
 const LEGACY_FIXTURE_ID: &str = "omp1-nebula-orion-eight-streams-v1";
 const MIGRATED_FIXTURE_ID: &str = "omp1-nebula-orion-eight-streams-v2";
@@ -89,6 +143,19 @@ const LEGACY_MAX_HELD_MASK: i64 = 127;
 const LEGACY_MAX_EDGE_MASK: i64 = 31;
 
 /// Which of the fixture's five headline behaviors a campaign observed.
+///
+/// **This is the gated half of #505's split.** It answers "did a tackle, a
+/// catch, a header and a full time still happen?", which is what keeps the
+/// fixture from degenerating into a replay of a match where nothing occurs.
+/// It deliberately says nothing about how many or when — that is
+/// [`BehaviorClaims`], and it is reported rather than gated.
+///
+/// `goal_kickoff` is the one field the frozen fixture does not reach: its
+/// predicate is written against an *away* goal and this recording's only goal
+/// is the home side's, so a campaign leaves it `false` (pinned as such by
+/// `tests/determinism_evidence.rs`) and `finish_campaign` does not require
+/// it. The goal/kickoff behavior is carried by the bounded synthetic tape in
+/// `docs/online/snapshot_replay.md` instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct DeterminismCoverage {
     /// A tackle occurred.
@@ -101,6 +168,45 @@ pub struct DeterminismCoverage {
     pub goal_kickoff: bool,
     /// The match reached full time.
     pub full_time: bool,
+}
+
+/// The frozen fixture's behavioral claims about the match it recorded, and
+/// the same shape for what a live campaign observed. One type for both sides
+/// on purpose: [`behavioral_drift`] compares two of these, and a field that
+/// exists on only one side is a field nothing can compare.
+///
+/// None of this is gated (#505). See the module doc's "What a campaign gates
+/// on, and what it only reports".
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct BehaviorClaims {
+    /// Full-time home score.
+    pub score_home: i64,
+    /// Full-time away score.
+    pub score_away: i64,
+    /// Count of each event kind, including the synthetic `chip` bucket.
+    /// Sorted, so a rendered report is stable.
+    pub event_counts: BTreeMap<String, i64>,
+    /// Per window name, the causal tick that window's subject was seen on —
+    /// the first tick its scoped `event_kind` fired, or for a window with no
+    /// scoped kind, the first tick the match was finished. `None` means the
+    /// subject was never seen. In the fixture's own window order.
+    pub window_event_ticks: IndexMap<String, Option<i64>>,
+}
+
+/// One behavioral claim of the frozen fixture that this build no longer
+/// reproduces: what was recorded, and what actually happened.
+///
+/// Reported, never an `Err` — but never silent either. See the module doc's
+/// "How a contributor is meant to notice a reported drift".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BehavioralDrift {
+    /// Which claim moved: `score`, `event_counts.<kind>`, or
+    /// `windows.<name>.event_tick`.
+    pub claim: String,
+    /// The value the frozen fixture records.
+    pub recorded: String,
+    /// The value this build produced.
+    pub observed: String,
 }
 
 /// The winner of a completed OMP-1 recording.
@@ -135,8 +241,16 @@ pub struct DeterminismEvidenceResult {
     pub outcome: Outcome,
     /// Encoded byte length of the final canonical snapshot.
     pub snapshot_bytes: i64,
-    /// Which headline behaviors were observed.
+    /// Which headline behaviors were observed. **Gated** — see
+    /// [`DeterminismCoverage`].
     pub coverage: DeterminismCoverage,
+    /// What this campaign actually observed, in the same shape as the
+    /// fixture's recorded claims. Reported, not gated.
+    pub observed: BehaviorClaims,
+    /// Every recorded behavioral claim this build no longer reproduces.
+    /// Empty when the campaign still matches the recording. Reported, not
+    /// gated — and the reason the demotion is not a deletion.
+    pub drift: Vec<BehavioralDrift>,
 }
 
 /// A fresh replay of the frozen fixture, folded into fresh recording
@@ -403,6 +517,131 @@ fn outcome(home: i64, away: i64) -> Outcome {
     }
 }
 
+/// The behavioral claims the frozen fixture records: its `expected_score`,
+/// its `event_counts`, and each window's `event_tick`. The recorded side of
+/// [`behavioral_drift`].
+///
+/// These are the fields `gc_data::omp1_determinism::rerecorded_json` refuses
+/// to move, so this is a fixed point: drift is always measured against the
+/// original recording, never against whatever the last build produced.
+#[must_use]
+pub fn fixture_claims() -> BehaviorClaims {
+    let fixture = omp1_determinism::fixture();
+    BehaviorClaims {
+        score_home: fixture.expected_score.home,
+        score_away: fixture.expected_score.away,
+        event_counts: fixture.event_counts.clone(),
+        window_event_ticks: fixture
+            .windows
+            .iter()
+            .map(|window| (window.name.clone(), window.event_tick))
+            .collect(),
+    }
+}
+
+fn render_tick(tick: Option<i64>) -> String {
+    match tick {
+        Some(tick) => tick.to_string(),
+        None => "none".to_string(),
+    }
+}
+
+/// Every claim on which `recorded` and `observed` disagree, in a stable
+/// order: the score, then event counts by kind, then window event ticks in
+/// the fixture's own window order.
+///
+/// Pure over its two arguments and takes no fixture: that is what lets the
+/// standing tests in `tests/determinism_evidence.rs` prove this reporter can
+/// name each class of drift without replaying 7,201 ticks — the reporter is
+/// what now stands where an `Err` used to, so it is the thing that has to be
+/// demonstrated working (AGENTS.md §9).
+#[must_use]
+pub fn behavioral_drift(
+    recorded: &BehaviorClaims,
+    observed: &BehaviorClaims,
+) -> Vec<BehavioralDrift> {
+    let mut drift = Vec::new();
+    if recorded.score_home != observed.score_home || recorded.score_away != observed.score_away {
+        drift.push(BehavioralDrift {
+            claim: "score".to_string(),
+            recorded: format!("{}-{}", recorded.score_home, recorded.score_away),
+            observed: format!("{}-{}", observed.score_home, observed.score_away),
+        });
+    }
+    for (name, count) in &recorded.event_counts {
+        let actual = observed.event_counts.get(name).copied();
+        if actual != Some(*count) {
+            drift.push(BehavioralDrift {
+                claim: format!("event_counts.{name}"),
+                recorded: count.to_string(),
+                observed: match actual {
+                    Some(actual) => actual.to_string(),
+                    None => "absent".to_string(),
+                },
+            });
+        }
+    }
+    for (name, count) in &observed.event_counts {
+        if !recorded.event_counts.contains_key(name) {
+            drift.push(BehavioralDrift {
+                claim: format!("event_counts.{name}"),
+                recorded: "absent".to_string(),
+                observed: count.to_string(),
+            });
+        }
+    }
+    for (name, tick) in &recorded.window_event_ticks {
+        let actual = observed.window_event_ticks.get(name).copied().flatten();
+        if actual != *tick {
+            drift.push(BehavioralDrift {
+                claim: format!("windows.{name}.event_tick"),
+                recorded: render_tick(*tick),
+                observed: render_tick(actual),
+            });
+        }
+    }
+    drift
+}
+
+/// The headline behaviors a campaign observed, comma-joined in a fixed order.
+/// The single rendering of the **gated** half of #505's split: [`report`]'s
+/// `coverage=` field, `gc_wasm::determinism`'s `coverage`, and therefore
+/// `scripts/check.sh`'s pinned `EXPECTED_COVERAGE` all go through here, so
+/// there is one order and one spelling.
+#[must_use]
+pub fn coverage_list(coverage: &DeterminismCoverage) -> String {
+    [
+        ("goal_kickoff", coverage.goal_kickoff),
+        ("tackle", coverage.tackle),
+        ("aerial", coverage.aerial),
+        ("keeper", coverage.keeper),
+        ("full_time", coverage.full_time),
+    ]
+    .into_iter()
+    .filter(|(_, observed)| *observed)
+    .map(|(name, _)| name)
+    .collect::<Vec<&str>>()
+    .join(",")
+}
+
+/// Render a drift list as one field-safe line: `none`, or
+/// `claim:recorded->observed` entries joined by `;`.
+///
+/// Contains no `|`, so it can ride inside the pipe-delimited
+/// `GC_DETERMINISM` line [`report`] emits and the terminator
+/// `scripts/check.sh` parses.
+#[must_use]
+pub fn render_drift(drift: &[BehavioralDrift]) -> String {
+    if drift.is_empty() {
+        return "none".to_string();
+    }
+    drift
+        .iter()
+        .map(|entry| format!("{}:{}->{}", entry.claim, entry.recorded, entry.observed))
+        .collect::<Vec<String>>()
+        .join(";")
+}
+
 fn fixture_frames() -> Result<(Vec<InputFrame>, Vec<String>), String> {
     let fixture = omp1_determinism::fixture();
     let wires = omp1_determinism::frame_wire_lines();
@@ -449,18 +688,33 @@ pub fn fixture_tape(tune: &Tuning) -> Result<InputTape, String> {
     input_tape::from_frozen_recording(&identity, &initial, &frames, &boundary_hashes, tune)
 }
 
+/// Replay one restore window from its captured snapshot, returning the causal
+/// tick the window's subject was observed on.
+///
+/// **Gated:** every boundary in the window replaying to its pinned hash (the
+/// determinism property), and the window still containing the event it is
+/// scoped around — a window that stopped covering its behavior is a window
+/// that proves nothing.
+///
+/// **Reported, not gated (#505):** *when* that subject fired. The returned
+/// tick is compared against the fixture's recorded `event_tick` by
+/// [`behavioral_drift`], not here.
 fn verify_window(
     snapshots: &[Option<MatchSnapshot>],
     frames: &[InputFrame],
     expected_hashes: &[String],
     window: &omp1_determinism::Omp1Window,
     tune: &Tuning,
-) -> Result<(), String> {
+) -> Result<Option<i64>, String> {
     let initial = snapshots[window.first_boundary as usize]
         .as_ref()
         .ok_or_else(|| format!("missing snapshot for {} window", window.name))?;
+    if window.event_kind.is_some() && window.event_tick.is_none() {
+        return Err(format!("{} window needs event_tick", window.name));
+    }
     let (mut state, mut combat) = match_snapshot::restore(initial);
     let mut saw_expected_event = window.event_kind.is_none();
+    let mut observed_tick: Option<i64> = None;
     for boundary in (window.first_boundary + 1)..=window.last_boundary {
         let causal_tick = boundary - 1;
         let frame = &frames[causal_tick as usize];
@@ -479,19 +733,20 @@ fn verify_window(
                 window.name
             ));
         }
-        if let Some(kind_str) = &window.event_kind
-            && state.events.iter().any(|e| e.kind.wire_str() == kind_str)
-        {
-            let expected_tick = window
-                .event_tick
-                .ok_or_else(|| format!("{} window needs event_tick", window.name))?;
-            if causal_tick != expected_tick {
-                return Err(format!(
-                    "{} event moved from tick {expected_tick} to {causal_tick}",
-                    window.name
-                ));
+        match &window.event_kind {
+            Some(kind_str) => {
+                if state.events.iter().any(|e| e.kind.wire_str() == kind_str) {
+                    saw_expected_event = true;
+                    observed_tick.get_or_insert(causal_tick);
+                }
             }
-            saw_expected_event = true;
+            // A window with no scoped event kind is scoped around full time
+            // instead; its subject is the tick the match finished on.
+            None => {
+                if state.finished {
+                    observed_tick.get_or_insert(causal_tick);
+                }
+            }
         }
     }
     if !saw_expected_event {
@@ -501,7 +756,12 @@ fn verify_window(
         ));
     }
     if window.name == "goal_kickoff" {
-        if state.score.away != 1 {
+        // "A goal was scored and its kickoff hold survived the restore" —
+        // the behavior, not the scoreline. Deliberately `< 1` rather than
+        // `!= 1` since #505: a gameplay change that produces a *second* away
+        // goal inside this window has not stopped covering the behavior, and
+        // exactly-how-many is the reported half of the split.
+        if state.score.away < 1 {
             return Err("goal window did not preserve the away goal".to_string());
         }
         if state.kickoff_hold <= 0.0 {
@@ -510,7 +770,7 @@ fn verify_window(
     } else if window.name == "full_time" && !(state.finished && state.time_left == 0.0) {
         return Err("full-time window did not finish".to_string());
     }
-    Ok(())
+    Ok(observed_tick)
 }
 
 /// Construct a fresh campaign against the checked-in OMP-1 fixture.
@@ -606,12 +866,6 @@ fn finish_campaign(
     if reference.input_tick != fixture.frame_count {
         return Err("recording ended at the wrong tick".to_string());
     }
-    if reference.score.home != fixture.expected_score.home {
-        return Err("home score drifted".to_string());
-    }
-    if reference.score.away != fixture.expected_score.away {
-        return Err("away score drifted".to_string());
-    }
     let final_hash = state_hash(reference);
     let sequence_digest = campaign.sequence.hex();
     if final_hash != fixture.expected_final_hash {
@@ -631,32 +885,33 @@ fn finish_campaign(
             return Err(format!("fixture did not cover {name}"));
         }
     }
-    for (name, expected) in &fixture.event_counts {
-        let actual = campaign
-            .event_counts
-            .get(name.as_str())
-            .copied()
-            .unwrap_or(0);
-        if actual != *expected {
-            return Err(format!(
-                "fixture event count {name} drifted: expected {expected}, got {actual}"
-            ));
-        }
-    }
-    for name in campaign.event_counts.keys() {
-        if !fixture.event_counts.contains_key(name.as_str()) {
-            return Err(format!("fixture gained unexpected event {name}"));
-        }
-    }
+    let mut window_event_ticks: IndexMap<String, Option<i64>> = IndexMap::new();
     for window in &fixture.windows {
-        verify_window(
+        let observed_tick = verify_window(
             &campaign.snapshots,
             &campaign.frames,
             &campaign.expected_hashes,
             window,
             tune,
         )?;
+        window_event_ticks.insert(window.name.clone(), observed_tick);
     }
+
+    // The reported half of #505's split: how many of each event fired, what
+    // the score ended, and when each window's subject fired. Compared against
+    // the frozen recording and surfaced, never returned as an `Err`. See the
+    // module doc for the three channels this reaches a human through.
+    let observed = BehaviorClaims {
+        score_home: reference.score.home,
+        score_away: reference.score.away,
+        event_counts: campaign
+            .event_counts
+            .iter()
+            .map(|(name, count)| (name.clone(), *count))
+            .collect(),
+        window_event_ticks,
+    };
+    let drift = behavioral_drift(&fixture_claims(), &observed);
 
     Ok(DeterminismEvidenceResult {
         fixture_id: fixture.fixture_id.clone(),
@@ -670,6 +925,8 @@ fn finish_campaign(
         snapshot_bytes: match_snapshot::encode(&match_snapshot::capture(reference, None)).len()
             as i64,
         coverage: campaign.coverage,
+        observed,
+        drift,
     })
 }
 
@@ -681,8 +938,10 @@ fn finish_campaign(
 ///
 /// Returns `Err` if `max_ticks` is not positive, an independent candidate
 /// replay diverges from the reference, a boundary hash disagrees with the
-/// fixture's pinned value, or the finished campaign fails any evidence
-/// check.
+/// fixture's pinned value, or the finished campaign fails any *gated*
+/// evidence check. A moved score, event count or window event tick is
+/// reported on the result rather than returned here — see the module doc's
+/// "What a campaign gates on, and what it only reports".
 pub fn step_campaign(
     campaign: &mut DeterminismCampaign,
     max_ticks: i64,
@@ -771,9 +1030,13 @@ pub fn step_campaign(
 /// Run a complete OMP-1 determinism campaign (with an independent fresh
 /// comparison run) to its finished result.
 ///
+/// A successful result is not a claim that nothing changed: read its `drift`
+/// (or [`report`]'s `drift=` field), which names every recorded behavioral
+/// claim this build no longer reproduces.
+///
 /// # Errors
 ///
-/// Returns `Err` on the first evidence check that fails; see
+/// Returns `Err` on the first *gated* evidence check that fails; see
 /// [`new_campaign`] and [`step_campaign`].
 pub fn verify(tune: &Tuning) -> Result<DeterminismEvidenceResult, String> {
     let mut campaign = new_campaign(true, tune)?;
@@ -875,27 +1138,21 @@ pub fn record(tune: &Tuning) -> Result<Omp1Recording, String> {
 
 /// Render a completed campaign's result as the pipe-delimited
 /// `GC_DETERMINISM` evidence line.
+///
+/// `events=`, `score=` and `drift=` are **observations of this run**, not the
+/// fixture's pinned claims. Before #505 the `events=` field echoed the frozen
+/// `event_counts` back — harmless while a count mismatch was an `Err` nobody
+/// could reach this line past, and a lie the moment that check became a
+/// report.
 #[must_use]
 pub fn report(result: &DeterminismEvidenceResult) -> String {
     let fixture = omp1_determinism::fixture();
     let identity = &fixture.identity;
-    let mut event_names: Vec<&String> = fixture.event_counts.keys().collect();
-    event_names.sort();
-    let event_parts: Vec<String> = event_names
+    let event_parts: Vec<String> = result
+        .observed
+        .event_counts
         .iter()
-        .map(|name| format!("{name}:{}", fixture.event_counts[name.as_str()]))
-        .collect();
-
-    let coverage_parts: Vec<&str> = ["goal_kickoff", "tackle", "aerial", "keeper", "full_time"]
-        .into_iter()
-        .filter(|&name| match name {
-            "goal_kickoff" => result.coverage.goal_kickoff,
-            "tackle" => result.coverage.tackle,
-            "aerial" => result.coverage.aerial,
-            "keeper" => result.coverage.keeper,
-            "full_time" => result.coverage.full_time,
-            _ => false,
-        })
+        .map(|(name, count)| format!("{name}:{count}"))
         .collect();
 
     let outcome_str = match result.outcome {
@@ -932,8 +1189,9 @@ pub fn report(result: &DeterminismEvidenceResult) -> String {
         format!("score={}-{}", result.score_home, result.score_away),
         format!("outcome={outcome_str}"),
         format!("snapshot_bytes={}", result.snapshot_bytes),
-        format!("coverage={}", coverage_parts.join(",")),
+        format!("coverage={}", coverage_list(&result.coverage)),
         format!("events={}", event_parts.join(",")),
+        format!("drift={}", render_drift(&result.drift)),
     ]
     .join("|")
 }
