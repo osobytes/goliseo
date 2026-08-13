@@ -7,9 +7,8 @@
 //!      docs/design/fun_metrics.md;
 //!   2. re-record with the runner, which bumps `baseline_version` itself:
 //!
-//!        cd rust
-//!        cargo test -p gc-sim --test outfield_ai_baseline -- \
-//!            --ignored --nocapture record_outfield_ai_baseline
+//!      cd rust
+//!      cargo test -p gc-sim --test outfield_ai_baseline -- --ignored --nocapture record_outfield_ai_baseline
 //!
 //!      then splice its `pub const RECORD` block over this file's. The
 //!      runner emits this doc header and that block only -- the type
@@ -152,7 +151,7 @@ pub struct OutfieldAiBaselineRecord {
 
 /// The frozen baseline recording.
 pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {
-    baseline_version: 4,
+    baseline_version: 8,
     identity: OutfieldAiBaselineIdentity {
         schema: "outfield_ai_baseline",
         schema_version: 1,
