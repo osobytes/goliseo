@@ -284,62 +284,98 @@ At the shipped defaults it measures **0.48 s**, inside #488's proposed
 0.25–0.6 s band and nearer its slow edge. The issue calls that band a prior;
 the measurement backs it.
 
-### The §9 census, after the composition fix
+### The §9 census — all 45 knobs, published in full
 
-Every `LOCO_*` knob, perturbed across its **whole declared range**, against
-`time_to_reverse` on 24 full-length matches. **12 of 45 move it; 33 do not.**
+Every `LOCO_*` knob perturbed across its **whole declared range** against
+`time_to_reverse`, 24 full-length matches, after the carry-composition fix.
+**12 move it; 33 are unresolved.**
 
-| wired | delta (s) | | wired | delta (s) |
+| knob | default → perturbed | delta (s) | threshold | verdict |
 | --- | --- | --- | --- | --- |
-| `LOCO_BACKPEDAL_ACCEL_MULT` | −0.099 | | `LOCO_PACE_REF_LO` | +0.055 |
-| `LOCO_PACE_CURVE_HI` | −0.072 | | `LOCO_STRAFE_ACCEL_MULT` | −0.038 |
-| `LOCO_PACE_REF_HI` | +0.034 | | `LOCO_DIR_SNAP_SPEED` | −0.033 |
-| `LOCO_RUN_ACCEL_MULT` | −0.031 | | `LOCO_STRAFE_ARC_COS` | +0.029 |
-| `LOCO_BACKPEDAL_TOP_MULT` | +0.021 | | `LOCO_BACKPEDAL_ARC_COS` | +0.021 |
-| `LOCO_STRENGTH_CURVE_HI` | −0.021 | | `LOCO_BACKPEDAL_DECEL_MULT` | −0.017 |
+| `LOCO_BACKPEDAL_ACCEL_MULT` | 0.7 → 2 | -0.0986 | 0.0179 | **WIRED** |
+| `LOCO_PACE_CURVE_HI` | 1.2 → 2 | -0.0718 | 0.0168 | **WIRED** |
+| `LOCO_PACE_REF_LO` | 100 → 200 | +0.0554 | 0.0196 | **WIRED** |
+| `LOCO_STRAFE_ACCEL_MULT` | 0.85 → 2 | -0.0380 | 0.0181 | **WIRED** |
+| `LOCO_PACE_REF_HI` | 240 → 320 | +0.0342 | 0.0166 | **WIRED** |
+| `LOCO_DIR_SNAP_SPEED` | 6 → 60 | -0.0333 | 0.0190 | **WIRED** |
+| `LOCO_RUN_ACCEL_MULT` | 1 → 2 | -0.0307 | 0.0177 | **WIRED** |
+| `LOCO_STRAFE_ARC_COS` | 0.57 → 0.94 | +0.0289 | 0.0199 | **WIRED** |
+| `LOCO_STRENGTH_CURVE_HI` | 1.2 → 2 | -0.0211 | 0.0142 | **WIRED** |
+| `LOCO_BACKPEDAL_TOP_MULT` | 0.6 → 1.4 | +0.0210 | 0.0166 | **WIRED** |
+| `LOCO_BACKPEDAL_ARC_COS` | -0.5 → 0 | +0.0206 | 0.0171 | **WIRED** |
+| `LOCO_BACKPEDAL_DECEL_MULT` | 1.25 → 2.5 | -0.0174 | 0.0160 | **WIRED** |
+| `LOCO_JOG_DECEL_MULT` | 1 → 2.5 | +0.0178 | 0.0210 | unresolved |
+| `LOCO_PACE_CURVE_LO` | 0.8 → 1 | -0.0136 | 0.0179 | unresolved |
+| `LOCO_CARRY_TOP_MULT` | 0.92 → 1.4 | +0.0133 | 0.0176 | unresolved |
+| `LOCO_RUN_TOP_MULT` | 1 → 1.4 | -0.0123 | 0.0173 | unresolved |
+| `LOCO_SPRINT_DECEL_MULT` | 0.8 → 2.5 | +0.0116 | 0.0188 | unresolved |
+| `LOCO_BACKPEDAL_TURN_MULT` | 1.1 → 2.5 | +0.0112 | 0.0180 | unresolved |
+| `LOCO_STRENGTH_CURVE_LO` | 0.8 → 1 | +0.0112 | 0.0177 | unresolved |
+| `LOCO_SPRINT_CARRY_ACCEL_MULT` | 0.882 → 2 | +0.0101 | 0.0175 | unresolved |
+| `LOCO_JOG_ACCEL_MULT` | 1 → 2 | +0.0100 | 0.0170 | unresolved |
+| `LOCO_STRAFE_DECEL_MULT` | 1.15 → 2.5 | +0.0098 | 0.0146 | unresolved |
+| `LOCO_CARRY_DECEL_MULT` | 1.05 → 2.5 | +0.0091 | 0.0192 | unresolved |
+| `LOCO_STRAFE_TOP_MULT` | 0.75 → 1.4 | +0.0084 | 0.0184 | unresolved |
+| `LOCO_RUN_TURN_MULT` | 1 → 2.5 | +0.0080 | 0.0207 | unresolved |
+| `LOCO_SPRINT_CARRY_DECEL_MULT` | 1.0625 → 2.5 | +0.0077 | 0.0165 | unresolved |
+| `LOCO_JOG_TOP_MULT` | 1 → 1.4 | +0.0074 | 0.0154 | unresolved |
+| `LOCO_REVERSE_ARC_COS` | -0.5 → 0 | +0.0069 | 0.0165 | unresolved |
+| `LOCO_JOG_THROTTLE` | 0.65 → 1 | +0.0067 | 0.0215 | unresolved |
+| `LOCO_TURN_LOW_SPEED_BONUS` | 2 → 5 | +0.0062 | 0.0164 | unresolved |
+| `LOCO_SPRINT_CARRY_TOP_MULT` | 0.874 → 1.1 | -0.0054 | 0.0207 | unresolved |
+| `LOCO_SPRINT_ACCEL_MULT` | 0.85 → 2 | +0.0045 | 0.0178 | unresolved |
+| `LOCO_SPRINT_CARRY_TURN_MULT` | 0.818 → 2.5 | +0.0042 | 0.0194 | unresolved |
+| `LOCO_TECHNIQUE_CURVE_HI` | 1.2 → 2 | +0.0042 | 0.0170 | unresolved |
+| `LOCO_TURN_EASE_DEG` | 20 → 45 | +0.0039 | 0.0211 | unresolved |
+| `LOCO_JOG_TURN_MULT` | 1.6 → 2.5 | -0.0037 | 0.0189 | unresolved |
+| `LOCO_TECHNIQUE_CURVE_LO` | 0.8 → 1 | +0.0022 | 0.0147 | unresolved |
+| `LOCO_CARRY_TURN_MULT` | 0.8 → 2.5 | -0.0018 | 0.0164 | unresolved |
+| `LOCO_SPRINT_TURN_MULT` | 0.55 → 2.5 | +0.0018 | 0.0179 | unresolved |
+| `LOCO_CARRY_ACCEL_MULT` | 0.9 → 2 | +0.0017 | 0.0183 | unresolved |
+| `LOCO_STRAFE_TURN_MULT` | 1.3 → 2.5 | +0.0014 | 0.0172 | unresolved |
+| `LOCO_FACE_TURN_MULT` | 2 → 4 | +0.0008 | 0.0162 | unresolved |
+| `LOCO_BASE_TURN` | 360 → 1080 | +0.0007 | 0.0183 | unresolved |
+| `LOCO_FACE_EASE_FLOOR` | 0.2 → 1 | +0.0005 | 0.0168 | unresolved |
+| `LOCO_RUN_DECEL_MULT` | 1 → 2.5 | +0.0005 | 0.0138 | unresolved |
 
-Two readings matter more than the count.
+**"Unresolved" is not "inert", and the distinction is load-bearing.** This
+census resolves effects above roughly **0.017 s — about 3.5% of the 0.48 s
+mean.** A knob with a real 0.010 s effect is invisible to it. Pruning the 33
+was considered and rejected: #488 itself warns that a band set purely from the
+harness "can certify sluggishness as balance", and deleting feel controls that
+a cheap measurement cannot see would be that same mistake pointed the other
+way. The defensible claim is that 12 knobs have a demonstrable effect at a
+seed count a per-PR gate can afford — not that the rest do nothing.
 
-**Fixing the ordering did not rescue the decel knobs.** That was the
-hypothesis worth testing — several were unreachable *by construction* under
-the old resolution, and condemning them before fixing it would have blamed
-knobs for a defect. Measured after the fix, `LOCO_RUN_DECEL_MULT`,
-`LOCO_SPRINT_DECEL_MULT`, `LOCO_JOG_DECEL_MULT`, `LOCO_CARRY_DECEL_MULT`,
-`LOCO_STRAFE_DECEL_MULT` and `LOCO_SPRINT_CARRY_DECEL_MULT` are all still
-decoration against this metric. Only `LOCO_BACKPEDAL_DECEL_MULT` moves it, and
-the mechanism says why: `resolve` puts a body moving opposite its facing in
-`Backpedal`, so essentially all of a reversal's braking happens there. The
-other decel knobs are not broken — they are simply not the brake that a
-reversal uses.
+The count went **down**, 15 → 12, when the composition fix landed: four knobs
+became reachable and seven fell below threshold, because composing carry onto
+the direction context changes which knobs a carrier's reversal passes through.
 
-**"Decoration" here means "below what 24 seeds can resolve", not "does
-nothing".** The census resolves effects above roughly 0.017 s, about 3.5% of
-the 0.48 s mean. A knob at 0.010 s is real and invisible to this instrument.
-The honest claim is that 12 knobs have a demonstrable effect on reversal time
-at a seed count a gate can afford — not that the other 33 are inert.
+### The structural half: six decel knobs cannot move this metric
 
-### A reversal happens in the `Backpedal` context, and three knobs cannot reach it
-
-#488 specifies the pairing "`LOCO_RUN_DECEL` up must lower `time_to_reverse`".
-Measured across the knob's whole declared range, that reports `DECORATION`.
-Not weak — **structurally wrong**, and the reason is worth knowing before
-tuning anything:
+#488 specifies the pairing *"`LOCO_RUN_DECEL` up must lower
+`time_to_reverse`"*. Across the knob's whole declared range that reports
+`DECORATION` — **structurally wrong, not merely weak**, and it generalizes.
 
 `resolve` tests the movement-versus-facing geometry *before* possession and
-sprint. From the first tick of a commanded reversal the body is moving
-opposite the way it looks, so it is `Backpedal` — and facing needs about
-0.25 s to come round, against a reversal that takes about 0.48 s. So a
-reversal is roughly half backpedal, then run. That is coherent, and arguably
-the behaviour you want: reversing out of a sprint should be punished by the
-backpedal multipliers.
+sprint, so from the first tick of a commanded reversal the body is moving
+opposite the way it looks: it is **`Backpedal`**. Facing needs about 0.25 s to
+come round against a reversal that takes about 0.48 s, so a reversal is
+roughly half backpedal, then run. Essentially all the braking happens in that
+first half.
 
-The consequence is not coherent by accident, though, and it should be stated
-where a tuner will see it: **`LOCO_RUN_DECEL_MULT`, `LOCO_SPRINT_DECEL_MULT`
-and `LOCO_JOG_DECEL_MULT` cannot affect a reversal at all**, because all the
-braking happens in the backpedal-dominated first half. Someone reaching for
-"how hard does a running body brake" will find the knob inert in the case that
-matters most. Use `MOVE_DECEL` (the shared base, which every context
-multiplies) or `LOCO_BACKPEDAL_DECEL_MULT`.
+Consequently **`LOCO_RUN_DECEL_MULT`, `LOCO_SPRINT_DECEL_MULT`,
+`LOCO_JOG_DECEL_MULT`, `LOCO_CARRY_DECEL_MULT`, `LOCO_STRAFE_DECEL_MULT` and
+`LOCO_SPRINT_CARRY_DECEL_MULT` cannot affect a reversal at all.** Only
+`LOCO_BACKPEDAL_DECEL_MULT` can, and it is the knob the shipped braking
+assertion perturbs. This was re-measured *after* the carry-composition fix
+precisely because several of those knobs had been unreachable by construction
+beforehand, and condemning them on the earlier run would have blamed knobs for
+a defect. The fix did not rescue them: they are not broken, they are simply
+not the brake a reversal uses.
+
+Reach for `MOVE_DECEL` (the shared base every context multiplies) or
+`LOCO_BACKPEDAL_DECEL_MULT` when tuning how hard a body brakes out of a run.
 
 ### One caution about `fun`
 

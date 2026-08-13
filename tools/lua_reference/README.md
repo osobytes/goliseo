@@ -150,11 +150,23 @@ red output, you are answering the wrong question in the wrong order.
 | `match_step_ai_ai_lua_reference.txt` | #520 (repository owner) | #516, the locomotion rework for #488: it changes what every body on the pitch does per tick, so a per-tick trajectory diverges by construction | `3f8f4a3` (verified green) | `match_step_ai_ai_baseline.txt`, recorded by `record_match_step_ai_ai_baseline`; plus `match_step_is_bit_reproducible_across_two_independent_runs`, which needs no record |
 | `session_ai_driven_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `session_ai_driven_baseline.txt`, recorded by `record_session_ai_driven_baseline`; read by BOTH `session_ai_driven_differential.rs` and `ai_driven_evidence.rs`, as this table's earlier note warned |
 | `rollback_session_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `rollback_session_baseline.txt`, recorded by `record_rollback_session_baseline`; plus `rollback_session_resimulation_reaches_what_direct_simulation_reaches`, which needs no record |
+| `input_tape_lua_reference.txt` — **the stepped-boundary assertion only** | #520 (repository owner), extended after #523 | #516, as above | `4c6d1eb` (verified green) | none, and that is the point: the assertion is retired outright. Its four sibling format claims in the same file were *rewritten* by #523 to read the frozen wire instead of a stepped match, and they keep gating |
 
-That is the complete list. The last-green commit for the three #520 rows was
-verified by checking out `3f8f4a3` and running all four affected tests there,
-not by assuming the catalogue below was still accurate — which is the step
-that makes a retirement auditable rather than merely documented.
+That is the complete list. The last-green commit for the three original #520
+rows was verified by checking out `3f8f4a3` and running all four affected
+tests there; the fourth row's was verified the same way at `4c6d1eb`, running
+`input_tape_differential` (4 passed). Not assumed from the catalogue — that
+check is what makes a retirement auditable rather than merely documented.
+
+**The fourth row is a partial retirement, and the only one so far.** #520
+classified the whole of `input_tape_differential` as class B — format claims,
+to be rewritten rather than retired. #523 did the rewrite and discovered that
+one of the five assertions cannot be rewritten: the vector recorded *digests
+of stepped states* and never the states themselves, so no amount of decoding
+recovers them. #523 isolated it into its own case with its own name and said
+so in its docstring, calling it "a correction to the issue's premise rather
+than to its decision". The decision was extended to cover it. The file's other
+four assertions are green and stay.
 
 ### What #520 did with rule 5, in each case
 
