@@ -50,6 +50,7 @@
 //! tick, so a rollback resimulation reproduces an arc exactly.
 
 use crate::tuning::Tuning;
+use gc_core::deterministic_math;
 use gc_core::vec2::Vec2;
 use gc_data::locomotion::{
     self, BACKPEDAL_ARC_COS_KNOB, BASE_TURN_KNOB, CONTEXT_KNOBS, DIR_SNAP_SPEED_KNOB,
@@ -304,80 +305,100 @@ pub fn resolve(
     }
 }
 
-/// A chord this close to 2 means the two unit directions are opposite.
+/// Rotate `from` toward `to` (both unit) by at most `max_angle` **radians**.
 ///
-/// At exactly 2 there is no shorter arc between them and `from + delta * t`
-/// passes through the origin at `t = 0.5`, so there is nothing to normalize.
-const ANTIPODAL_CHORD: f64 = 1.999_9;
-
-/// Rotate `from` toward `to` (both unit) by at most `max_step` of **chord**,
-/// then renormalize.
+/// A genuine bounded angular rate: the body turns by exactly `max_angle` per
+/// call until the last partial step, which lands on `to` exactly. That is the
+/// contract `LOCO_BASE_TURN`'s `deg/s` unit claims, and it is worth stating
+/// what it took to get, because the obvious two implementations both fail.
 ///
-/// ## Why chord and not angle
-///
-/// The obvious implementation is `atan2` for the remaining angle and
-/// `sin`/`cos` to rotate by a clamped step. It is also a desync. Those three
-/// are the transcendentals ARCHITECTURE.md §1 singles out as
-/// implementation-approximated, and Rust links a *different* libm for
-/// `wasm32-unknown-unknown` than a native build uses — so a native peer and a
-/// browser peer disagree in the low bits of every turn, every tick, and a
-/// rollback resimulation desyncs.
-///
-/// This is measured, not theorized. The `atan2`/`sin`/`cos` draft of this
-/// module reproduced its own re-recorded OMP-1 boundary hashes natively and
-/// diverged inside the compiled wasm module at boundary 12
+/// **`atan2` + `sin`/`cos` is a desync.** Those are the transcendentals
+/// ARCHITECTURE.md §1 names as implementation-approximated, and its wasm
+/// paragraph is arguing browser against browser: Rust links a *different*
+/// libm for `wasm32-unknown-unknown` than a native build uses, so the two
+/// disagree in the low bits of every turn, every tick. Measured, not
+/// theorized — the `sin`/`cos` draft of this module reproduced its own
+/// re-recorded OMP-1 boundary hashes natively and diverged inside the
+/// compiled wasm module at boundary 12
 /// (`ts/packages/wasm/src/determinism.spec.ts`).
 ///
-/// Normalized-lerp needs only `+`, `*` and `sqrt`. IEEE 754 specifies `sqrt`
-/// as correctly rounded, which is exactly why `gc_core::vec2` is allowed on
-/// the determinism path at all, so every peer computes the same bits.
+/// **Normalized-lerp bounded by CHORD distance is deterministic but is not a
+/// bounded angular rate**, which the draft after that one got wrong in a way
+/// every test still passed. Chord `= 2 sin(theta/2)` matches the angle only
+/// while the *remaining* angle is near the step — not merely while the step
+/// is small. Bounding the lerp by a radian quantity therefore collapses the
+/// achieved rate as the remaining angle grows. At a nominal 18 degrees per
+/// tick, measured:
 ///
-/// The cost is that the step is a chord rather than an arc. Chord
-/// `= 2 sin(theta/2)`, so for one tick's worth of any rate in the declared
-/// range the two agree to better than half a percent, and the difference only
-/// matters at all for a knob that is a feel parameter to begin with.
-/// `normalize(lerp(from, to, t))` for `t` in `(0, 1)` lies strictly on the
-/// shorter arc, so this cannot overshoot at any step size.
-fn ease_chord(from: Vec2, to: Vec2, max_step: f64) -> Vec2 {
-    if max_step <= 0.0 {
+/// | remaining | achieved | of nominal |
+/// | --- | --- | --- |
+/// | 18 deg | 18.07 deg | 100% |
+/// | 45 deg | 18.26 deg | 101% |
+/// | 90 deg | 15.94 deg | 89% |
+/// | 135 deg | 9.61 deg | 53% |
+/// | 179 deg | 0.23 deg | **1.3%** |
+///
+/// Facing has no reversal short-circuit the way the movement heading has, so
+/// `FacingIntent::Toward` — the jockey/contain case this whole feature is
+/// for — routinely asks for exactly those large angles. A defender's facing
+/// would nearly freeze on a big swing of play and then rush to catch up.
+/// Player-visible, and invisible to an upper-bound assertion.
+///
+/// So: an exact rotation, using [`deterministic_math::cos_sin`], which is
+/// bit-identical across targets by construction. Two details make it work
+/// without any inverse trig:
+///
+/// - **Comparing two angles is comparing two cosines.** `cos` is monotonically
+///   decreasing on `0..=pi`, so "the remaining angle is within one step" is
+///   exactly `dot(from, to) >= cos(max_angle)`. Clamping `max_angle` to `pi`
+///   first is what keeps that monotone, and it is also correct on its own
+///   terms: a step of half a turn reaches anything.
+/// - **Which way to turn is the sign of the cross product**, and at the
+///   antipode, where it is zero and both arcs are equal, `>= 0.0` breaks the
+///   tie toward the left-hand perpendicular — identically on every peer,
+///   which is the only property a tie-break needs.
+fn rotate_toward(from: Vec2, to: Vec2, max_angle: f64) -> Vec2 {
+    if max_angle <= 0.0 {
         return from;
     }
-    let delta = to.sub(from);
-    let chord = delta.length();
-    if chord == 0.0 {
+    let max_angle = max_angle.min(std::f64::consts::PI);
+    let cos_remaining = dot(from, to);
+    let (cos_step, sin_step) = deterministic_math::cos_sin(max_angle);
+    if cos_remaining >= cos_step {
         return to;
     }
-    if chord >= ANTIPODAL_CHORD {
-        // Opposite directions: both arcs are the same length, so there is no
-        // "toward". Break the tie toward the left-hand perpendicular — the
-        // same way on every peer, which is the only property that matters —
-        // and take the same size of step toward that instead. One tick later
-        // the chord is below the threshold and the ordinary path resumes.
-        let perp = Vec2::new(-from.y, from.x);
-        return ease_chord(from, perp, max_step);
-    }
-    if max_step >= chord {
-        return to;
-    }
-    from.add(delta.scale(max_step / chord)).normalized()
+    let cross = from.x * to.y - from.y * to.x;
+    let sin_step = if cross >= 0.0 { sin_step } else { -sin_step };
+    Vec2::new(
+        from.x * cos_step - from.y * sin_step,
+        from.x * sin_step + from.y * cos_step,
+    )
+    .normalized()
 }
 
-/// Bounded-rate rotation with a damped ease-out below `ease`.
+/// Bounded-rate rotation with a damped ease-out below `ease` radians.
 ///
 /// Above the threshold the body turns at the full rate. Below it the rate
 /// falls off with the remaining angle, so the character glides into the
 /// heading instead of hitting it and stopping dead. Two properties matter and
 /// both are structural rather than tuned:
 ///
-/// - **No overshoot, therefore no terminal oscillation.** [`ease_chord`]
-///   never passes its target, so the remaining angle is monotonically
-///   non-increasing and can never change sign. This holds at every value of
-///   every knob.
+/// - **No overshoot, therefore no terminal oscillation.** [`rotate_toward`]
+///   never passes its target — it lands on it exactly. So the remaining angle
+///   is monotonically non-increasing and can never change sign, at every
+///   value of every knob.
 /// - **It lands.** A pure proportional ease is asymptotic; `floor` puts a
-///   lower bound under the rate so the remaining angle reaches zero in
-///   finite time rather than shrinking forever.
+///   lower bound under the rate so the remaining angle reaches zero in finite
+///   time rather than shrinking forever.
 ///
-/// `ease` is a chord threshold, for [`ease_chord`]'s reason.
+/// The ease region is entered exactly — `chord < chord(ease)` is equivalent
+/// to `theta < ease`, since chord is monotone in the angle over `0..=pi`. The
+/// ramp *inside* the region is then chord-proportional rather than
+/// angle-proportional. That is a choice, not an approximation standing in for
+/// something else: both run 0 to 1 monotonically over the same region, and
+/// which of the two shapes a body eases along is a feel decision. It is worth
+/// naming because the same substitution one level up, on the RATE, was a
+/// defect — see [`rotate_toward`].
 fn ease_toward(current: Vec2, want: Vec2, rate: f64, ease: f64, floor: f64, dt: f64) -> Vec2 {
     if current.x == 0.0 && current.y == 0.0 {
         return want;
@@ -388,12 +409,19 @@ fn ease_toward(current: Vec2, want: Vec2, rate: f64, ease: f64, floor: f64, dt: 
     if chord == 0.0 {
         return want;
     }
-    let effective = if ease > 0.0 && chord < ease {
-        rate * (chord / ease).max(clamp01(floor))
+    let effective = if ease > 0.0 {
+        let (cos_ease, _) = deterministic_math::cos_sin(ease.min(std::f64::consts::PI));
+        // chord(ease) = sqrt(2 - 2 cos(ease)), from `+`, `-` and `sqrt` only.
+        let ease_chord = (2.0 - 2.0 * cos_ease).max(0.0).sqrt();
+        if ease_chord > 0.0 && chord < ease_chord {
+            rate * (chord / ease_chord).max(clamp01(floor))
+        } else {
+            rate
+        }
     } else {
         rate
     };
-    ease_chord(current, want, effective * dt)
+    rotate_toward(current, want, effective * dt)
 }
 
 /// One tick of locomotion: the five ordered steps.
@@ -444,7 +472,7 @@ pub fn step(k: Kinematics, cmd: &Command, prof: &Profile, dt: f64, tune: &Tuning
             // Near-zero-speed turns are cheap; a body at pace traces an arc.
             let low_speed = 1.0 - clamp01(speed0 / prof.top_speed.max(1.0));
             let bonus = 1.0 + tune.value(TURN_LOW_SPEED_BONUS_KNOB) * low_speed;
-            dir = ease_chord(dir0, cmd_dir, prof.turn_rate * bonus * dt);
+            dir = rotate_toward(dir0, cmd_dir, prof.turn_rate * bonus * dt);
             target = target_full;
         }
     }

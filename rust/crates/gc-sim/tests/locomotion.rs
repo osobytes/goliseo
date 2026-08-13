@@ -18,7 +18,7 @@
 //!   two claims the context table would otherwise make silently.
 
 use gc_core::vec2::Vec2;
-use gc_data::locomotion::{CONTEXT_KNOBS, LocoContext};
+use gc_data::locomotion::{CONTEXT_KNOBS, LocoContext, TURN_EASE_KNOB};
 use gc_data::tunables::{SIM_TUNABLES, Tier};
 use gc_sim::locomotion::{self, Command, FacingIntent, Kinematics};
 use gc_sim::tuning::Tuning;
@@ -264,6 +264,93 @@ fn facing_rotates_at_a_bounded_rate_rather_than_snapping() {
     assert!(
         turned < std::f64::consts::PI - 1e-9,
         "a 180 degree target must not be reached in one tick -- that is the snap this replaced"
+    );
+}
+
+/// The bounded rate is a rate, at every remaining angle — not just near the
+/// target.
+///
+/// This is the assertion whose absence let a real defect ship in review. An
+/// earlier draft bounded the rotation step by CHORD distance in a
+/// lerp-then-renormalize, which is deterministic (the point of that draft)
+/// but is not a bounded angular rate: chord matches angle only while the
+/// *remaining* angle is near the step, so the achieved rate collapsed as the
+/// remaining angle grew — 89% of nominal at 90 degrees, 53% at 135, and
+/// **1.3% at 179**. A defender told to face a carrier across a big swing of
+/// play would have nearly frozen, then rushed to catch up.
+///
+/// Every other test in this file passed throughout, and could not have
+/// failed: `facing_rotates_at_a_bounded_rate_rather_than_snapping` asserts an
+/// upper bound, and `facing_converges_without_overshoot_at_every_tunable_extreme`
+/// asserts monotone convergence without oscillation. A rate that is too *low*
+/// satisfies both. So this one pins the achieved rate from below as well as
+/// above, across the whole domain.
+#[test]
+fn facing_turns_at_its_nominal_rate_from_any_remaining_angle() {
+    let mut tune = tune();
+    // Take the ease-out region to its minimum so this measures the bounded
+    // rate rather than the deliberate glide near the target; the ease-out has
+    // its own tests.
+    let ease_min = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == TURN_EASE_KNOB)
+        .expect("the ease knob is registered")
+        .min;
+    tune.set(TURN_EASE_KNOB, ease_min);
+    let profile = profile_for(LocoContext::Run, &tune);
+    let nominal = profile.face_rate * DT;
+    assert!(
+        nominal > 0.0 && nominal < std::f64::consts::PI,
+        "the fixture must take more than one tick to turn around, or this proves nothing"
+    );
+
+    for remaining_deg in [179.9_f64, 179.0, 135.0, 90.0, 45.0, 30.0] {
+        let remaining = remaining_deg.to_radians();
+        assert!(
+            remaining > nominal + f64::EPSILON,
+            "every probe angle must be outside one step, or it lands and measures nothing"
+        );
+        let want = Vec2::new(1.0, 0.0);
+        let k = Kinematics {
+            run_vel: Vec2::new(0.0, 0.0),
+            facing: Vec2::new(remaining.cos(), remaining.sin()),
+        };
+        let next = locomotion::step(
+            k,
+            &moving(Vec2::new(0.0, 0.0), FacingIntent::Toward(want)),
+            &profile,
+            DT,
+            &tune,
+        );
+        let turned = signed_angle(k.facing, next.facing).abs();
+        assert!(
+            (turned - nominal).abs() < 1e-9,
+            "with {remaining_deg} deg remaining the facing turned {} deg, not its nominal {} deg \
+             ({:.1}% of rate) -- the bound is not an angular rate",
+            turned.to_degrees(),
+            nominal.to_degrees(),
+            100.0 * turned / nominal
+        );
+    }
+
+    // And the last partial step lands exactly, rather than stepping past and
+    // easing back.
+    let want = Vec2::new(1.0, 0.0);
+    let short = nominal * 0.5;
+    let k = Kinematics {
+        run_vel: Vec2::new(0.0, 0.0),
+        facing: Vec2::new(short.cos(), short.sin()),
+    };
+    let next = locomotion::step(
+        k,
+        &moving(Vec2::new(0.0, 0.0), FacingIntent::Toward(want)),
+        &profile,
+        DT,
+        &tune,
+    );
+    assert!(
+        signed_angle(next.facing, want).abs() < 1e-12,
+        "a remaining angle inside one step must land on the target exactly"
     );
 }
 
