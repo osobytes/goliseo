@@ -168,6 +168,15 @@ pub fn assemble() -> MetricRegistry {
                 def: def("decided_late"),
                 extract: |m| Some(m.decided_late),
             },
+            // Appended last, matching `gc_data::tunables::METRICS`'s authored
+            // order -- `metric_registry_folds_in_the_authored_order` compares
+            // the two lists element by element, so this is not a free choice.
+            Metric {
+                def: def("time_to_reverse"),
+                // `None` when the match armed no reversal at all, which the
+                // fun score treats as absence rather than as a perfect zero.
+                extract: |m| m.time_to_reverse,
+            },
         ],
     );
     b.build()

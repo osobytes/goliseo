@@ -1,40 +1,86 @@
-//! Differential test of `gc_sim::r#match::step` against reference vectors
-//! captured from the real Lua `sim/match.lua`, per
-//! `tools/lua_reference/README.md`.
+//! Determinism regression for `gc_sim::r#match::step` over a full AI-vs-AI
+//! match, against a baseline recorded from THIS implementation.
 //!
-//! The fixture (`fixtures/match_step_ai_ai_lua_reference.txt`) was captured
-//! by running the unmodified Lua tree under headless `love` (`love .` in a
-//! scratch copy of `core/`, `sim/`, `data/`, with graphics/audio/window
-//! disabled) for a fully AI-driven match (`human_controlled = false`, so
-//! this is deterministic without any human input stream), seed 11,
-//! `nebula` vs `orion`, a 960x540 field, stepping `match.step(s, 1/60,
-//! NO_INPUT)` 7200 times (120 real-time seconds — a full match, matching
-//! `sim::outfield_ai_baseline::DURATION_SECONDS` and the tick count of
-//! `determinism_evidence`'s frozen replay) and printing, every tick
-//! (including tick 0, before any step): `ball.x`, `ball.y`, `ball_vel.x`,
-//! `ball_vel.y`, `ball_z`, `ball_vz`, `owner` (-1 for a loose ball),
-//! `score.home`, `score.away`, `rng`, then `players[i].pos.{x,y}` for
-//! `i` = 1 through 10 (every outfielder and both keepers) — floats via
-//! `%.17g`, which round-trips binary64 exactly.
+//! # What this proves
 //!
-//! The fixture originally covered only 600 ticks. It was extended to the
-//! full 7200-tick match length to chase a correctness defect where AI-driven
-//! matches diverge from Lua over long play (see
-//! `outfield_ai_baseline_reproduces_the_frozen_fixture_exactly`'s frozen-fixture
-//! evidence): 600 ticks is not enough to exercise every AI decision branch,
-//! and this test's job is to find the earliest tick, player, and quantity
-//! where this simulation disagrees with the reference.
+//! One 7,200-tick fully AI-driven match (`human_controlled: false`, seed 11,
+//! `nebula` vs `orion`, 960x540) stepped with
+//! `StepInput::Legacy(MatchInput::default())` — no human input stream, no
+//! wire round trip — reproduces a recorded trajectory bit for bit, at every
+//! tick, across 31 fields: the six ball quantities, the owner, both scores,
+//! the RNG state, and all ten players' positions. Floats are compared by
+//! `f64::to_bits` after parsing, never by printed text, because a divergence
+//! that self-corrects a tick later is still a desync.
 //!
-//! Every field is compared at every tick (not just the last), and floats
-//! are compared by bit pattern (`f64::to_bits`) after parsing, not by
-//! printed text — see `tools/lua_reference/README.md`'s warning that a
-//! divergence which self-corrects a tick later is still a desync.
+//! It is the broadest single reader of `match::step`'s AI path in the
+//! workspace, which is exactly why an unintended perturbation anywhere under
+//! it surfaces here first, with a tick and a field name.
+//!
+//! # Two assertions, and only one of them moves
+//!
+//! A frozen per-tick trajectory is broken by any deliberate gameplay change
+//! **by construction**. Re-recording the Lua vector's shape in Rust makes it
+//! regenerable, not immune — `tools/lua_reference/README.md` rule 5 is
+//! explicit that this is not enough on its own. So:
+//!
+//!   1. `..._reproduces_its_recorded_baseline_...` — the pinned trajectory.
+//!      Detects unintended change. This is the one a deliberate gameplay
+//!      rework legitimately trips and re-records (see
+//!      `record_match_step_ai_ai_baseline` below).
+//!   2. `..._is_bit_reproducible_across_two_independent_runs` — the same
+//!      match constructed and stepped twice, in one process, must agree
+//!      bit-for-bit on all 31 fields at all 7,201 ticks. **IMMUNE to
+//!      gameplay change**, because both runs move together. This is the
+//!      determinism claim proper: `match::step` is a pure function of state
+//!      and inputs, carrying no hidden global, no clock read, and no
+//!      iteration-order dependence on a hashed container. It keeps gating
+//!      through every rework with nothing to re-record.
+//!
+//! So a gameplay rework re-records one fixture and loses no determinism
+//! coverage, and a defect that made `step` depend on anything outside its
+//! arguments still fails the gate in a PR that is legitimately re-recording.
+//!
+//! # What this no longer proves, and why the evidence is weaker
+//!
+//! Until #520 this asserted against
+//! `fixtures/match_step_ai_ai_lua_reference.txt`, captured from the original
+//! Lua `sim/match.lua`. A pass was **cross-implementation** evidence: two
+//! independently written simulations agreed bit for bit, which is the only
+//! kind of evidence that can catch the Rust port being *wrong* rather than
+//! merely *stable*. **That claim is retired. This test no longer says
+//! anything about Lua.**
+//!
+//! The baseline it reads now was recorded from this very code:
+//!
+//!   * It DETECTS CHANGE. Any edit that perturbs one float at one tick goes
+//!     red — which is what a determinism guarantee needs, because an
+//!     unintended perturbation is a desync between a client that shipped
+//!     before the edit and one that shipped after.
+//!   * It CANNOT DETECT "WRONG BUT CONSISTENTLY WRONG". A bug present when
+//!     the baseline was recorded is in the expectations forever, and this
+//!     test will defend it. The Lua vector could catch that class; this
+//!     cannot, and nothing else in the workspace replaces it, because there
+//!     is no second implementation left to disagree with.
+//!
+//! Assertion 2 is not weakened this way — it compares two live runs against
+//! each other rather than against a record — but it is not a substitute
+//! either: it proves `step` is self-consistent, not that it is right.
+//!
+//! # The retirement
+//!
+//! Decision #520 (repository owner). Superseded by #516, the locomotion
+//! rework for #488, which changes what every body on the pitch does per tick
+//! and therefore diverges a per-tick trajectory by construction. The Lua
+//! vector last held at `3f8f4a3`, verified green there by running this file
+//! and its three siblings at that commit, not assumed. The vector file stays
+//! in the tree, unmodified and unread: it is the record of a capture that can
+//! never be taken again.
 
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::PitchSize;
 use gc_sim::tuning::Tuning;
 
-const FIXTURE: &str = include_str!("fixtures/match_step_ai_ai_lua_reference.txt");
+const FIXTURE: &str = include_str!("fixtures/match_step_ai_ai_baseline.txt");
 
 const PLAYER_COUNT: usize = 10;
 /// Field count: 11 scalar fields (tick, 6 ball fields, owner, 2 scores, rng)
@@ -94,12 +140,13 @@ fn assert_bits_eq(actual: f64, expected: f64, tick: i64, field: &str) {
     );
 }
 
-#[test]
-fn match_step_matches_lua_tick_by_tick_for_a_7200_tick_ai_vs_ai_match() {
-    let tune = Tuning::new();
+/// The one scenario this file pins, built identically everywhere it is
+/// needed so the baseline assertion, the reproducibility assertion and the
+/// recorder cannot drift apart into three subtly different matches.
+fn fresh_match() -> gc_sim::match_snapshot::MatchState {
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
-    let mut s = sim_match::new(NewMatchOptions {
+    sim_match::new(NewMatchOptions {
         home,
         away,
         field: PitchSize { w: 960.0, h: 540.0 },
@@ -114,7 +161,45 @@ fn match_step_matches_lua_tick_by_tick_for_a_7200_tick_ai_vs_ai_match() {
         showcase_players_by_id: None,
         human_controlled: Some(false),
         input_ownership: None,
-    });
+    })
+}
+
+/// One tick of the scenario's stepping, in one place for the same reason.
+fn step_once(s: &mut gc_sim::match_snapshot::MatchState, tune: &Tuning) {
+    sim_match::step(
+        s,
+        1.0 / 60.0,
+        StepInput::Legacy(gc_sim::match_snapshot::MatchInput::default()),
+        None,
+        tune,
+    );
+}
+
+/// The 31 compared quantities of one tick, as bits, in fixture column order.
+fn observe(s: &gc_sim::match_snapshot::MatchState) -> Vec<u64> {
+    let mut out = vec![
+        s.ball.x.to_bits(),
+        s.ball.y.to_bits(),
+        s.ball_vel.x.to_bits(),
+        s.ball_vel.y.to_bits(),
+        s.ball_z.to_bits(),
+        s.ball_vz.to_bits(),
+        s.owner.unwrap_or(-1) as u64,
+        s.score.home as u64,
+        s.score.away as u64,
+        u64::from(s.rng),
+    ];
+    for p in &s.players {
+        out.push(p.pos.x.to_bits());
+        out.push(p.pos.y.to_bits());
+    }
+    out
+}
+
+#[test]
+fn match_step_reproduces_its_recorded_baseline_for_a_7200_tick_ai_vs_ai_match() {
+    let tune = Tuning::new();
+    let mut s = fresh_match();
 
     let rows: Vec<Row> = FIXTURE.lines().map(parse_row).collect();
     assert_eq!(
@@ -126,13 +211,7 @@ fn match_step_matches_lua_tick_by_tick_for_a_7200_tick_ai_vs_ai_match() {
     let mut compared = 0;
     for row in &rows {
         if row.tick > 0 {
-            sim_match::step(
-                &mut s,
-                1.0 / 60.0,
-                StepInput::Legacy(gc_sim::match_snapshot::MatchInput::default()),
-                None,
-                &tune,
-            );
+            step_once(&mut s, &tune);
         }
         let tick = row.tick;
         assert_bits_eq(s.ball.x, row.ball_x, tick, "ball.x");
@@ -161,4 +240,85 @@ fn match_step_matches_lua_tick_by_tick_for_a_7200_tick_ai_vs_ai_match() {
         compared += 1;
     }
     assert_eq!(compared, 7201);
+}
+
+/// The determinism claim proper, and the half of this file that no gameplay
+/// rework can move: `match::step` is a pure function of state and inputs, so
+/// two independently constructed runs of the same scenario in the same
+/// process agree on every bit of every field at every tick.
+///
+/// A defect that made stepping depend on anything outside its arguments — a
+/// hidden global, a clock read, iteration order over a hashed container,
+/// uninitialized memory — fails here while the recorded baseline above
+/// happily passes on whichever trajectory got recorded. That is why this is
+/// not redundant with assertion 1, and why it is the assertion to keep if
+/// only one could survive.
+#[test]
+fn match_step_is_bit_reproducible_across_two_independent_runs() {
+    let tune = Tuning::new();
+    let mut first = fresh_match();
+    let mut second = fresh_match();
+    assert_eq!(
+        observe(&first),
+        observe(&second),
+        "tick 0: two fresh matches of the same scenario differ before any step"
+    );
+    for tick in 1..=7_200 {
+        step_once(&mut first, &tune);
+        step_once(&mut second, &tune);
+        assert_eq!(
+            observe(&first),
+            observe(&second),
+            "tick {tick}: two independent runs of the same scenario diverged -- \
+             `match::step` is reading something outside its arguments"
+        );
+    }
+}
+
+/// Records the baseline assertion 1 reads, printing it to stdout for a human
+/// to capture. NOT CI-asserted and `#[ignore]`d so it never runs in the gate:
+/// a recorder that overwrote its own fixture during `cargo test` would turn a
+/// determinism regression into a no-op.
+///
+/// **Re-recording is a decision, not a fix.** A red baseline is a FINDING
+/// first: something under `match::step`'s AI path changed. Re-record only
+/// when that change is deliberate, reviewed and named in the commit message
+/// — `tools/lua_reference/README.md`'s rule for behavioral vectors, which
+/// this baseline inherits even though it is no longer a Lua vector.
+///
+/// Run:
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test match_differential -- \
+///     --ignored --nocapture record_match_step_ai_ai_baseline \
+///   | grep -E '^[0-9]' \
+///   > crates/gc-sim/tests/fixtures/match_step_ai_ai_baseline.txt
+/// ```
+#[test]
+#[ignore = "recorder: prints a baseline for a human to capture, never asserts"]
+fn record_match_step_ai_ai_baseline() {
+    let tune = Tuning::new();
+    let mut s = fresh_match();
+    for tick in 0..=7_200 {
+        if tick > 0 {
+            step_once(&mut s, &tune);
+        }
+        let mut row = vec![tick.to_string()];
+        row.push(s.ball.x.to_string());
+        row.push(s.ball.y.to_string());
+        row.push(s.ball_vel.x.to_string());
+        row.push(s.ball_vel.y.to_string());
+        row.push(s.ball_z.to_string());
+        row.push(s.ball_vz.to_string());
+        row.push(s.owner.unwrap_or(-1).to_string());
+        row.push(s.score.home.to_string());
+        row.push(s.score.away.to_string());
+        row.push(s.rng.to_string());
+        for p in &s.players {
+            row.push(p.pos.x.to_string());
+            row.push(p.pos.y.to_string());
+        }
+        println!("{}", row.join("\t"));
+    }
 }

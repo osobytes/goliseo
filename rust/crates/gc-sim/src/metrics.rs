@@ -86,6 +86,15 @@ pub struct MetricsPlayerView {
     pub is_keeper: bool,
     /// Current velocity.
     pub vel: Vec2,
+    /// Locomotion velocity (px/s) — the part of motion `gc_sim::locomotion`
+    /// owns, before knockback and other external impulses fold into [`vel`].
+    ///
+    /// `time_to_reverse` reads this rather than `vel` on purpose: a body
+    /// shoved backwards by a tackle is not a body that chose to turn around,
+    /// and measuring the primitive means measuring what the primitive drives.
+    ///
+    /// [`vel`]: MetricsPlayerView::vel
+    pub run_vel: Vec2,
     /// Current move speed, px/s.
     pub move_speed: f64,
     /// Whether the player is currently sprinting.
@@ -202,6 +211,80 @@ pub struct GoalEvent {
     pub team: MatchTeam,
 }
 
+/// Fraction of base move speed a body must be carrying for its heading to
+/// count as a cruise that a later reversal is measured against.
+///
+/// #488 words this "at top speed". The reference here is
+/// [`MetricsPlayerView::move_speed`], the player's BASE speed, not the
+/// resolved locomotion context's top speed — contexts multiply that base by
+/// 0.6 (backpedal) to 1.35 (sprint). Using the base is a deliberate deviation
+/// and it is the honest one available at this layer: the context is a pure
+/// function of state AND the tick's inputs, and the metrics collector sees
+/// only state, so computing it here would mean duplicating
+/// `locomotion::resolve` against inputs it does not have. What the metric
+/// therefore measures is "a reversal from a genuine run", which is the case
+/// the primitive is about; a reversal out of a backpedal never arms it.
+const REVERSAL_ARM_FRACTION: f64 = 0.8;
+
+/// Fraction of base move speed the body must have rebuilt, in the new
+/// direction, for the reversal to count as completed. #488's figure.
+const REVERSAL_COMPLETE_FRACTION: f64 = 0.5;
+
+/// Cosine of the half-arc the new heading must fall inside to count as "the
+/// opposite direction". #488 says 15 degrees; `cos(15 deg)` is authored
+/// directly for the reason `gc_data::locomotion`'s arc knobs are — this is
+/// compared against a dot product every tick per player, and a `cos()` there
+/// would put a non-correctly-rounded libm call on a path two targets must
+/// agree on.
+const REVERSAL_ARC_COS: f64 = 0.965_925_826_289_068_3;
+
+/// Fraction of base move speed the body must drop BELOW at some point during
+/// the event for it to count as a reversal rather than an arc.
+///
+/// This is the observable signature of `locomotion`'s reversing branch, and
+/// it is what makes the metric measure what #488 specified rather than
+/// something broader. A commanded 180-degree reversal always trips that
+/// branch — the arc thresholds put anything past 120 degrees there — so the
+/// body brakes to the snap speed and pivots at exactly zero. A body that
+/// merely turned a long way round keeps its pace through the arc and never
+/// comes near zero.
+///
+/// The first draft of this metric had no such gate, and the difference is not
+/// academic: it counted every "ended up going the other way", arcs included,
+/// and `LOCO_RUN_DECEL_MULT` then reported DECORATION at a 77% perturbation
+/// (delta -0.007 against a 0.017 threshold). Braking is most of a true
+/// reversal and almost none of an arc, so folding the two populations
+/// together diluted exactly the term the metric exists to measure.
+const REVERSAL_THROUGH_ZERO_FRACTION: f64 = 0.1;
+
+/// Seconds after leaving cruise beyond which a body is no longer considered
+/// to be reversing. Without this, a player who slowed for unrelated reasons
+/// and happened to run the other way a minute later would record an enormous
+/// "reversal".
+const REVERSAL_TIMEOUT_S: f64 = 2.0;
+
+/// One player's in-flight reversal measurement.
+///
+/// The reversal is detected from the TRAJECTORY, not from a stored command,
+/// and that is a design constraint rather than a shortcut: persisting the
+/// commanded direction would add a `MatchPlayer` field, hence a snapshot
+/// version bump, hence state two peers can disagree about — the same argument
+/// that kept the locomotion context out of the snapshot (see
+/// `docs/design/locomotion.md`). A reversal is fully observable without it:
+/// the body was running one way at speed, and it is now running the other way
+/// at speed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReversalTracker {
+    /// Heading the body last cruised on, if it has cruised recently.
+    pub cruise_dir: Option<Vec2>,
+    /// Seconds elapsed since the body left that cruise.
+    pub since_cruise_s: f64,
+    /// Whether the body has passed near enough to a standstill during this
+    /// event to have gone through `locomotion`'s reversing branch rather than
+    /// around an arc.
+    pub through_zero: bool,
+}
+
 /// Running per-match accumulator, updated one frame at a time via
 /// [`observe`].
 #[derive(Clone, Debug, PartialEq)]
@@ -266,6 +349,12 @@ pub struct MetricsCollector {
     pub chip_on_target: i64,
     /// Chip strikes scored.
     pub chip_goals: i64,
+    /// Per-player reversal tracking, indexed like `MetricsMatchView.players`.
+    pub reversal: Vec<ReversalTracker>,
+    /// Completed reversals: total seconds, for the mean.
+    pub reversal_s: f64,
+    /// Completed reversals: how many.
+    pub reversals: i64,
     /// Scoring side of the most recent unresolved strike.
     pub pending_shot_team: Option<MatchTeam>,
     /// Shot subtype of the most recent unresolved strike.
@@ -295,6 +384,7 @@ pub fn new(s: &MetricsMatchView) -> MetricsCollector {
         keeper.insert(p.id.clone(), p.is_keeper);
         index_of.insert(p.id.clone(), i);
     }
+    let reversal = vec![ReversalTracker::default(); s.players.len()];
     let prev_owner = s.owner.map(|i| &s.players[i]);
     let prev_role = prev_owner.and_then(|owner| {
         if owner.is_keeper {
@@ -309,6 +399,9 @@ pub fn new(s: &MetricsMatchView) -> MetricsCollector {
     });
 
     MetricsCollector {
+        reversal,
+        reversal_s: 0.0,
+        reversals: 0,
         t: 0.0,
         goals: Vec::new(),
         prev_home: s.score.home,
@@ -354,6 +447,72 @@ fn dribble_role(s: &MetricsMatchView, player_id: &str) -> DribbleRole {
     }
 }
 
+/// One tick of `time_to_reverse` accumulation.
+///
+/// The state machine is deliberately small. A body at or above
+/// [`REVERSAL_ARM_FRACTION`] of its base speed is *cruising*, and its heading
+/// is remembered along with a clock that resets every tick it keeps cruising.
+/// A reversal is complete when the body is back above
+/// [`REVERSAL_COMPLETE_FRACTION`] while heading within
+/// [`REVERSAL_ARC_COS`] of the OPPOSITE of that remembered heading; the
+/// elapsed clock is the measurement.
+///
+/// Completion is checked before the cruise is refreshed, so the two
+/// thresholds may be set equal without the arming update swallowing the
+/// event. A body that slows and then leaves in some direction that is not the
+/// opposite simply re-arms on its new heading, which is the correct reading:
+/// it turned, it did not reverse. [`REVERSAL_TIMEOUT_S`] discards a cruise
+/// nothing followed, so a player who stops for unrelated reasons and runs
+/// back a minute later does not record a minute-long reversal.
+fn observe_reversals(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64) {
+    for (index, player) in s.players.iter().enumerate() {
+        let Some(tracker) = c.reversal.get_mut(index) else {
+            continue;
+        };
+        if player.move_speed <= 0.0 {
+            *tracker = ReversalTracker::default();
+            continue;
+        }
+        let speed = player.run_vel.length();
+        let fraction = speed / player.move_speed;
+        let heading = if speed > 0.0 {
+            Some(player.run_vel.normalized())
+        } else {
+            None
+        };
+
+        if let Some(cruise) = tracker.cruise_dir {
+            tracker.since_cruise_s += dt;
+            if fraction < REVERSAL_THROUGH_ZERO_FRACTION {
+                tracker.through_zero = true;
+            }
+            if let Some(heading) = heading
+                && tracker.through_zero
+                && fraction >= REVERSAL_COMPLETE_FRACTION
+            {
+                let opposed = -(heading.x * cruise.x + heading.y * cruise.y);
+                if opposed >= REVERSAL_ARC_COS {
+                    c.reversal_s += tracker.since_cruise_s;
+                    c.reversals += 1;
+                    *tracker = ReversalTracker::default();
+                    continue;
+                }
+            }
+            if tracker.since_cruise_s > REVERSAL_TIMEOUT_S {
+                *tracker = ReversalTracker::default();
+            }
+        }
+
+        if let Some(heading) = heading
+            && fraction >= REVERSAL_ARM_FRACTION
+        {
+            tracker.cruise_dir = Some(heading);
+            tracker.since_cruise_s = 0.0;
+            tracker.through_zero = false;
+        }
+    }
+}
+
 /// Observe one frame, AFTER stepping the match for the same `dt` (so
 /// `s.events` holds exactly this frame's actions).
 pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: &Tuning) {
@@ -365,6 +524,8 @@ pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: 
             c.keeper_state_s[state.index()] += dt;
         }
     }
+
+    observe_reversals(c, s, dt);
 
     for e in &s.events {
         let team = e.player.as_deref().and_then(|p| c.team_of.get(p).copied());
@@ -606,6 +767,18 @@ pub struct MatchMetrics {
     pub possession_balance: Option<f64>,
     /// Longest scoring drought, in seconds.
     pub longest_drought_s: f64,
+    /// Mean seconds a body takes to complete a 180-degree reversal, or `None`
+    /// when the match contained no completed reversal to measure.
+    ///
+    /// `None` rather than `0.0` deliberately: zero is a *fast* reversal and
+    /// would read as the best possible score, so a match that never armed the
+    /// measurement would silently certify the primitive as perfect. The band
+    /// treats absence as absence.
+    pub time_to_reverse: Option<f64>,
+    /// How many completed reversals the mean above is over. Reported so a
+    /// mean resting on three samples is visibly different from one resting on
+    /// three hundred.
+    pub reversals: i64,
     /// Controlled-slot carry time, in seconds.
     pub controlled_dribble_carry_s: f64,
     /// Controlled-slot close-control share of carry time.
@@ -721,6 +894,8 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         },
         possession_balance: (owned > 0.0).then_some(c.own_time.home / owned),
         longest_drought_s: longest_drought,
+        time_to_reverse: (c.reversals > 0).then(|| c.reversal_s / c.reversals as f64),
+        reversals: c.reversals,
         controlled_dribble_carry_s: controlled.carry_s,
         controlled_dribble_close_share: (controlled.carry_s > 0.0)
             .then_some(controlled.close_s / controlled.carry_s),

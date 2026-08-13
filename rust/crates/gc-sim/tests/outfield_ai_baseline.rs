@@ -677,3 +677,44 @@ fn outfield_ai_baseline_reproduces_the_frozen_fixture_exactly() {
     assert!(comparison.identity_ok, "identity must also match exactly");
     assert_eq!(current.signature, frozen::RECORD.signature);
 }
+
+/// Records a fresh frozen baseline, printing `gc-data`'s whole
+/// `outfield_ai_baseline.rs` to stdout for a human to capture.
+///
+/// This is the runner the module doc of `gc_data::outfield_ai_baseline`
+/// records as missing: *"this repository does not currently provide a runner
+/// that drives that re-run outside `cargo test`'s own self-reproducibility
+/// checks ... Regenerating by hand defeats the purpose of a frozen control"*.
+/// `measure` and `serialize` both existed; nothing drove them together, so
+/// every re-freeze so far has been a hand edit of a frozen control — exactly
+/// what that sentence warns against.
+///
+/// `#[ignore]`d and printing to stdout, like every other recorder in this
+/// tree: one that overwrote its own fixture during `cargo test` would turn a
+/// balance regression into a no-op.
+///
+/// **Re-freezing is a decision, not a fix**, and a heavier one than most.
+/// A moved baseline supersedes evidence other artifacts cite, so it needs the
+/// owner's call recorded on an issue, the drift table in the commit message,
+/// and an entry in `docs/design/fun_metrics.md`'s drift log. A red baseline is
+/// a FINDING first: investigate what moved before reaching for this.
+///
+/// Run:
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test outfield_ai_baseline -- \
+///     --ignored --nocapture record_outfield_ai_baseline \
+///   | sed -n '/^\/\/! Frozen/,$p' \
+///   > crates/gc-data/src/outfield_ai_baseline.rs
+/// ```
+#[test]
+#[ignore = "recorder: prints a baseline for a human to capture, never asserts"]
+fn record_outfield_ai_baseline() {
+    let next_version = frozen::RECORD.baseline_version + 1;
+    let record = sut::measure(&sut::MeasureOpts {
+        baseline_version: Some(next_version),
+        ..Default::default()
+    });
+    print!("{}", sut::serialize(&record));
+}

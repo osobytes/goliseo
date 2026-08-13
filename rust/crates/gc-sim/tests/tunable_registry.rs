@@ -331,6 +331,9 @@ fn tuning_knobs_are_the_registrys_tier_one_set_and_the_panel_contract_is_unchang
         t.categories(),
         vec![
             "Movement",
+            // Locomotion is the per-context kinematics tab (#488): the
+            // Movement tab keeps the shared bases every context multiplies.
+            "Locomotion",
             "Dribble",
             "Aerial",
             "Attacking",

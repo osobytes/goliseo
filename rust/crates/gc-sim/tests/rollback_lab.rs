@@ -500,7 +500,12 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     let tune = Tuning::new();
     let tape = determinism_evidence::fixture_tape(&tune)
         .expect("the live soccer fixture tape is always well formed");
-    assert_eq!(rollback_lab::tape_digest(&tape), "9375affb2dcd5588");
+    // A digest over the OMP-1 fixture tape, so it is a companion of that
+    // fixture's DERIVED half and moves with it. Re-recorded for #488 in the
+    // same commit as `gc-data/src/omp1_determinism.json`. Like the two
+    // literals in `gc_data::omp1_determinism`'s own test, #504's documented
+    // re-record command does not mention this one either.
+    assert_eq!(rollback_lab::tape_digest(&tape), "53cecbb691fb8afb");
 }
 
 #[test]

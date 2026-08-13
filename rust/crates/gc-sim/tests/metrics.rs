@@ -22,6 +22,7 @@ fn player(id: &str, team: MatchTeam, is_keeper: bool) -> MetricsPlayerView {
         team,
         is_keeper,
         vel: Vec2::new(0.0, 0.0),
+        run_vel: Vec2::new(0.0, 0.0),
         move_speed: 180.0,
         sprinting: false,
         dodge_timer: 0.0,
@@ -629,4 +630,98 @@ fn metrics_aggregate_computes_mean_sd_min_max_per_key_skipping_nils() {
     assert_eq!(agg["goals_total"].max, 6.0);
     assert_eq!(agg["save_rate"].n, 2);
     assert!((agg["save_rate"].mean - 0.6).abs() < 1e-9);
+}
+
+// ---------------------------------------------------------------------
+// `time_to_reverse` (#488). Tier-1 tests for the detector's own logic:
+// `metrics::observe` is pure over a view, so each case is a scripted speed
+// profile checked in microseconds rather than inferred from a 24-seed
+// harness run. The harness assertions live in `knob_contract.rs` and prove
+// something different — that the knobs reach it.
+// ---------------------------------------------------------------------
+
+/// Drive one player through a scripted sequence of `run_vel` values, one per
+/// tick at 60Hz, and return the finished metrics.
+fn drive_run_vel(sequence: &[Vec2]) -> gc_sim::metrics::MatchMetrics {
+    let tune = Tuning::new();
+    let mut state = fake_state();
+    let mut c = metrics::new(&state);
+    for v in sequence {
+        state.players[1].run_vel = *v;
+        metrics::observe(&mut c, &state, 1.0 / 60.0, &tune);
+    }
+    metrics::finish(&mut c, &state)
+}
+
+/// The measurement itself: cruise, brake through zero, leave the other way.
+///
+/// The clock starts on the last tick the body was still cruising, so a
+/// three-tick reversal at 60Hz measures 0.05s exactly. Asserting the exact
+/// value rather than a range is deliberate — this is integer tick counting,
+/// and a fencepost error is the defect most likely to live here.
+#[test]
+fn time_to_reverse_measures_a_brake_through_zero_reversal() {
+    // move_speed is 180 for the fixture's players.
+    let m = drive_run_vel(&[
+        Vec2::new(180.0, 0.0), // cruising: arms, resets the clock each tick
+        Vec2::new(180.0, 0.0),
+        Vec2::new(90.0, 0.0),  // braking, below the arm threshold
+        Vec2::new(9.0, 0.0),   // through zero
+        Vec2::new(-90.0, 0.0), // rebuilt half speed, opposite: complete
+    ]);
+    assert_eq!(m.reversals, 1);
+    let measured = m.time_to_reverse.expect("one reversal was completed");
+    assert!(
+        (measured - 3.0 / 60.0).abs() < 1e-12,
+        "expected exactly three ticks, got {measured}"
+    );
+}
+
+/// A wide arc is not a reversal, and this is the assertion that keeps the two
+/// populations apart.
+///
+/// The body ends up going the other way at speed, so every other condition is
+/// met — but it never comes near a standstill, so it went around rather than
+/// through. Without this gate the metric measures "ended up going the other
+/// way", which folds in a population where braking barely matters and dilutes
+/// the term the metric exists to measure.
+#[test]
+fn time_to_reverse_ignores_a_turn_that_kept_its_pace() {
+    let m = drive_run_vel(&[
+        Vec2::new(180.0, 0.0),
+        Vec2::new(90.0, 90.0), // carries pace around the corner
+        Vec2::new(0.0, 120.0),
+        Vec2::new(-90.0, 90.0),
+        Vec2::new(-120.0, 0.0), // opposite, at speed, but never near zero
+    ]);
+    assert_eq!(m.reversals, 0);
+    assert_eq!(
+        m.time_to_reverse, None,
+        "an arc must not be reported as a reversal"
+    );
+}
+
+/// A body that stops for unrelated reasons and leaves again much later has
+/// not reversed, and must not record a multi-second one.
+#[test]
+fn time_to_reverse_discards_a_cruise_nothing_followed() {
+    let mut sequence = vec![Vec2::new(180.0, 0.0), Vec2::new(0.0, 0.0)];
+    // Two and a half seconds of standing still, past REVERSAL_TIMEOUT_S.
+    sequence.extend(std::iter::repeat_n(Vec2::new(0.0, 0.0), 150));
+    sequence.push(Vec2::new(-180.0, 0.0));
+    let m = drive_run_vel(&sequence);
+    assert_eq!(
+        m.reversals, 0,
+        "a reversal separated from its cruise by seconds is not one reversal"
+    );
+}
+
+/// Absence is reported as absence. `0.0` would be a *fast* reversal and would
+/// read as the best possible score, so a match that never armed the
+/// measurement would silently certify the primitive as perfect.
+#[test]
+fn time_to_reverse_is_none_rather_than_zero_when_nothing_reversed() {
+    let m = drive_run_vel(&[Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0)]);
+    assert_eq!(m.reversals, 0);
+    assert_eq!(m.time_to_reverse, None);
 }

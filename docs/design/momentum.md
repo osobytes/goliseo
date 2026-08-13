@@ -6,6 +6,14 @@
 > and measurements describe that tree: they are accurate for the work they
 > record and **name nothing you can open or run today**. The live tree is
 > `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+>
+> **Superseded in mechanism, not in intent, by `docs/design/locomotion.md`
+> (#488).** A second, narrower caveat on top of the first: even read as
+> history, the *mechanism* here is no longer what runs. The `run_vel` field,
+> the separate accel/decel rates and the single-helper rule all survive; the
+> vector nudge this file describes is now a speed scalar plus a heading eased
+> independently, and facing is its own target rather than a read of `run_vel`.
+> Its "Watch out for" list still applies verbatim.
 
 ## Why
 

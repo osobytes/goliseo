@@ -240,6 +240,7 @@ fn to_metrics_view(s: &MatchState) -> metrics::MetricsMatchView {
                 },
                 is_keeper: p.is_keeper,
                 vel: p.vel,
+                run_vel: p.run_vel,
                 move_speed: p.move_speed,
                 sprinting: p.sprinting,
                 dodge_timer: p.dodge_timer,

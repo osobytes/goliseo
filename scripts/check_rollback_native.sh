@@ -81,14 +81,27 @@ TEST_TARGET="rollback_validation"
 # from gc-data, so these only have to catch a campaign that ran a fraction of
 # what it claims.
 #
-# Native is 66 cases today: four profiles x three seeds x (complete_fixture +
+# Native is 57 cases today: four profiles x three seeds x (complete_fixture +
 # combat) = 24 -- note the x2, it is the count an earlier draft got wrong --
-# plus three seeds x (nine scenarios + combat + four combat-load fixtures) =
-# 42. Soak is five seeds x (complete_fixture + combat) = 10. Both figures are
-# unchanged by #469's per-PR/on-demand split: the split changes where cases
+# plus three seeds x (six scenarios + combat + four combat-load fixtures) =
+# 33. Soak is five seeds x (complete_fixture + combat) = 10. The soak figure
+# is unchanged by #469's per-PR/on-demand split: the split changes where cases
 # also run, never what these two campaigns plan, so these floors bite exactly
 # as before.
-MIN_NATIVE_CASES=66
+#
+# LOWERED FROM 66 BY #522, AND THAT IS A NARROWING, NOT A CORRECTION. Three
+# scenarios -- `shot`, `aerial`, `keeper_action` -- were removed from
+# gc_data::omp2_rollback_validation because #488's locomotion rework empties
+# the OMP-1 fixed-input tape of the shot, the header and the catch they scope
+# windows around. Three scenarios x three seeds = the nine cases lost.
+#
+# This floor did its job on the way here: with the scenarios removed and this
+# number still 66, the campaign reported `success=1` with all 57 cases
+# reconverging and the gate rejected it anyway, as a narrowed matrix. Anyone
+# lowering it again should have to write a paragraph like this one, naming the
+# scenarios and the issue that decided their removal. If you are lowering it
+# to make a red check go green, stop.
+MIN_NATIVE_CASES=57
 MIN_SOAK_CASES=10
 
 step() { echo "==> $*"; }

@@ -237,7 +237,14 @@ const SCENARIOS: [OnlineCombatPhaseScenario; 7] = [
             separation_px: 36.0,
             row_spacing_px: 120.0,
         },
-        steps: 240,
+        // 240 -> 480 under #488: a body with momentum closes and re-closes a
+        // duel more slowly than one that could reverse on a frame, so a
+        // budget calibrated against instant reversal stopped reaching a
+        // knockback inside the window. The scenario's INTENT is unchanged --
+        // it still measures corrections that resimulate a stagger tick, on
+        // the same geometry and the same family -- only the number of steps
+        // it needs to get there moved.
+        steps: 480,
         deliver_period: 5,
         hold_equipment: false,
     },
@@ -254,8 +261,22 @@ const SCENARIOS: [OnlineCombatPhaseScenario; 7] = [
             separation_px: 24.0,
             row_spacing_px: 28.0,
         },
-        steps: 600,
-        deliver_period: 8,
+        // 600 -> 820 steps and a 8 -> 12 delivery period, under #488's
+        // carry-composition fix. The reason is the mechanic, not the harness:
+        // a carrier who shields now keeps carry's handling penalty AND its
+        // ball control while backing off, where before it silently got the
+        // empty-handed profile. Spills are correspondingly rarer.
+        //
+        // The step budget alone could not fix it, and that is worth recording
+        // so nobody retries it: measured, 780 and 820 steps produce too few
+        // spills, and by 860 the match has reached full time and the peers
+        // report `Completed` rather than `Active`. The window is closed. The
+        // delivery period is the lever that actually applies -- pumping the
+        // transport less often leaves more predicted ticks, so each
+        // correction resimulates more of them, which is exactly what this
+        // scenario asserts is covered. Every assertion is unchanged.
+        steps: 820,
+        deliver_period: 12,
         hold_equipment: false,
     },
     // The same scrum as `contact`, read one tick later: immunity is granted
@@ -581,7 +602,11 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
             separation_px: 200.0,
             row_spacing_px: 28.0,
         },
-        steps: 240,
+        // 240 -> 480 for the same reason as the `stagger` scenario above:
+        // with momentum, 240 steps was no longer enough for this geometry to
+        // telegraph a single threat, and a probe that observes nothing proves
+        // nothing. The assertion it feeds is unchanged.
+        steps: 480,
         deliver_period: 5,
     },
 ];

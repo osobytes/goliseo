@@ -178,7 +178,7 @@ fn a_query_heavy_consumer_leaves_every_matrix_scenario_hash_identical() {
     let config = rollback_validation::config();
     assert_eq!(
         config.scenarios.len(),
-        9,
+        6,
         "the authored matrix grew or shrank"
     );
     let scenario_tapes = all_scenario_tapes(&tune);

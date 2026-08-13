@@ -160,7 +160,11 @@ fn pins_the_required_scenario_and_runtime_matrix_config_only() {
     assert_eq!(config.network_seeds[0], 2001);
     assert_eq!(config.network_seeds[2], 2003);
     assert_eq!(config.full_profiles.len(), 4);
-    assert_eq!(config.scenarios.len(), 9);
+    assert_eq!(
+        config.scenarios.len(),
+        6,
+        "nine until #522 removed shot/aerial/keeper_action -- see the note in gc_data"
+    );
     assert_eq!(config.soak_network_seeds.len(), 5);
     assert_eq!(config.soak_network_seeds[0], 2001);
     assert_eq!(config.soak_network_seeds[1], 2002);

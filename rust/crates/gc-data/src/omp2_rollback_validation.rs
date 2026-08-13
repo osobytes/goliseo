@@ -145,12 +145,36 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     full_profiles: &["clean", "omp0_parity", "playable", "stress"],
     browser_full_profiles: &["clean", "playable"],
     stress_profile: "stress",
+    // #522 removed three scenarios -- `shot`, `aerial` and `keeper_action`.
+    // This is a DELIBERATE NARROWING of the matrix, which is exactly what
+    // `scripts/check_rollback_native.sh`'s `MIN_NATIVE_CASES` floor exists to
+    // catch, so that floor moves in the same commit and for this reason.
+    //
+    // Each of the three scoped a window around an event the OMP-1 tape no
+    // longer contains ANYWHERE: #488's locomotion rework drives the frozen
+    // button presses to different places, and the shot, the header and the
+    // catch stop happening. Unlike the tackle -- which merely moved, tick 24
+    // to tick 31, and so is re-authored above -- there is no tick to re-point
+    // these at. Re-pointing them at whatever event happens to be nearby would
+    // be a window that covers something it is not named for.
+    //
+    // The coverage they were standing in for moves to #518, which asserts
+    // behavior over a SEED SET rather than one frozen trajectory. That is the
+    // durable form: a scenario pinned to one seed rots on any gameplay
+    // change, which is the whole reason these three are being removed rather
+    // than nudged.
     scenarios: &[
+        // #522: shifted +7 boundaries. These two windows both wrapped the
+        // OMP-1 tape's first tackle, which #488's locomotion rework moved
+        // from tick 24 to tick 31 -- it did not disappear, which is why these
+        // two could be re-authored while `shot`, `aerial` and `keeper_action`
+        // could not. The offsets around the subject tick are unchanged, so
+        // the scenarios still measure what they measured.
         Omp2RollbackScenario {
             id: "possession_change",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(22),
-            last_boundary: Some(27),
+            first_boundary: Some(29),
+            last_boundary: Some(34),
             event_kind: None,
             lifecycle_kind: None,
             minimum_rollbacks: None,
@@ -158,18 +182,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         Omp2RollbackScenario {
             id: "tackle",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(23),
-            last_boundary: Some(26),
+            first_boundary: Some(30),
+            last_boundary: Some(33),
             event_kind: Some("tackle"),
-            lifecycle_kind: None,
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
-            id: "shot",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1684),
-            last_boundary: Some(1689),
-            event_kind: Some("shot"),
             lifecycle_kind: None,
             minimum_rollbacks: None,
         },
@@ -192,24 +207,6 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             minimum_rollbacks: None,
         },
         Omp2RollbackScenario {
-            id: "aerial",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1786),
-            last_boundary: Some(1791),
-            event_kind: Some("header"),
-            lifecycle_kind: None,
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
-            id: "keeper_action",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1690),
-            last_boundary: Some(1695),
-            event_kind: Some("catch"),
-            lifecycle_kind: None,
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
             id: "repeated_rollback",
             kind: Omp2RollbackScenarioKind::Repeated,
             first_boundary: Some(0),
@@ -228,13 +225,23 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             minimum_rollbacks: None,
         },
     ],
+    // NOTE on the `final_hash` / `tape_digest` fields below. Every
+    // `initial_hash` here is the CONSTRUCTED fixture state and is frozen: it
+    // is what makes "the fixture is the one that was recorded" a real claim.
+    // The other two are what this build produces after stepping that state,
+    // so a deliberate gameplay change moves them and only them. #488 moved
+    // all eight while leaving all five `initial_hash` values untouched, which
+    // is the check that the fixtures themselves did not drift. Re-derived by
+    // running the failing assertion and reading the values it prints -- there
+    // is no recorder for these the way `record_omp1_derived_baseline` is one
+    // for OMP-1, and there should be.
     combat_fixture: Omp2RollbackCombatFixture {
         id: "omp2-combat-rollback-v1",
         seed: 733,
         frame_count: 80,
         initial_hash: "6edfabacb5ecc6cd",
-        final_hash: "822ca5cf529e725b",
-        tape_digest: "da9d009342add99a",
+        final_hash: "e3eb737ca3353add",
+        tape_digest: "c5ecfbfb2228e9a7",
     },
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
@@ -247,8 +254,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: None,
             initial_hash: "ba131fc89cabd89a",
-            final_hash: "93206851a4a6455a",
-            tape_digest: "570e79d1e5ac32fd",
+            final_hash: "a8223c0fe7c55fba",
+            tape_digest: "0e3fccf43dfaaddc",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -260,8 +267,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: None,
             initial_hash: "0c6f04fe7cdbdcb6",
-            final_hash: "307cff049c8ea93f",
-            tape_digest: "452e841205b6f510",
+            final_hash: "359d8a6339b3803a",
+            tape_digest: "d6610980ce1c1364",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -273,8 +280,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "bfc22640819ecd1b",
-            final_hash: "70c04d10f1e7ebf3",
-            tape_digest: "fbb700e6b65acf3d",
+            final_hash: "f5bd8668fbe96de5",
+            tape_digest: "e26626b0528529d8",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -286,8 +293,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "11e9080994725ece",
-            final_hash: "37b90de104d12a42",
-            tape_digest: "f75bb3356ab89f8e",
+            final_hash: "a7c25e58bd982c14",
+            tape_digest: "3883e400e429adc3",
         },
     ],
     budgets: Omp2RollbackBudgets {

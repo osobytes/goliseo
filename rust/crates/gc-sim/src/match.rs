@@ -49,6 +49,7 @@ use crate::input_frame::{
     self, InputFixtureRosters, InputFrame, InputOwnership, InputSlotAssignment,
 };
 use crate::keeper;
+use crate::locomotion;
 use crate::match_snapshot::{
     MatchEvent, MatchEventKind, MatchInput, MatchPlayer, MatchState, PitchSize, Rect, Team,
     WindupShot,
@@ -188,7 +189,11 @@ const RECEIVE_TIME: f64 = 1.3;
 const KEEPER_RECEIVE_TIME: f64 = 4.0;
 const BACKPASS_AIM_COS: f64 = 0.92;
 
-const RUN_VEL_FACE_MIN: f64 = 20.0;
+/// Speed below which a moving player's facing stops tracking their run
+/// velocity. Lives in `locomotion` now that facing is an independent target;
+/// re-exported here because the human branch still needs it to decide whether
+/// the stick or the heading owns facing this tick.
+use crate::locomotion::MOVEMENT_FACE_MIN_SPEED as RUN_VEL_FACE_MIN;
 
 const WINDUP_MOVE: f64 = 0.3;
 
@@ -3293,45 +3298,129 @@ pub fn resolve_collisions(s: &mut MatchState) {
     }
 }
 
-/// Locomotion helper: nudge `p.run_vel` toward `desired` by at most
-/// accel*dt (DECEL when desired is zero), then move `p.pos` by run_vel*dt
-/// clamped to the field. Updates `p.facing` to follow run_vel when the
-/// player is actually moving, keeping the last facing when stationary so a
-/// stationary player can still aim without snapping to zero.
-fn apply_locomotion(field: PitchSize, p: &mut MatchPlayer, desired: Vec2, dt: f64, tune: &Tuning) {
-    let dx = desired.x - p.run_vel.x;
-    let dy = desired.y - p.run_vel.y;
-    let diff_len = (dx * dx + dy * dy).sqrt();
-    let dlen = desired.length();
-    // Use DECEL when stopping (no input), ACCEL when steering toward any
-    // speed.
-    let rate = if dlen < 1.0 {
-        tune.value("MOVE_DECEL")
+/// What a caller wants from one locomotion tick beyond the desired velocity.
+///
+/// `desired` still carries the caller's situational speed (stun, wind-up,
+/// combat scaling, arrival easing, species burst); everything a *context*
+/// owns — the sprint/carry/strafe multipliers, the accel/decel/turn rates —
+/// is resolved inside [`apply_locomotion`].
+#[derive(Clone, Copy, Debug)]
+struct LocoOpts {
+    /// Whether the ball is at this player's feet, for context resolution.
+    carrying: bool,
+    /// Where this player wants to look, independent of where they move.
+    facing: locomotion::FacingIntent,
+}
+
+impl LocoOpts {
+    /// Off the ball, facing tracking the heading — the common case.
+    fn offball() -> Self {
+        LocoOpts {
+            carrying: false,
+            facing: locomotion::FacingIntent::Movement,
+        }
+    }
+
+    /// Off the ball, looking somewhere specific.
+    fn facing(target: Vec2) -> Self {
+        LocoOpts {
+            carrying: false,
+            facing: locomotion::FacingIntent::Toward(target),
+        }
+    }
+
+    /// With the ball at the feet.
+    fn carrying(self) -> Self {
+        LocoOpts {
+            carrying: true,
+            ..self
+        }
+    }
+}
+
+/// The fastest `p` may be travelling `dist` from a positional target and
+/// still stop on it, in px/s.
+///
+/// Reads the neutral `Run` profile's deceleration: an off-ball body easing
+/// into a spot is not in a context that brakes unusually well or badly, and
+/// resolving the context here would be circular — the answer feeds the
+/// command the context is resolved from.
+fn arrival_cap(p: &MatchPlayer, dist: f64, tune: &Tuning) -> f64 {
+    let stats = locomotion::stats(p.move_speed, p.strength, p.dribble, tune);
+    let profile = locomotion::profile(
+        locomotion::Resolution {
+            ctx: gc_data::locomotion::LocoContext::Run,
+            carry: gc_data::locomotion::CarryMode::Empty,
+        },
+        p.move_speed,
+        stats,
+        tune,
+    );
+    locomotion::arrival_speed(dist, profile.decel)
+}
+
+/// Locomotion helper: run one tick of [`locomotion::step`] for `p`, then move
+/// `p.pos` by the resulting run velocity, clamped to the field.
+///
+/// This is the single seam every walking/running movement in the match goes
+/// through. It resolves the player's context, derives that context's
+/// kinematic parameters from their stats, and hands both to the primitive.
+/// Bespoke movement — slides, jukes, keeper dives — deliberately does not
+/// come through here.
+fn apply_locomotion(
+    field: PitchSize,
+    p: &mut MatchPlayer,
+    desired: Vec2,
+    dt: f64,
+    tune: &Tuning,
+    opts: LocoOpts,
+) {
+    // Step 1: resolve the context. The throttle is the caller's commanded
+    // speed as a fraction of this player's base, so the jog/run edge is a
+    // property of the command rather than of the result — a slower context
+    // multiplier can never feed back and reclassify the body.
+    let base_speed = p.move_speed.max(1.0);
+    let commanded = desired.length();
+    let throttle = commanded / base_speed;
+    let move_dir = if commanded > 0.0 {
+        desired.normalized()
     } else {
-        // Standing-start inertia: acceleration builds with momentum. From
-        // rest you push off at START_ACCEL and only reach full MOVE_ACCEL
-        // as speed builds — no 0-to-full-stride in an instant. A body
-        // already at speed redirects at full rate, so turns stay sharp.
-        // Normalized by the player's BASE speed (not the desired speed), so
-        // asking for a sprint never weakens the initial push-off.
-        let momentum = (p.run_vel.length() / p.move_speed.max(1.0)).min(1.0);
-        tune.value("START_ACCEL")
-            + (tune.value("MOVE_ACCEL") - tune.value("START_ACCEL")) * momentum
+        p.run_vel.normalized()
     };
-    let max_step = rate * dt;
-    if diff_len <= max_step {
-        p.run_vel = desired;
-    } else {
-        let scale = max_step / diff_len;
-        p.run_vel = Vec2::new(p.run_vel.x + dx * scale, p.run_vel.y + dy * scale);
-    }
+    let face_target = match opts.facing {
+        locomotion::FacingIntent::Toward(v) => v,
+        _ => p.facing,
+    };
+    let resolution = locomotion::resolve(
+        throttle,
+        opts.carrying,
+        p.sprinting,
+        move_dir,
+        face_target,
+        tune,
+    );
+    // Step 2: derive the context's kinematic parameters for this player.
+    let stats = locomotion::stats(p.move_speed, p.strength, p.dribble, tune);
+    let profile = locomotion::profile(resolution, p.move_speed, stats, tune);
+    // Steps 3-5.
+    let next = locomotion::step(
+        locomotion::Kinematics {
+            run_vel: p.run_vel,
+            facing: p.facing,
+        },
+        &locomotion::Command {
+            vel: desired,
+            carrying: opts.carrying,
+            sprinting: p.sprinting,
+            facing: opts.facing,
+        },
+        &profile,
+        dt,
+        tune,
+    );
+    p.run_vel = next.run_vel;
+    p.facing = next.facing;
     p.pos = clamp_to_field(field, p.pos.add(p.run_vel.scale(dt)));
-    // Facing: follow run_vel when moving, keep last facing when stationary
-    // so a stopped player can aim without their facing snapping to zero.
-    let rvlen = p.run_vel.length();
-    if rvlen > RUN_VEL_FACE_MIN {
-        p.facing = p.run_vel.normalized();
-    }
 }
 
 fn nearest_outfield_opponent(s: &MatchState, carrier: &MatchPlayer) -> (f64, Option<usize>) {
@@ -3579,7 +3668,11 @@ fn move_human_player(
         if jockeying {
             mv *= tune.value("JOCKEY_SLOW");
         } else if p.sprinting {
-            mv *= tune.value("SPRINT_MULT") * species::burst_speed(p.owned_verb);
+            // The sprint TOP-SPEED multiplier is the sprint context's own
+            // knob now (`SPRINT_MULT`, applied inside `apply_locomotion`);
+            // only the species burst stays here, because it is a property of
+            // the body rather than of the context.
+            mv *= species::burst_speed(p.owned_verb);
         }
         // Plant during wind-up: striker slows to 30% while winding up.
         if p.windup_timer > 0.0 {
@@ -3599,9 +3692,7 @@ fn move_human_player(
             }
         }
         // Stationary-aiming exception: when input is held but the player
-        // hasn't built speed yet, facing should follow input, not run_vel.
-        // apply_locomotion handles facing via run_vel; for the input case
-        // we override after the call when run_vel is still tiny.
+        // hasn't built speed yet, facing follows the stick, not the heading.
         let mut desired = if moving {
             dir.normalized().scale(mv)
         } else {
@@ -3636,7 +3727,6 @@ fn move_human_player(
         // cross is met without pixel-perfect positioning. It overrides the
         // jockey slowdown and steers even from a standstill.
         let going_aerial = aerial_active;
-        let facing_before_aerial = p.facing;
         if going_aerial && s.ball_z > GROUND_GRAB_HEIGHT && s.ball_vz < 0.0 {
             let to_ball = s.ball.sub(p.pos);
             let d = to_ball.length();
@@ -3648,23 +3738,36 @@ fn move_human_player(
                 }
             }
         }
-        apply_locomotion(field, p, desired, dt, tune);
-        if going_aerial && aerial::acrobatic_requested(&input) {
+        // Facing is its own target, resolved BEFORE the tick rather than
+        // slammed over the result afterwards. The precedence is unchanged;
+        // what changed is that each case now states a heading the body
+        // rotates toward at a bounded rate instead of teleporting there.
+        let ball_off = s.ball.sub(p.pos);
+        let intent = if going_aerial && aerial::acrobatic_requested(&input) {
             // Bicycle geometry reads the approach facing; the contact
             // magnet must not rotate the player to face a ball behind.
-            p.facing = facing_before_aerial;
-        } else if jockeying {
-            // Jockey stance: face the ball regardless of movement.
-            let ball_off = s.ball.sub(p.pos);
-            if ball_off.length() > 1.0 {
-                p.facing = ball_off.normalized();
-            }
+            locomotion::FacingIntent::Hold
+        } else if jockeying && ball_off.length() > 1.0 {
+            // Jockey stance: face the ball regardless of movement. This is
+            // the case that makes `strafe` and `backpedal` reachable for a
+            // human — shadowing sideways is now a different profile from
+            // running sideways.
+            locomotion::FacingIntent::Toward(ball_off)
         } else if (Some(idx) == s.owner && moving) || had_input_facing {
             // A carrier's facing always obeys the stick — even while hooked
             // to a run-on ball — so the next touch turns the dribble where
             // you point, not where the chase ran.
-            p.facing = dir.normalized();
-        }
+            locomotion::FacingIntent::Toward(dir)
+        } else {
+            locomotion::FacingIntent::Movement
+        };
+        // `jockeying` already requires not being the owner, so the two are
+        // mutually exclusive by construction.
+        let opts = LocoOpts {
+            carrying: Some(idx) == s.owner,
+            facing: intent,
+        };
+        apply_locomotion(field, p, desired, dt, tune, opts);
     }
     // A keeper holding the ball in its HANDS may not carry it out of the
     // penalty area (the drawn box) — the laws, and the renderer, agree. Off
@@ -3763,7 +3866,9 @@ fn move_ai_owner(
     let p = s.players[i].clone();
     let mut mv = p.move_speed * (if p.stun_timer > 0.0 { STUN_SLOW } else { 1.0 }) * combat_scale;
     if p.sprinting {
-        mv *= tune.value("SPRINT_MULT") * species::burst_speed(p.owned_verb);
+        // Top speed comes from the sprint_carry context inside
+        // `apply_locomotion`; only the species burst is a body property.
+        mv *= species::burst_speed(p.owned_verb);
     }
     // Plant during wind-up: AI striker slows to 30% while winding up.
     if p.windup_timer > 0.0 {
@@ -3795,15 +3900,28 @@ fn move_ai_owner(
                 .add(p.dodge_dir.scale(p.move_speed * DODGE_SPEED_MULT * dt)),
         );
         s.players[i].run_vel = Vec2::new(0.0, 0.0);
+        // A juke is bespoke movement that bypasses locomotion, so its facing
+        // stays the instant assignment it always was.
+        if dir.x != 0.0 || dir.y != 0.0 {
+            s.players[i].facing = dir;
+        }
     } else {
+        // The AI carrier looks along its dribble line, not along the chase
+        // that a run-on touch forces — the same rule the human carrier gets,
+        // and the reason a hooked carrier resolves as a strafe rather than a
+        // straight carry.
         let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, desired, dt, tune);
+        apply_locomotion(
+            field,
+            &mut pm,
+            desired,
+            dt,
+            tune,
+            LocoOpts::facing(dir).carrying(),
+        );
         s.players[i] = pm;
     }
     let _ = idx;
-    if dir.x != 0.0 || dir.y != 0.0 {
-        s.players[i].facing = dir;
-    }
 }
 
 fn move_ai_owner_keeper(s: &mut MatchState, i: usize, dt: f64, tune: &Tuning) {
@@ -3811,7 +3929,11 @@ fn move_ai_owner_keeper(s: &mut MatchState, i: usize, dt: f64, tune: &Tuning) {
     // A keeper holding the ball faces upfield; if an opponent is camped
     // right in front of it, step laterally to open a throwing angle.
     let p = s.players[i].clone();
-    s.players[i].facing = Vec2::new(if p.team == Team::Home { 1.0 } else { -1.0 }, 0.0);
+    // Upfield is this keeper's standing facing target. Sidestepping to open a
+    // throwing angle is therefore a STRAFE by construction — movement across
+    // the facing — which is precisely the shape the independent facing target
+    // exists to make expressible.
+    let upfield = Vec2::new(if p.team == Team::Home { 1.0 } else { -1.0 }, 0.0);
     let mut camper: Option<Vec2> = None;
     for q in &s.players {
         if q.team != p.team && q.pos.dist(p.pos) < tune.value("KEEPER_RESPECT_DIST") {
@@ -3819,25 +3941,23 @@ fn move_ai_owner_keeper(s: &mut MatchState, i: usize, dt: f64, tune: &Tuning) {
             break;
         }
     }
-    if let Some(camper_pos) = camper {
-        // Sidestep away from the camper's side to open a throwing angle.
-        let side = if camper_pos.y >= p.pos.y { -1.0 } else { 1.0 };
-        let mut pm = s.players[i].clone();
-        apply_locomotion(
-            field,
-            &mut pm,
-            Vec2::new(0.0, side * p.move_speed),
-            dt,
-            tune,
-        );
-        s.players[i] = pm;
-        s.players[i].facing = Vec2::new(if p.team == Team::Home { 1.0 } else { -1.0 }, 0.0);
-    } else {
-        let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, Vec2::new(0.0, 0.0), dt, tune);
-        s.players[i] = pm;
-        s.players[i].facing = Vec2::new(if p.team == Team::Home { 1.0 } else { -1.0 }, 0.0);
-    }
+    let desired = match camper {
+        Some(camper_pos) => {
+            let side = if camper_pos.y >= p.pos.y { -1.0 } else { 1.0 };
+            Vec2::new(0.0, side * p.move_speed)
+        }
+        None => Vec2::new(0.0, 0.0),
+    };
+    let mut pm = s.players[i].clone();
+    apply_locomotion(
+        field,
+        &mut pm,
+        desired,
+        dt,
+        tune,
+        LocoOpts::facing(upfield).carrying(),
+    );
+    s.players[i] = pm;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4040,7 +4160,14 @@ fn move_offball_keeper(
         // resolves. Decelerate through locomotion instead of layering
         // positioning movement under the queued save.
         let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, Vec2::new(0.0, 0.0), dt, tune);
+        apply_locomotion(
+            field,
+            &mut pm,
+            Vec2::new(0.0, 0.0),
+            dt,
+            tune,
+            LocoOpts::offball(),
+        );
         s.players[i] = pm;
     } else if s.owner.is_none() && p.receive_timer > 0.0 {
         // Meet a teammate's back-pass at the ball. Generic predictive
@@ -4054,7 +4181,7 @@ fn move_offball_keeper(
             Vec2::new(0.0, 0.0)
         };
         let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, desired, dt, tune);
+        apply_locomotion(field, &mut pm, desired, dt, tune, LocoOpts::offball());
         s.players[i] = pm;
     } else if s.owner.is_none()
         && in_claim_zone(s, idx)
@@ -4071,7 +4198,7 @@ fn move_offball_keeper(
             Vec2::new(0.0, 0.0)
         };
         let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, desired, dt, tune);
+        apply_locomotion(field, &mut pm, desired, dt, tune, LocoOpts::offball());
         s.players[i] = pm;
     } else {
         // Ordinary keeper movement is owned by the explicit behavior state.
@@ -4085,6 +4212,11 @@ fn move_offball_keeper(
             // cap and accidentally advertise a committed high line.
             let distance = p.pos.dist(behavior.target);
             movement_speed *= (distance / KEEPER_BASE_ARRIVE_RADIUS).min(1.0);
+            // Same arrival rule as the off-ball outfielders: a keeper with
+            // momentum that commands speed right up to a shallow base target
+            // sails past it, which reads on screen as a committed high line
+            // it never chose.
+            movement_speed = movement_speed.min(arrival_cap(&p, distance, tune));
         }
         let desired = if dir.x != 0.0 || dir.y != 0.0 {
             dir.scale(movement_speed)
@@ -4092,7 +4224,7 @@ fn move_offball_keeper(
             Vec2::new(0.0, 0.0)
         };
         let mut pm = s.players[i].clone();
-        apply_locomotion(field, &mut pm, desired, dt, tune);
+        apply_locomotion(field, &mut pm, desired, dt, tune, LocoOpts::offball());
         s.players[i] = pm;
     }
 }
@@ -4150,18 +4282,28 @@ fn move_offball_outfield(
             if containing {
                 speed = outfield_press::contain_speed(speed, dist, tune.value("JOCKEY_SLOW"));
             }
+            // Aim for ARRIVAL, not for the position. A body with momentum
+            // that commands full speed right up to its spot arrives with
+            // speed it then has to shed past the spot, and off-ball AI spends
+            // the match oscillating around targets it keeps overshooting.
+            // Capping the command at the speed it could still brake from is
+            // the whole "minimal AI patch" the issue's risk section asks for.
+            speed = speed.min(arrival_cap(&p, dist, tune));
             desired = dir.scale(speed);
         }
     }
+    // Containing is a facing rule layered on the primitive — face the ball,
+    // movement direction free — which is exactly the shape a future defensive
+    // contain stance takes. It is also what makes a contain resolve as a
+    // strafe or backpedal when the defender shuffles across or off the ball.
+    let opts = if containing {
+        LocoOpts::facing(s.ball.sub(p.pos))
+    } else {
+        LocoOpts::offball()
+    };
     let mut pm = s.players[i].clone();
-    apply_locomotion(field, &mut pm, desired, dt, tune);
+    apply_locomotion(field, &mut pm, desired, dt, tune, opts);
     s.players[i] = pm;
-    if containing {
-        let to_ball = s.ball.sub(s.players[i].pos);
-        if to_ball.length() > 0.0 {
-            s.players[i].facing = to_ball.normalized();
-        }
-    }
 }
 
 fn run_eligible(

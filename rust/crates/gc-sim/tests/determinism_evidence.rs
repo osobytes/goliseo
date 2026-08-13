@@ -856,13 +856,31 @@ fn record_omp1_derived_baseline() {
     // derived hashes is exactly when a contributor is deciding whether a
     // behavior change was intended.
     //
-    // It shares `behavioral_drift` with the campaign rather than
-    // re-implementing the comparison, so the recorder can never disagree with
-    // the gate about what moved. Since #512 that includes the coverage set,
-    // which is the drift a contributor re-recording after a locomotion change
-    // most needs to see: `record` derives it from the same replayed event
-    // stream a campaign does, so `coverage.aerial covered -> absent` shows up
-    // in the warning block below.
+    // #522, SECOND ATTEMPT -- and the first one was wrong in a way worth
+    // recording, because it looked strictly better.
+    //
+    // The problem: `windows.<name>.event_tick` meant two different things.
+    // To the campaign it is "the tick the window's subject fired on, INSIDE
+    // that window's boundary range", which is what a window is for. Here it
+    // meant "the first tick of that event kind anywhere in the match". Under
+    // #488 the campaign reported `windows.tackle.event_tick:24->none` while
+    // this block reported `24->31` -- both correct, both labelled
+    // identically, contradicting each other for anyone diffing the two.
+    //
+    // The first fix shared the scope: call `verify` and print ITS drift, so
+    // there is one computation. That is the better shape and it is exactly
+    // wrong here, because `verify` returns `Err` the moment the derived
+    // boundary hashes drift -- which is PRECISELY when someone runs this
+    // recorder. It made a re-record tool depend on the campaign it exists to
+    // repair, and it failed on the first gameplay change after it landed.
+    //
+    // So the names are distinguished instead. This block derives the drift
+    // itself, from the recording it already has, and the window claim it
+    // emits is named `first_tick_in_match` -- which is also the more useful
+    // fact when re-authoring a stale window, and is what re-pointed OMP-2's
+    // `tackle` window from 24 to 31 under #522. The campaign keeps
+    // `event_tick` for the window-scoped question. Two names, two questions,
+    // no contradiction, and no dependency on a green gate.
     let observed = determinism_evidence::BehaviorClaims {
         coverage: determinism_evidence::DeterminismCoverage {
             tackle: recording.event_counts.get("tackle").is_some_and(|c| *c > 0),
@@ -878,14 +896,9 @@ fn record_omp1_derived_baseline() {
             .iter()
             .map(|(name, count)| (name.clone(), *count))
             .collect(),
-        window_event_ticks: fixture
-            .windows
-            .iter()
-            .map(|window| {
-                let key = window.event_kind.as_deref().unwrap_or(&window.name);
-                (window.name.clone(), recording.event_ticks.get(key).copied())
-            })
-            .collect(),
+        // Left empty on purpose: this block does not answer the window-scoped
+        // question, so it must not emit a claim under the name that does.
+        window_event_ticks: Default::default(),
     };
     let behavioral =
         determinism_evidence::behavioral_drift(&determinism_evidence::fixture_claims(), &observed);
@@ -910,6 +923,23 @@ fn record_omp1_derived_baseline() {
             println!(
                 "#   {} {} -> {}",
                 entry.claim, entry.recorded, entry.observed
+            );
+        }
+        // The match-wide first-occurrence tick for every window's subject:
+        // "absent" means the event happens nowhere in the tape and the window
+        // has to be retired, a number means it merely moved and the window
+        // can be re-authored there. That distinction is what split #522's
+        // decision, so it is printed for every window rather than only the
+        // drifted ones.
+        for window in &fixture.windows {
+            let key = window.event_kind.as_deref().unwrap_or(&window.name);
+            println!(
+                "#   windows.{}.first_tick_in_match {}",
+                window.name,
+                recording
+                    .event_ticks
+                    .get(key)
+                    .map_or("absent".to_string(), std::string::ToString::to_string)
             );
         }
     }

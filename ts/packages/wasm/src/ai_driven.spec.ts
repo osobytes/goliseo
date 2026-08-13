@@ -28,8 +28,15 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 /** Derived from a historical capture of the original Lua implementation's
  * output, made before it was removed from this repository -- frozen, and
  * cannot be regenerated. See `crates/gc-sim/tests/ai_driven_evidence.rs`. */
-const LUA_FINAL_HASH = "628d7fc71238dec6";
-const LUA_SEQUENCE_DIGEST = "29bbbc0f32b78dfa";
+// Renamed from LUA_* under #520: these are no longer Lua's digests. They are
+// `gc-sim`'s `ai_driven_evidence::EXPECTED_*`, derived by
+// `crates/gc-sim/tests/ai_driven_evidence.rs` from a baseline recorded from
+// the Rust build, and re-recorded in the same commit as this file. What they
+// still gate is the claim that never depended on Lua and is the urgent one
+// today: the COMPILED WASM module and the native build produce the same bits
+// from the same source. See #517.
+const NATIVE_FINAL_HASH = "6c5eb7b4fd5e4d55";
+const NATIVE_SEQUENCE_DIGEST = "d6909bcfa5e5f455";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -93,11 +100,40 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // and OMP-1 still passes in wasm, on the refreshed #450 contract, which is
   // why the divergence is specific to this scenario rather than general.
   // ---------------------------------------------------------------------
-  it.fails("ends the match in exactly the state Lua ends it in", () => {
-    expect(runAiDrivenEvidence().final_hash).toBe(LUA_FINAL_HASH);
+  // ---------------------------------------------------------------------
+  // #520 + #488 UPDATE, 2026-08-12. READ THIS BEFORE CONCLUDING #405 IS FIXED.
+  //
+  // These two were `it.fails` against the Lua digests. Two things changed at
+  // once, and conflating them would be the expensive mistake:
+  //
+  //   1. #520 retired the Lua behavioral vector, so "the state Lua ends in"
+  //      is no longer a claim this repository makes. The constants are now
+  //      the native Rust build's, re-recorded in the same commit.
+  //   2. MEASURED ON THIS BUILD, wasm and native agree exactly --
+  //      final 6c5eb7b4fd5e4d55, sequence d6909bcfa5e5f455, both targets. So
+  //      these are plain `it` now, because they pass. Re-measured after
+  //      merging #501, which moves this scenario: both targets moved together
+  //      and still agree, which is the property these two lines gate.
+  //
+  // THAT IS NOT EVIDENCE THAT #405 IS FIXED, and nobody should close it on
+  // the strength of these two lines going green. #405's divergence at tick 96
+  // of this scenario was never a constant defect: it is two libms
+  // disagreeing occasionally (#517), so WHICH transcendental calls happen,
+  // with which arguments, moves with the trajectory -- and #488 changed the
+  // trajectory of every body on the pitch. The same measurement during this
+  // PR's development caught the divergence at OMP-1 boundary 12, then 7006,
+  // then not at all, across three drafts of one module. It is latent, not
+  // gone.
+  //
+  // What these two now gate is still worth having, and is stronger than an
+  // `it.fails`: any future divergence between the two targets on this
+  // scenario turns them red instead of quietly satisfying an expected-fail.
+  // ---------------------------------------------------------------------
+  it("ends the match in exactly the state the native build ends it in", () => {
+    expect(runAiDrivenEvidence().final_hash).toBe(NATIVE_FINAL_HASH);
   });
 
-  it.fails("matches Lua tick for tick, not merely at the final whistle", () => {
-    expect(runAiDrivenEvidence().sequence_digest).toBe(LUA_SEQUENCE_DIGEST);
+  it("matches the native build tick for tick, not merely at the final whistle", () => {
+    expect(runAiDrivenEvidence().sequence_digest).toBe(NATIVE_SEQUENCE_DIGEST);
   });
 });

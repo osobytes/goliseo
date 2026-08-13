@@ -488,6 +488,58 @@ commands each entry cites are the deleted Lua CLI (see the banner at the top),
 and no entry has been re-measured on `gc-sim`. Every number below is the Lua
 tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
 
+- **2026-08-13 — the locomotion primitive: momentum, turn arcs, decoupled
+  facing, and carry composed with direction (#488, PR #516).** `baseline_version`
+  **2 → 3**, signature `9bf9c999d7b077f8` → `614ed81d38e82116`. The first entry
+  in this log measured on `gc-sim` rather than the deleted Lua tree, and the
+  first re-freeze driven by a recorder
+  (`record_outfield_ai_baseline`) instead of a hand edit — the runner this
+  module's own doc recorded as missing.
+
+  Bodies now carry momentum, turn through bounded arcs instead of pivoting,
+  and face independently of where they move; carrying is a modifier composed
+  onto the direction context rather than one of seven mutually exclusive
+  contexts, so a shielding carrier keeps carry's handling penalty instead of
+  silently getting the empty-handed profile.
+
+  | metric | frozen (v2) | re-frozen (v3) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.283436 | 0.269890 | −0.013546 |
+  | `goals_total` | 1.750000 | 1.500000 | −0.250000 |
+  | `shots` | 32.200000 | 34.083333 | +1.883333 |
+  | `shots_per_goal` | 21.732390 | 22.988333 | +1.255943 |
+  | `save_rate` | 0.910569 | 0.927511 | +0.016942 |
+  | `pass_completion` | 0.570084 | 0.558467 | −0.011618 |
+  | `turnovers_per_min` | 8.258094 | 8.740769 | +0.482675 |
+  | `possession_balance` | 0.542468 | 0.547505 | +0.005037 |
+  | `longest_drought_s` | 11.718056 | 11.449444 | −0.268611 |
+  | `decided_late` | 0.596003 | 0.694121 | +0.098118 |
+  | `ai_dribble_close_share` | 0.821165 | 0.833517 | +0.012351 |
+  | `ai_dribble_sprint_share` | 0.179538 | 0.147692 | −0.031846 |
+  | `ai_dribble_touches_per_min` | 118.829505 | 107.620664 | −11.208841 |
+  | `ai_dribble_heavy_losses_per_min` | 0.530382 | 0.510557 | −0.019825 |
+  | `ai_jukes` | 31.966667 | 32.716667 | +0.750000 |
+
+  **Read `fun` carefully: it is not comparable across these two rows.** `fun`
+  is a geometric mean over however many metrics extract a value, and this
+  change registers a ninth (`time_to_reverse`). Measured on one build, the
+  same game scored 0.184 over eight metrics and 0.193 over nine. The −0.0135
+  above therefore understates the like-for-like movement, and any future
+  comparison against v3 must hold the metric set fixed.
+
+  **`possession_balance` did not move.** It reads +0.005 against a per-match
+  sd of 0.063 and a 60-seed standard error of about 0.008 — inside the noise,
+  and it would take roughly 900 seeds to call. This matters beyond one row:
+  #488 was justified by a claim that possession balance "sits at 0.33 against
+  a 0.35–0.65 band", and the v2 baseline had it at 0.542, already mid-plateau.
+  The metric was never out of band and the primitive does not move it. Two
+  earlier re-freezes were declined while this regression stood at −0.132;
+  what changed is the carry-composition fix, not the appetite.
+
+  Fewer, heavier touches, more shielding, fewer heavy losses, shorter
+  droughts: the possession *mechanics* moved in the intended direction even
+  though the possession *metric* did not.
+
 - **2026-08-11 — the keeper's dive-timing/contact-point query replaces a
   gravity-only quadratic with a real sampled trajectory (#486, sliced from
   #490).** `crates/gc-sim/src/match.rs`'s `attempt_save` used to compute the

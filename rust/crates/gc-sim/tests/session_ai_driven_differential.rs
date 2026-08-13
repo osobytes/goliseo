@@ -71,7 +71,7 @@ use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize};
 use gc_sim::slot_input;
 use gc_sim::tuning::Tuning;
 
-const FIXTURE: &str = include_str!("fixtures/session_ai_driven_lua_reference.txt");
+const FIXTURE: &str = include_str!("fixtures/session_ai_driven_baseline.txt");
 
 const TICKS: i64 = 7_200;
 const DT: f64 = 1.0 / 60.0;
@@ -157,16 +157,17 @@ fn tick_input(b: &mut bot::BotState, s: &MatchState, tick: i64, tune: &Tuning) -
     slot_input::to_match_input(&decoded.slots[0])
 }
 
-#[test]
-fn ai_driven_session_step_matches_lua_tick_by_tick_for_a_7200_tick_ordinary_match() {
-    let tune = Tuning::new();
+/// The one scenario this file pins, built in one place so the baseline
+/// assertion, the reproducibility assertion and the recorder cannot drift
+/// into three subtly different matches.
+///
+/// Mirrors `crates/gc-wasm/src/session.rs`'s own live-state construction: no
+/// `input_ownership` (legacy mode), no `human_controlled` override (so it
+/// defaults true), and no duration/goal-limit override.
+fn fresh_scenario() -> (MatchState, bot::BotState) {
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
-    // Mirrors the capture script's `match.new({home=, away=, field=, seed=5})`
-    // and `crates/gc-wasm/src/session.rs`'s own live-state construction: no
-    // `input_ownership` (legacy mode), no `human_controlled` override (so it
-    // defaults true), and no duration/goal-limit override.
-    let mut s = sim_match::new(NewMatchOptions {
+    let s = sim_match::new(NewMatchOptions {
         home,
         away,
         field: PitchSize { w: 960.0, h: 540.0 },
@@ -182,10 +183,38 @@ fn ai_driven_session_step_matches_lua_tick_by_tick_for_a_7200_tick_ordinary_matc
         human_controlled: None,
         input_ownership: None,
     });
-    let mut b = bot::new(bot::BotOptions {
+    let b = bot::new(bot::BotOptions {
         seed: Some(BOT_SEED),
         reaction: None,
     });
+    (s, b)
+}
+
+/// The 31 compared quantities of one tick, as bits, in fixture column order.
+fn observe(s: &MatchState) -> Vec<u64> {
+    let mut out = vec![
+        s.ball.x.to_bits(),
+        s.ball.y.to_bits(),
+        s.ball_vel.x.to_bits(),
+        s.ball_vel.y.to_bits(),
+        s.ball_z.to_bits(),
+        s.ball_vz.to_bits(),
+        s.owner.unwrap_or(-1) as u64,
+        s.score.home as u64,
+        s.score.away as u64,
+        u64::from(s.rng),
+    ];
+    for p in &s.players {
+        out.push(p.pos.x.to_bits());
+        out.push(p.pos.y.to_bits());
+    }
+    out
+}
+
+#[test]
+fn ai_driven_session_step_reproduces_its_recorded_baseline_for_a_7200_tick_ordinary_match() {
+    let tune = Tuning::new();
+    let (mut s, mut b) = fresh_scenario();
 
     let rows: Vec<Row> = FIXTURE.lines().map(parse_row).collect();
     assert_eq!(
@@ -218,13 +247,91 @@ fn ai_driven_session_step_matches_lua_tick_by_tick_for_a_7200_tick_ordinary_matc
         }
     }
 
-    // The capture is only worth anything if the bot actually PLAYED. A silent
-    // regression that reduced it to an idle player would otherwise turn this
-    // back into the AFK test it exists to replace, and still pass.
-    let final_row = rows.last().expect("fixture is non-empty");
-    assert!(
-        final_row.score_home + final_row.score_away > 0,
-        "the AI-driven fixture records no goals — this run does not exercise the \
-         shooting path, and this test has quietly become another idle-player test"
+    // NOTE: the "the bot actually PLAYED" assertion that stood here is gone,
+    // deliberately, and it did not simply move. It asserted `score > 0` on
+    // the FIXTURE's own final row, so re-recording the fixture would have
+    // re-recorded the assertion's input too -- a check that can never fail a
+    // PR that re-records. The same claim over the LIVE run survives, once, in
+    // `ai_driven_evidence::the_reference_match_is_actually_played`, where it
+    // currently fails and is #518's to resolve over a seed set. Duplicating a
+    // self-satisfying copy of it here would only have hidden that.
+}
+
+/// The determinism claim proper, and the half of this file that no gameplay
+/// rework can move: bot decision, `input_frame` encode/decode/validate,
+/// `slot_input::to_match_input` and `match::step` are together a pure
+/// function of state and inputs, so two independently constructed runs of the
+/// same scenario in the same process agree on every bit at every tick.
+///
+/// A defect that made any layer of that pipeline read something outside its
+/// arguments fails here while the recorded baseline above passes happily on
+/// whichever trajectory got recorded.
+#[test]
+fn ai_driven_session_step_is_bit_reproducible_across_two_independent_runs() {
+    let tune = Tuning::new();
+    let (mut first_s, mut first_b) = fresh_scenario();
+    let (mut second_s, mut second_b) = fresh_scenario();
+    assert_eq!(
+        observe(&first_s),
+        observe(&second_s),
+        "tick 0: two fresh scenarios differ before any step"
     );
+    for tick in 1..=TICKS {
+        let a = tick_input(&mut first_b, &first_s, tick, &tune);
+        sim_match::step(&mut first_s, DT, StepInput::Legacy(a), None, &tune);
+        let b = tick_input(&mut second_b, &second_s, tick, &tune);
+        sim_match::step(&mut second_s, DT, StepInput::Legacy(b), None, &tune);
+        assert_eq!(
+            observe(&first_s),
+            observe(&second_s),
+            "tick {tick}: two independent runs of the same bot-driven scenario diverged"
+        );
+    }
+}
+
+/// Records the baseline the assertion above reads, and which
+/// `ai_driven_evidence.rs` digests. `#[ignore]`d and printing to stdout: a
+/// recorder that overwrote its own fixture during `cargo test` would turn a
+/// determinism regression into a no-op.
+///
+/// **Re-recording is a decision, not a fix.** A red baseline is a FINDING
+/// first. Re-record only when the change is deliberate, reviewed and named in
+/// the commit message.
+///
+/// Run:
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test session_ai_driven_differential -- \
+///     --ignored --nocapture record_session_ai_driven_baseline \
+///   | grep -E '^[0-9]' \
+///   > crates/gc-sim/tests/fixtures/session_ai_driven_baseline.txt
+/// ```
+#[test]
+#[ignore = "recorder: prints a baseline for a human to capture, never asserts"]
+fn record_session_ai_driven_baseline() {
+    let tune = Tuning::new();
+    let (mut s, mut b) = fresh_scenario();
+    for tick in 0..=TICKS {
+        if tick > 0 {
+            let match_input = tick_input(&mut b, &s, tick, &tune);
+            sim_match::step(&mut s, DT, StepInput::Legacy(match_input), None, &tune);
+        }
+        let mut row = vec![tick.to_string()];
+        row.push(s.ball.x.to_string());
+        row.push(s.ball.y.to_string());
+        row.push(s.ball_vel.x.to_string());
+        row.push(s.ball_vel.y.to_string());
+        row.push(s.ball_z.to_string());
+        row.push(s.ball_vz.to_string());
+        row.push(s.owner.unwrap_or(-1).to_string());
+        row.push(s.score.home.to_string());
+        row.push(s.score.away.to_string());
+        row.push(s.rng.to_string());
+        for p in &s.players {
+            row.push(p.pos.x.to_string());
+            row.push(p.pos.y.to_string());
+        }
+        println!("{}", row.join("\t"));
+    }
 }
