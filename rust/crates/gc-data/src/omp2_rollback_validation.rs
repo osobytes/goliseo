@@ -228,13 +228,23 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             minimum_rollbacks: None,
         },
     ],
+    // NOTE on the `final_hash` / `tape_digest` fields below. Every
+    // `initial_hash` here is the CONSTRUCTED fixture state and is frozen: it
+    // is what makes "the fixture is the one that was recorded" a real claim.
+    // The other two are what this build produces after stepping that state,
+    // so a deliberate gameplay change moves them and only them. #488 moved
+    // all eight while leaving all five `initial_hash` values untouched, which
+    // is the check that the fixtures themselves did not drift. Re-derived by
+    // running the failing assertion and reading the values it prints -- there
+    // is no recorder for these the way `record_omp1_derived_baseline` is one
+    // for OMP-1, and there should be.
     combat_fixture: Omp2RollbackCombatFixture {
         id: "omp2-combat-rollback-v1",
         seed: 733,
         frame_count: 80,
         initial_hash: "6edfabacb5ecc6cd",
-        final_hash: "822ca5cf529e725b",
-        tape_digest: "da9d009342add99a",
+        final_hash: "e847a47acc6bb32b",
+        tape_digest: "a1738e24b819c4d3",
     },
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
@@ -247,8 +257,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: None,
             initial_hash: "ba131fc89cabd89a",
-            final_hash: "93206851a4a6455a",
-            tape_digest: "570e79d1e5ac32fd",
+            final_hash: "8ffe6f7a4a887b69",
+            tape_digest: "fa0dd10f45ffd8b0",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -260,8 +270,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: None,
             initial_hash: "0c6f04fe7cdbdcb6",
-            final_hash: "307cff049c8ea93f",
-            tape_digest: "452e841205b6f510",
+            final_hash: "40eae623909cb84d",
+            tape_digest: "bf3f635ebf293067",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -273,8 +283,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "bfc22640819ecd1b",
-            final_hash: "70c04d10f1e7ebf3",
-            tape_digest: "fbb700e6b65acf3d",
+            final_hash: "df29d149c3704cf6",
+            tape_digest: "c23ab8e1c74ebdaa",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -286,8 +296,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "11e9080994725ece",
-            final_hash: "37b90de104d12a42",
-            tape_digest: "f75bb3356ab89f8e",
+            final_hash: "ee69dda56b9eb0e7",
+            tape_digest: "f17a9d15fae3a639",
         },
     ],
     budgets: Omp2RollbackBudgets {
