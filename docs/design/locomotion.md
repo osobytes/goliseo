@@ -284,6 +284,40 @@ At the shipped defaults it measures **0.48 s**, inside #488's proposed
 0.25–0.6 s band and nearer its slow edge. The issue calls that band a prior;
 the measurement backs it.
 
+### The §9 census, after the composition fix
+
+Every `LOCO_*` knob, perturbed across its **whole declared range**, against
+`time_to_reverse` on 24 full-length matches. **12 of 45 move it; 33 do not.**
+
+| wired | delta (s) | | wired | delta (s) |
+| --- | --- | --- | --- | --- |
+| `LOCO_BACKPEDAL_ACCEL_MULT` | −0.099 | | `LOCO_PACE_REF_LO` | +0.055 |
+| `LOCO_PACE_CURVE_HI` | −0.072 | | `LOCO_STRAFE_ACCEL_MULT` | −0.038 |
+| `LOCO_PACE_REF_HI` | +0.034 | | `LOCO_DIR_SNAP_SPEED` | −0.033 |
+| `LOCO_RUN_ACCEL_MULT` | −0.031 | | `LOCO_STRAFE_ARC_COS` | +0.029 |
+| `LOCO_BACKPEDAL_TOP_MULT` | +0.021 | | `LOCO_BACKPEDAL_ARC_COS` | +0.021 |
+| `LOCO_STRENGTH_CURVE_HI` | −0.021 | | `LOCO_BACKPEDAL_DECEL_MULT` | −0.017 |
+
+Two readings matter more than the count.
+
+**Fixing the ordering did not rescue the decel knobs.** That was the
+hypothesis worth testing — several were unreachable *by construction* under
+the old resolution, and condemning them before fixing it would have blamed
+knobs for a defect. Measured after the fix, `LOCO_RUN_DECEL_MULT`,
+`LOCO_SPRINT_DECEL_MULT`, `LOCO_JOG_DECEL_MULT`, `LOCO_CARRY_DECEL_MULT`,
+`LOCO_STRAFE_DECEL_MULT` and `LOCO_SPRINT_CARRY_DECEL_MULT` are all still
+decoration against this metric. Only `LOCO_BACKPEDAL_DECEL_MULT` moves it, and
+the mechanism says why: `resolve` puts a body moving opposite its facing in
+`Backpedal`, so essentially all of a reversal's braking happens there. The
+other decel knobs are not broken — they are simply not the brake that a
+reversal uses.
+
+**"Decoration" here means "below what 24 seeds can resolve", not "does
+nothing".** The census resolves effects above roughly 0.017 s, about 3.5% of
+the 0.48 s mean. A knob at 0.010 s is real and invisible to this instrument.
+The honest claim is that 12 knobs have a demonstrable effect on reversal time
+at a seed count a gate can afford — not that the other 33 are inert.
+
 ### A reversal happens in the `Backpedal` context, and three knobs cannot reach it
 
 #488 specifies the pairing "`LOCO_RUN_DECEL` up must lower `time_to_reverse`".

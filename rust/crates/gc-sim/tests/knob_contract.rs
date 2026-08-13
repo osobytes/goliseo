@@ -409,9 +409,17 @@ fn turn_rate_moves_the_gaps_between_chances() {
 /// the noise, and the right response is a bigger lever, not more seeds.
 #[test]
 fn braking_harder_shortens_a_reversal() {
-    let seeds = seeds(24);
+    // 48 seeds, and the knob is the BACKPEDAL context's brake rather than the
+    // shared `MOVE_DECEL` base. Both are the census talking, not tuning:
+    // after the carry-composition fix, `MOVE_DECEL` at full range measures
+    // -0.014 against a 0.019 threshold and `LOCO_RUN_DECEL_MULT` measures
+    // nothing at all. Braking during a reversal happens almost entirely in
+    // the backpedal phase -- `resolve` puts a body moving opposite its facing
+    // there -- so the backpedal brake is the knob that governs it, and the
+    // shared base is diluted across every context that is not braking.
+    let seeds = seeds(48);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
-        knob: "MOVE_DECEL",
+        knob: "LOCO_BACKPEDAL_DECEL_MULT",
         metric: "time_to_reverse",
         seeds: &seeds,
         duration: None,
@@ -441,7 +449,10 @@ fn accelerating_harder_shortens_a_reversal() {
         metric: "time_to_reverse",
         seeds: &seeds,
         duration: None,
-        perturbation: None,
+        // Full range: at the default third it measures -0.018 against a 0.020
+        // threshold. The run context owns only the tail of a reversal, after
+        // facing has come round, so its lever is real but small.
+        perturbation: Some(1.0),
         expect: ExpectedShift::Decreases,
         direction: Some(Perturb::Up),
     });
@@ -562,25 +573,4 @@ fn the_shipped_defaults_land_inside_the_proposed_band() {
         def.band[1],
         def.band[2]
     );
-}
-
-#[test]
-#[ignore = "temporary probe"]
-fn probe_time_to_reverse() {
-    let seeds = seeds(24);
-    for knob in gc_sim::tunable_registry::shipped().sweepable_ids() {
-        if !knob.starts_with("LOCO_") {
-            continue;
-        }
-        let o = knob_contract::knob_moves_metric(&KnobMoveOpts {
-            knob,
-            metric: "time_to_reverse",
-            seeds: &seeds,
-            duration: None,
-            perturbation: Some(1.0),
-            expect: ExpectedShift::Unstated,
-            direction: Some(Perturb::Up),
-        });
-        println!("CENSUS {}", o.report);
-    }
 }
