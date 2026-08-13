@@ -145,12 +145,36 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     full_profiles: &["clean", "omp0_parity", "playable", "stress"],
     browser_full_profiles: &["clean", "playable"],
     stress_profile: "stress",
+    // #522 removed three scenarios -- `shot`, `aerial` and `keeper_action`.
+    // This is a DELIBERATE NARROWING of the matrix, which is exactly what
+    // `scripts/check_rollback_native.sh`'s `MIN_NATIVE_CASES` floor exists to
+    // catch, so that floor moves in the same commit and for this reason.
+    //
+    // Each of the three scoped a window around an event the OMP-1 tape no
+    // longer contains ANYWHERE: #488's locomotion rework drives the frozen
+    // button presses to different places, and the shot, the header and the
+    // catch stop happening. Unlike the tackle -- which merely moved, tick 24
+    // to tick 31, and so is re-authored above -- there is no tick to re-point
+    // these at. Re-pointing them at whatever event happens to be nearby would
+    // be a window that covers something it is not named for.
+    //
+    // The coverage they were standing in for moves to #518, which asserts
+    // behavior over a SEED SET rather than one frozen trajectory. That is the
+    // durable form: a scenario pinned to one seed rots on any gameplay
+    // change, which is the whole reason these three are being removed rather
+    // than nudged.
     scenarios: &[
+        // #522: shifted +7 boundaries. These two windows both wrapped the
+        // OMP-1 tape's first tackle, which #488's locomotion rework moved
+        // from tick 24 to tick 31 -- it did not disappear, which is why these
+        // two could be re-authored while `shot`, `aerial` and `keeper_action`
+        // could not. The offsets around the subject tick are unchanged, so
+        // the scenarios still measure what they measured.
         Omp2RollbackScenario {
             id: "possession_change",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(22),
-            last_boundary: Some(27),
+            first_boundary: Some(29),
+            last_boundary: Some(34),
             event_kind: None,
             lifecycle_kind: None,
             minimum_rollbacks: None,
@@ -158,18 +182,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         Omp2RollbackScenario {
             id: "tackle",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(23),
-            last_boundary: Some(26),
+            first_boundary: Some(30),
+            last_boundary: Some(33),
             event_kind: Some("tackle"),
-            lifecycle_kind: None,
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
-            id: "shot",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1684),
-            last_boundary: Some(1689),
-            event_kind: Some("shot"),
             lifecycle_kind: None,
             minimum_rollbacks: None,
         },
@@ -189,24 +204,6 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             last_boundary: None,
             event_kind: None,
             lifecycle_kind: Some("kickoff"),
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
-            id: "aerial",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1786),
-            last_boundary: Some(1791),
-            event_kind: Some("header"),
-            lifecycle_kind: None,
-            minimum_rollbacks: None,
-        },
-        Omp2RollbackScenario {
-            id: "keeper_action",
-            kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(1690),
-            last_boundary: Some(1695),
-            event_kind: Some("catch"),
-            lifecycle_kind: None,
             minimum_rollbacks: None,
         },
         Omp2RollbackScenario {

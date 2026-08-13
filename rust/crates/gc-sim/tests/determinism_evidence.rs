@@ -856,39 +856,29 @@ fn record_omp1_derived_baseline() {
     // derived hashes is exactly when a contributor is deciding whether a
     // behavior change was intended.
     //
-    // It shares `behavioral_drift` with the campaign rather than
-    // re-implementing the comparison, so the recorder can never disagree with
-    // the gate about what moved. Since #512 that includes the coverage set,
-    // which is the drift a contributor re-recording after a locomotion change
-    // most needs to see: `record` derives it from the same replayed event
-    // stream a campaign does, so `coverage.aerial covered -> absent` shows up
-    // in the warning block below.
-    let observed = determinism_evidence::BehaviorClaims {
-        coverage: determinism_evidence::DeterminismCoverage {
-            tackle: recording.event_counts.get("tackle").is_some_and(|c| *c > 0),
-            keeper: recording.event_counts.get("catch").is_some_and(|c| *c > 0),
-            aerial: recording.event_counts.get("header").is_some_and(|c| *c > 0),
-            goal_kickoff: recording.event_ticks.contains_key("goal_kickoff"),
-            full_time: recording.event_ticks.contains_key("full_time"),
-        },
-        score_home: recording.score_home,
-        score_away: recording.score_away,
-        event_counts: recording
-            .event_counts
-            .iter()
-            .map(|(name, count)| (name.clone(), *count))
-            .collect(),
-        window_event_ticks: fixture
-            .windows
-            .iter()
-            .map(|window| {
-                let key = window.event_kind.as_deref().unwrap_or(&window.name);
-                (window.name.clone(), recording.event_ticks.get(key).copied())
-            })
-            .collect(),
-    };
-    let behavioral =
-        determinism_evidence::behavioral_drift(&determinism_evidence::fixture_claims(), &observed);
+    // The drift comes from the CAMPAIGN, not from a second derivation here.
+    //
+    // #522: it used to be re-derived from `recording.event_ticks`, and the two
+    // disagreed under one claim name. `windows.<name>.event_tick` means
+    // "the tick the window's subject fired ON, inside that window's boundary
+    // range" to `verify` -- which is what the window is for -- and meant "the
+    // first tick of that event kind anywhere in the match" here. Under #488
+    // the campaign reported `windows.tackle.event_tick:24->none` while this
+    // block reported `24->31`, both correct, both labelled identically, and
+    // contradicting each other for anyone diffing the two artifacts.
+    //
+    // Calling `verify` costs this `#[ignore]`d recorder one more campaign and
+    // removes the possibility entirely: there is now exactly one computation
+    // of what moved, and the recorder and the gate cannot drift apart because
+    // they are reading the same value.
+    //
+    // The match-wide first-occurrence tick has NOT simply been dropped -- it
+    // is what a contributor re-authoring a stale window actually needs, and
+    // it is what re-pointed OMP-2's `tackle` window from 24 to 31 under #522.
+    // It is printed below under its own name, `first_tick_in_match`, so the
+    // two scopes are legible as two facts rather than one contradiction.
+    let campaign = determinism_evidence::verify(&tune).expect("the OMP-1 campaign verifies");
+    let behavioral = campaign.drift.clone();
     if behavioral.is_empty() {
         println!(
             "# behavioral claims        unchanged (event_counts, expected_score, window event ticks)"
@@ -911,6 +901,29 @@ fn record_omp1_derived_baseline() {
                 "#   {} {} -> {}",
                 entry.claim, entry.recorded, entry.observed
             );
+        }
+        // A window whose subject stopped firing inside it may still fire
+        // elsewhere in the match, and the difference decides whether the
+        // window can be re-authored or has to be retired (#522). Printed
+        // under a distinct name because it answers a different question from
+        // the `windows.<name>.event_tick` lines above.
+        for window in &fixture.windows {
+            let key = window.event_kind.as_deref().unwrap_or(&window.name);
+            let anywhere = recording.event_ticks.get(key).copied();
+            if campaign
+                .observed
+                .window_event_ticks
+                .get(&window.name)
+                .copied()
+                .flatten()
+                != anywhere
+            {
+                println!(
+                    "#   windows.{}.first_tick_in_match {} (not inside the window; re-author it there, or retire it)",
+                    window.name,
+                    anywhere.map_or("absent".to_string(), |t| t.to_string())
+                );
+            }
         }
     }
     println!("#");

@@ -1,3 +1,32 @@
+//! # The retirement (#520)
+//!
+//! Until #520 this asserted against
+//! `fixtures/rollback_session_lua_reference.txt`, captured from the original
+//! Lua implementation, so a pass was **cross-implementation** evidence. That
+//! claim is retired: decision #520 (repository owner), superseded by #516 —
+//! the locomotion rework for #488, which changes what every body does per
+//! tick and so moves every boundary hash below by construction. The Lua
+//! vector last held at `3f8f4a3`, verified green there by running this file
+//! at that commit rather than assuming it. The vector file stays in the tree,
+//! unmodified and unread.
+//!
+//! The baseline read now was recorded from this build. It DETECTS CHANGE but
+//! CANNOT DETECT "wrong but consistently wrong" — a defect present when it
+//! was recorded is in the expectations forever. Nothing in the workspace
+//! replaces the lost cross-implementation coverage; there is no second
+//! implementation left to disagree with.
+//!
+//! Per `tools/lua_reference/README.md` rule 5, the claim this file actually
+//! exists for was moved out of the frozen part.
+//! `..._resimulation_reaches_what_direct_simulation_reaches` states it
+//! without any record at all: a rollback that resimulates ticks 15..19 after
+//! a late correction must land on exactly the state a session that never
+//! mispredicted lands on. That is what rollback IS, it is immune to gameplay
+//! change because both sides move together, and it keeps gating through every
+//! rework with nothing to re-record. Broad reconvergence over many scenarios
+//! and network profiles is `rollback_validation`'s 66-case native matrix;
+//! this is the single scripted case that names its own arithmetic.
+//!
 //! Differential test against reference vectors captured from the Lua
 //! implementation this simulation was originally validated against (README
 //! rule 9, `tools/lua_reference/README.md`), required for
@@ -45,7 +74,7 @@ use gc_sim::match_snapshot::PitchSize;
 use gc_sim::rollback_session::{self, RollbackSession};
 use indexmap::IndexMap;
 
-const FIXTURE: &str = include_str!("fixtures/rollback_session_lua_reference.txt");
+const FIXTURE: &str = include_str!("fixtures/rollback_session_baseline.txt");
 
 fn reference() -> IndexMap<&'static str, &'static str> {
     FIXTURE
@@ -132,7 +161,7 @@ fn boundary_hash(session: &RollbackSession, boundary: i64) -> String {
 }
 
 #[test]
-fn rollback_session_matches_lua_reference_across_predicted_and_corrected_ticks() {
+fn rollback_session_reproduces_its_recorded_baseline_across_predicted_and_corrected_ticks() {
     let reference = reference();
     let initial = initial_snapshot();
     assert_eq!(
@@ -272,4 +301,225 @@ fn rollback_session_matches_lua_reference_across_predicted_and_corrected_ticks()
         diagnostics.max_rollback_depth.to_string(),
         expect(&reference, "final.max_rollback_depth")
     );
+}
+
+/// The rollback correctness property, stated against a live twin instead of a
+/// record — so no gameplay change can move it.
+///
+/// A session steps ticks 0..=15 with tick 15 slot 2 *missing*, so that slot
+/// is predicted. The corrected sample for it then arrives late but in window,
+/// and the session rolls back and resimulates exactly one tick. The twin
+/// receives every input authoritatively before its tick is stepped, so it
+/// never mispredicts and never rolls back. Both must reach the identical
+/// present boundary hash.
+///
+/// If resimulation were not exact — a stale cached value surviving a restore,
+/// an input applied at the wrong tick, an RNG stream not rewound — the two
+/// part company, and the recorded baseline above would happily pass on
+/// whichever of the two got recorded.
+///
+/// **Why exactly one resimulated tick, and no predicted ticks after the
+/// correction.** An earlier draft mispredicted ticks 10..=19 and corrected
+/// tick 15, then built the twin from neutral input for 16..=19. It failed,
+/// and the failure was the test's fault, not the code's: once the correction
+/// lands, the session's own prediction for slot 2 at ticks 16..=19 repeats
+/// the CORRECTED sample, not the neutral one. Writing the twin to match would
+/// have meant encoding `rollback_input_history`'s prediction policy into a
+/// test that exists to check the code implementing it — an oracle derived
+/// from the code under test, which `tools/lua_reference/README.md` calls out
+/// by name. Ending the scenario at the corrected tick removes the question.
+#[test]
+fn rollback_session_resimulation_reaches_what_direct_simulation_reaches() {
+    let corrected = input_frame::new_sample(InputSampleOptions {
+        move_x: Some(50),
+        move_y: Some(-30),
+        ..Default::default()
+    })
+    .expect("valid sample");
+    const LAST: i64 = 15;
+    const CORRECTED_SLOT: i64 = 2;
+
+    // A: every slot authoritative except slot 2 on the final tick, which is
+    // predicted and then corrected.
+    let mut rolled_back = rollback_session::new(&initial_snapshot(), sources(), None, None);
+    for tick in 0..=LAST {
+        for slot in 1..=input_frame::SLOT_COUNT {
+            if tick == LAST && slot == CORRECTED_SLOT {
+                continue;
+            }
+            rollback_session::add_authoritative(
+                &mut rolled_back,
+                tick,
+                slot,
+                input_frame::neutral_sample(),
+            )
+            .expect("authoritative row accepted");
+        }
+        rollback_session::step(&mut rolled_back).expect("step succeeds");
+    }
+    let arrival =
+        rollback_session::add_authoritative(&mut rolled_back, LAST, CORRECTED_SLOT, corrected)
+            .expect("authoritative row accepted");
+    assert_eq!(
+        arrival.earliest_divergence,
+        Some(LAST),
+        "the correction must actually contradict the prediction, or this proves nothing"
+    );
+    let result = rollback_session::reconcile(&mut rolled_back, true);
+    assert!(result.changed, "the scenario must actually roll back");
+
+    // B: the same inputs, all delivered before their tick is stepped.
+    let mut direct = rollback_session::new(&initial_snapshot(), sources(), None, None);
+    for tick in 0..=LAST {
+        for slot in 1..=input_frame::SLOT_COUNT {
+            let sample = if tick == LAST && slot == CORRECTED_SLOT {
+                corrected
+            } else {
+                input_frame::neutral_sample()
+            };
+            rollback_session::add_authoritative(&mut direct, tick, slot, sample)
+                .expect("authoritative row accepted");
+        }
+        rollback_session::step(&mut direct).expect("step succeeds");
+    }
+    assert_eq!(
+        rollback_session::diagnostics(&direct).rollback_count,
+        0,
+        "the twin must never roll back, or it is not an independent check"
+    );
+
+    let a = rollback_session::diagnostics(&rolled_back).present_boundary;
+    let b = rollback_session::diagnostics(&direct).present_boundary;
+    assert_eq!(
+        a, b,
+        "the two sessions reached different present boundaries"
+    );
+    assert_eq!(
+        boundary_hash(&rolled_back, a),
+        boundary_hash(&direct, b),
+        "resimulating after a correction did not reach the state that never mispredicted \
+         it -- rollback is not exact"
+    );
+}
+
+/// Records the baseline. `#[ignore]`d and printing to stdout, for the reason
+/// every recorder in this tree is: one that overwrote its own fixture during
+/// `cargo test` would turn a determinism regression into a no-op.
+///
+/// **Re-recording is a decision, not a fix.** Re-record only when the change
+/// is deliberate, reviewed and named in the commit message.
+///
+/// Run:
+///
+/// ```text
+/// cd rust
+/// cargo test -p gc-sim --test rollback_session_differential -- \
+///     --ignored --nocapture record_rollback_session_baseline \
+///   | grep -E '^[a-z_]+[a-z_.0-9]*=' \
+///   > crates/gc-sim/tests/fixtures/rollback_session_baseline.txt
+/// ```
+#[test]
+#[ignore = "recorder: prints a baseline for a human to capture, never asserts"]
+fn record_rollback_session_baseline() {
+    let initial = initial_snapshot();
+    println!("initial_hash={}", match_snapshot::hash_canonical(&initial));
+    let mut session = rollback_session::new(&initial, sources(), None, None);
+    for tick in 0..=9i64 {
+        for slot in 1..=input_frame::SLOT_COUNT {
+            rollback_session::add_authoritative(
+                &mut session,
+                tick,
+                slot,
+                input_frame::neutral_sample(),
+            )
+            .expect("authoritative row accepted");
+        }
+        let output = rollback_session::step(&mut session).expect("step succeeds");
+        println!(
+            "pre.tick.{tick}={}",
+            boundary_hash(&session, output.end_boundary)
+        );
+    }
+    for tick in 10..=19i64 {
+        let output = rollback_session::step(&mut session).expect("step succeeds");
+        println!(
+            "pre.tick.{tick}={}",
+            boundary_hash(&session, output.end_boundary)
+        );
+    }
+    let corrected = input_frame::new_sample(InputSampleOptions {
+        move_x: Some(50),
+        move_y: Some(-30),
+        ..Default::default()
+    })
+    .expect("valid sample");
+    let arrival = rollback_session::add_authoritative(&mut session, 15, 2, corrected)
+        .expect("authoritative row accepted");
+    println!("correction.duplicate={}", arrival.duplicate);
+    println!(
+        "correction.earliest_divergence={}",
+        arrival
+            .earliest_divergence
+            .map_or("nil".to_string(), |t| t.to_string())
+    );
+    for slot in 1..=input_frame::SLOT_COUNT {
+        if slot != 2 {
+            rollback_session::add_authoritative(
+                &mut session,
+                15,
+                slot,
+                input_frame::neutral_sample(),
+            )
+            .expect("authoritative row accepted");
+        }
+    }
+    let result = rollback_session::reconcile(&mut session, true);
+    println!("reconcile.changed={}", result.changed);
+    println!(
+        "reconcile.causal_tick={}",
+        result
+            .causal_tick
+            .map_or("nil".to_string(), |t| t.to_string())
+    );
+    println!(
+        "reconcile.old_present_boundary={}",
+        result.old_present_boundary
+    );
+    println!(
+        "reconcile.new_present_boundary={}",
+        result.new_present_boundary
+    );
+    println!(
+        "reconcile.old_present_hash={}",
+        result
+            .old_present_hash
+            .clone()
+            .unwrap_or_else(|| "nil".to_string())
+    );
+    println!(
+        "reconcile.new_present_hash={}",
+        result
+            .new_present_hash
+            .clone()
+            .unwrap_or_else(|| "nil".to_string())
+    );
+    for output in &result.corrected_outputs {
+        println!(
+            "post.tick.{}={}",
+            output.tick,
+            boundary_hash(&session, output.end_boundary)
+        );
+    }
+    for tick in 20..=24i64 {
+        let output = rollback_session::step(&mut session).expect("step succeeds");
+        println!(
+            "post.tick.{tick}={}",
+            boundary_hash(&session, output.end_boundary)
+        );
+    }
+    let d = rollback_session::diagnostics(&session);
+    println!("final.present_boundary={}", d.present_boundary);
+    println!("final.rollback_count={}", d.rollback_count);
+    println!("final.resimulated_ticks={}", d.resimulated_ticks);
+    println!("final.max_rollback_depth={}", d.max_rollback_depth);
 }

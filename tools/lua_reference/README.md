@@ -147,8 +147,51 @@ red output, you are answering the wrong question in the wrong order.
 | Vector | Decision | Superseded by | Last commit where it held | Replacement |
 | --- | --- | --- | --- | --- |
 | `session_legacy_ordinary_lua_reference.txt` | #500 (repository owner) | the goalkeeper forward-prediction rework for #490, which replaces the hand-rolled gravity-only extrapolation #486 exists to eliminate | `9127c5c` (verified green) | `session_legacy_ordinary_baseline.txt`, recorded from Rust by the `#[ignore]`d `record_session_legacy_ordinary_baseline` in the same test file |
+| `match_step_ai_ai_lua_reference.txt` | #520 (repository owner) | #516, the locomotion rework for #488: it changes what every body on the pitch does per tick, so a per-tick trajectory diverges by construction | `3f8f4a3` (verified green) | `match_step_ai_ai_baseline.txt`, recorded by `record_match_step_ai_ai_baseline`; plus `match_step_is_bit_reproducible_across_two_independent_runs`, which needs no record |
+| `session_ai_driven_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `session_ai_driven_baseline.txt`, recorded by `record_session_ai_driven_baseline`; read by BOTH `session_ai_driven_differential.rs` and `ai_driven_evidence.rs`, as this table's earlier note warned |
+| `rollback_session_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `rollback_session_baseline.txt`, recorded by `record_rollback_session_baseline`; plus `rollback_session_resimulation_reaches_what_direct_simulation_reaches`, which needs no record |
 
-That is the complete list. The old vector diverged at `tick 743: rng state
+That is the complete list. The last-green commit for the three #520 rows was
+verified by checking out `3f8f4a3` and running all four affected tests there,
+not by assuming the catalogue below was still accurate — which is the step
+that makes a retirement auditable rather than merely documented.
+
+### What #520 did with rule 5, in each case
+
+Rule 5 is the one that is easy to skip, so here is what "get the real subject
+out of the frozen part" produced. In every case the new assertion compares two
+live runs and therefore needs no re-recording, ever:
+
+- **`match_differential`** — `match::step` is a pure function of state and
+  inputs, so two independently constructed runs of the same scenario agree on
+  all 31 fields at all 7,201 ticks. Catches a hidden global, a clock read or
+  an iteration-order dependence that a recorded trajectory would happily
+  enshrine.
+- **`session_ai_driven_differential`** — the same, over the full
+  bot + `input_frame` encode/decode/validate + `slot_input` + `match::step`
+  pipeline. Its old "the bot actually PLAYED" assertion was **deleted rather
+  than moved**, deliberately: it read the FIXTURE's own final row, so
+  re-recording the fixture re-recorded the assertion's input too and it could
+  never fail a PR that re-records. The live-run form of that claim survives
+  once, in `ai_driven_evidence`, where #518 owns it.
+- **`ai_driven_evidence`** — the digest chain's Lua end is gone, but the end
+  that never depended on Lua is now the point: the pinned constants are what
+  `packages/wasm/src/ai_driven.spec.ts` asserts against the compiled wasm
+  module, so the pair is the only thing in the workspace that would catch this
+  scenario's native and wasm builds parting company. That matters more than it
+  used to — see #517.
+- **`rollback_session_differential`** — a rollback that resimulates a
+  corrected tick must land exactly where a session that never mispredicted
+  lands. That is what rollback IS, and it is stated against a live twin.
+
+A caution learned while writing the last of those: the first draft of the twin
+mispredicted several ticks and rebuilt the tail from neutral input, which
+failed — because after a correction the session's own prediction repeats the
+CORRECTED sample. Making the twin match would have meant encoding the
+prediction policy into a test that exists to check the code implementing it.
+An oracle derived from the code under test is exactly the trap this file warns
+about two sections up; the fix was to end the scenario at the corrected tick
+so the question does not arise. The old vector diverged at `tick 743: rng state
 mismatch`; the test that read it, `gc-sim/tests/session_legacy_differential.rs`,
 was **converted rather than deleted**, because it exercises
 `input_frame::encode`/`decode`/`validate` plus `slot_input::to_match_input`
@@ -184,8 +227,8 @@ file survives at all, therefore keeps gating through every rework in
 
 ### The remaining behavioral fixtures
 
-**Every one of these still passes, including under the #490 keeper change
-that retired `session_legacy_ordinary`.** None of them is retired, deprecated,
+**Three more were retired by #520 and have been removed from this list;
+everything still listed passes.** None of what remains is retired, deprecated,
 or exempt. They are catalogued so the next gameplay rework knows which ones it
 might trip and what that would mean — not so it can pre-emptively retire them.
 `match_differential.rs` in particular survived the keeper change because it
@@ -196,11 +239,8 @@ scenario-specific, not universal.
 
 | Fixture | Read by | Records |
 | --- | --- | --- |
-| `match_step_ai_ai_lua_reference.txt` | `gc-sim/tests/match_differential.rs` | a full 7,201-tick AI-vs-AI match, `human_controlled: Some(false)`, `MatchInput` built directly in Rust |
-| `session_ai_driven_lua_reference.txt` | `gc-sim/tests/session_ai_driven_differential.rs` **and** `gc-sim/tests/ai_driven_evidence.rs` | a 7,201-tick match with `gc_sim::bot` driving the controlled slot through the full wire round trip — shooting, passing, lobbing, dashing. Read by two tests; retiring it would have to handle both, and `ai_driven_evidence` is what makes the wasm-side digest check mean anything |
 | `brain_keeper_lua_reference.txt` | `gc-sim/tests/brain_keeper_differential.rs` | per-call outputs of `brain` and `keeper`'s decision functions |
 | `aerial_lua_reference.txt` | `gc-sim/tests/aerial_differential.rs` | `aerial::resolve`'s four RNG draws and the trajectory arithmetic they feed |
-| `rollback_session_lua_reference.txt` | `gc-sim/tests/rollback_session_differential.rs` | the rollback state machine re-simulating; it steps the sim, so a gameplay change reaches it |
 | `rollback_input_history_lua_reference.txt` | `gc-sim/tests/rollback_input_history_differential.rs` | the input ring buffer the re-simulation replays from |
 | `rollback_snapshot_history_lua_reference.txt` | `gc-sim/tests/rollback_snapshot_history_differential.rs` | the snapshot ring the re-simulation restores from, and its eviction floor |
 
