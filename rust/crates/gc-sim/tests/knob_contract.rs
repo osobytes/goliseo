@@ -327,15 +327,23 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
 /// fields and both harness adapters, which is a follow-up PR in this stack.
 ///
 /// The carry/possession pairing was measured and is too subtle for any seed
-/// count a per-PR gate can afford. `possession_balance`'s per-match sd is
+/// count a per-PR gate can afford. `possession_balance`'s per-match sd was
 /// 0.11 against a paired delta of 0.02; swapping to `turnovers_per_min`
 /// (same pressure, far less variance) and going to 96 seeds and full-length
-/// matches still lands at -0.28 against a 0.38 threshold — five minutes of
+/// matches still landed at -0.28 against a 0.38 threshold — five minutes of
 /// compute to report `DECORATION` for a knob that is not decoration. The
 /// contract is right to refuse it; that is the gate working. It is recorded
 /// here because "raise the seeds until it passes" is the tempting wrong
 /// answer, and because the balance sweep, which can afford the seeds, is
 /// where that pairing belongs.
+///
+/// **Those four figures were measured on the chord-bounded draft, before the
+/// turn rate was corrected, and are not re-measured here.** The conclusion
+/// they support — that the pairing is too subtle for a per-PR gate — is the
+/// durable part and got *more* true, not less: correcting the rate shrank
+/// every locomotion knob's measured effect (see the note in the body below).
+/// Treat the numbers as the order of magnitude they are, not as current
+/// readings.
 #[test]
 fn turn_rate_moves_the_gaps_between_chances() {
     // 96 rather than the 48 the other cases here use. Worth knowing why: the

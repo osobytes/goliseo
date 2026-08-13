@@ -3,12 +3,35 @@
 // environment — see `ts/vitest.config.ts`), must reproduce exactly the
 // digests JavaScriptCore, V8, SpiderMonkey and node already agreed on for
 // the frozen 7,201-tick OMP-1 fixture
-// (`crates/gc-data/src/omp1_determinism.rs`'s pinned
+// (`crates/gc-data/src/omp1_determinism.rs`'s
 // `expected_final_hash`/`expected_sequence_digest`, and
 // `crates/gc-sim/tests/determinism_evidence.rs`'s native-build assertion of
-// the same two values). If these drift, that is a real finding about the
-// wasm build, not a flaky test — do not "fix" it by changing the expected
-// values here.
+// the same two values).
+//
+// WHAT A RED HERE MEANS, AND HOW TO TELL THE TWO CASES APART. This file used
+// to say flatly "do not fix it by changing the expected values here", because
+// the derived digests were frozen. #504 made them **re-recordable** — they
+// move with any deliberate gameplay change — so the two constants below are a
+// FIFTH copy of the OMP-1 derived half, after the JSON fixture,
+// `gc_data::omp1_determinism`'s own unit test, its last-boundary assertion,
+// and `rollback_lab.rs`'s tape digest. #504's two-step recorder command
+// mentions none of them, and #510/#512 edited this very file without noticing
+// these two lines.
+//
+// So before touching them, run the discriminating measurement — it takes
+// seconds and it is the whole point:
+//
+//   native:  cargo test -p gc-sim --test determinism_evidence
+//   wasm:    node -e "const {runDeterminismEvidence} = \
+//              require('./packages/wasm/dist/pkg/gc_wasm.cjs'); \
+//              const e = runDeterminismEvidence(); console.log(e.final_hash)"
+//
+// If wasm disagrees with **native**, that is a real finding about the wasm
+// build — the thing this file exists to catch — and it is #517, not a stale
+// constant. Fix the code, never these lines. If wasm and native AGREE and
+// both differ from the constants below, the constants are simply stale and
+// belong in the same commit as the JSON re-record. Under #488 they agreed at
+// `bd05724d532c8027`, which is the only reason these two lines were touched.
 //
 // Requires `pnpm --filter @gc/wasm build` to have run first so
 // `dist/pkg/gc_wasm.cjs` exists.
@@ -17,8 +40,8 @@ import { describe, expect, it } from "vitest";
 
 import { loadSimHost } from "./index.ts";
 
-const EXPECTED_FINAL_HASH = "bfbb106aea5480f8";
-const EXPECTED_SEQUENCE_DIGEST = "0bfd0ed355f87322";
+const EXPECTED_FINAL_HASH = "bd05724d532c8027";
+const EXPECTED_SEQUENCE_DIGEST = "350d9b17f4e50953";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
