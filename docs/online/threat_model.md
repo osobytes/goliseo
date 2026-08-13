@@ -6,9 +6,10 @@ exists so the OMP-4 topology choice is made with the cheat surface visible.
 
 The findings below cite the Lua tree. They are **not** v1-only: `game/online/**`
 — rollback scheduling, input encode/decode, state hashing and the protocol — was
-ported to the `gc-netcode` crate ([`v2/README.md`](../../v2/README.md), the
-port-mapping table), and the mechanisms this document attacks survived the port
-unchanged. Spot-checked on 2026-08-10 against the port:
+ported to the `gc-netcode` crate (see [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+§1.1; the `v2/README.md` port-mapping table this note used to cite went away
+with `v2/` itself when #467 promoted that tree to the repository root), and the
+mechanisms this document attacks survived the port unchanged. Spot-checked on 2026-08-10 against the port:
 
 | Claim below | State in `gc-netcode` |
 | --- | --- |

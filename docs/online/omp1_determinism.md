@@ -1,5 +1,12 @@
 # OMP-1 determinism evidence
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 Status: **native pass on the authoritative snapshot-v11 fixture**. The accepted
 snapshot-v4 Chrome/Firefox evidence remains historical until CI records the v11
 browser run; the snapshot-v1 browser artifact is also preserved below.
