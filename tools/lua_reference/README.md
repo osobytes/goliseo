@@ -214,9 +214,27 @@ needs the same change in the same PR:**
 | --- | --- | --- |
 | `network_input_frame_lua_reference.txt` | `gc-sim/tests/differential.rs` | `input_frame`'s wire format and `network_conditions`' RNG use |
 | `match_snapshot_case_a_lua_reference.txt`, `..._case_b_...` | `gc-sim/tests/match_snapshot_differential.rs` | serialized snapshot state and its hash |
-| `input_tape_lua_reference.txt` | `gc-sim/tests/input_tape_differential.rs` | tape boundary hashes and the frame wires between them |
-| `protocol_lua_reference.txt`, `fake_relay_lua_reference.txt`, `match_driver_lua_reference.txt`, `coordinator_desync_lua_reference.txt` | `gc-netcode/tests/{protocol,fake_relay,match_driver,coordinator}.rs` | the online protocol's encodings, relay ordering, driver stepping, and desync-package construction |
-| `frame_buffer_lua_reference.txt` (Rust) and `frame_buffer_lua_reference.ts` (TypeScript) | `gc-render/tests/frame_buffer_differential.rs`, `ts/packages/render/src/frame_buffer.spec.ts` | the `RenderFrame` payload's field order, widths and version word — read by two languages, so this is the closest of the behavioral vectors to an encoding vector in kind |
+| `input_tape_lua_reference.txt` | `gc-sim/tests/input_tape_differential.rs` | the tape's identity words, its five frame wires, and its tick-zero boundary hash. The post-step boundary hashes are still in the fixture and are still read as data, but are no longer compared to stepped output — see below |
+| `protocol_lua_reference.txt`, `fake_relay_lua_reference.txt`, `match_driver_lua_reference.txt`, `coordinator_desync_lua_reference.txt` | `gc-netcode/tests/{protocol,fake_relay,match_driver,coordinator}.rs` | the online protocol's encodings, relay ordering, driver stepping, and desync-package construction. `match_driver`'s consumer compares the delivery protocol — status, confirmation arithmetic, checkpoint cadence, boundary zero — not the correction counts or post-kickoff digests recorded beside them |
+| `frame_buffer_lua_reference.txt` (Rust) and `frame_buffer_lua_reference.ts` (TypeScript) | `gc-render/tests/frame_buffer_differential.rs`, `ts/packages/render/src/frame_buffer.spec.ts` | the `RenderFrame` payload's field order, widths and version word — read by two languages, so this is the closest of the behavioral vectors to an encoding vector in kind. Both consumers now read the frozen rows rather than re-simulating them |
+
+### A format vector's consumer must not step the simulation
+
+Four of the tests in this table used to build a match, step it, and compare
+the result to the vector. That makes a format test fail on a gameplay change
+with the format intact — which is what happened under the locomotion rework
+(#520): `frame_buffer_differential` reported `t37: word 56 is 14.303, Lua
+produced 13.843` at the same word index, the same width and the same version
+word, while its TypeScript twin — which *decodes* the same frozen row instead
+of re-simulating it — stayed green.
+
+So the rule these consumers now follow, and the one to apply to any new
+format vector: **recover the state from the vector; do not reproduce it.**
+Read the frozen row back and re-encode it, check the wire in both directions,
+assert the protocol's shape rather than a simulated magnitude, and where a
+hash is genuinely worth pinning across languages, pin the one taken *before*
+the first step. None of that needed a retirement — rule 5's "get what the
+test was actually for out of the frozen part" is the whole fix.
 
 ---
 

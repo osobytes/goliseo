@@ -1,13 +1,13 @@
-//! Differential test of `input_tape` against reference vectors captured from
-//! the Lua implementation this simulation was originally validated against
-//! (ARCHITECTURE.md §3 rule 7, `tools/lua_reference/README.md`). `sim/input_tape.lua`
-//! has no dedicated spec file — it is exercised through
-//! `spec/sim/headless_spec.lua`, `replay_spec.lua`, and
-//! `determinism_evidence_spec.lua` — but it is squarely on the determinism
-//! path (it encodes/decodes recorded inputs and produces the boundary
-//! hashes replay and rollback both trust), so it gets this instead: a
-//! from-scratch construction of `input_tape.new`, reproduced identically in
-//! both languages, checked byte for byte.
+//! Differential test of `input_tape`'s FORMAT against reference vectors
+//! captured from the Lua implementation this simulation was originally
+//! validated against (ARCHITECTURE.md §3 rule 7,
+//! `tools/lua_reference/README.md`). `sim/input_tape.lua` has no dedicated
+//! spec file — it is exercised through `spec/sim/headless_spec.lua`,
+//! `replay_spec.lua`, and `determinism_evidence_spec.lua` — but it is
+//! squarely on the determinism path (it encodes/decodes recorded inputs and
+//! produces the boundary hashes replay and rollback both trust), so it gets
+//! this instead: a from-scratch construction of the recording, reproduced
+//! identically in both languages, checked byte for byte.
 //!
 //! `tests/fixtures/input_tape_lua_reference.txt` is the captured stdout of
 //! running the real Lua `sim/input_tape.lua` (via `sim/match.lua`,
@@ -20,6 +20,41 @@
 //! 2 additionally holds sprint and fires pass+dash edges in the same
 //! sample — degenerate coverage for simultaneous held+edge bits on a
 //! single slot, not just the neutral-everywhere case.
+//!
+//! ## What this file asserts, and what it deliberately does not (#520)
+//!
+//! This is a FORMAT test. It used to compare all six of the reference's
+//! boundary hashes against hashes the Rust side produced by STEPPING the
+//! simulation five times — which folded a trajectory claim into a format
+//! test. A deliberate gameplay change then turned it red while every
+//! encoding it exists to protect was intact, which is #520's finding: the
+//! frozen vector's frame wires and its tick-zero boundary compared fine, and
+//! only simulated values had moved.
+//!
+//! So the reference is used for exactly the parts of it that are format:
+//!
+//! - the identity words (`tape_version`, `input_version`, `snapshot_version`,
+//!   the serialized tuning blob, seed, tick rate) and `tape.version`;
+//! - all five `frame_wire[i]` strings, byte for byte, in both directions —
+//!   `input_frame::encode` must produce them and `input_frame::decode` must
+//!   read them back to the identical frame;
+//! - `boundary_hash[0]`, the boundary BEFORE any frame is applied. It hashes
+//!   the kickoff snapshot, so it pins `match_snapshot`'s serialization order
+//!   and `match_snapshot::hash`'s digest algorithm against real Lua without
+//!   depending on a single stepped tick;
+//! - the whole frozen six-hash sequence as DATA: `input_tape::from_frozen_recording`
+//!   is handed the reference's own hashes and must accept them — which
+//!   checks each one's canonical form, the one-more-hash-than-frames length
+//!   contract, and `boundary_hash[0]` against the snapshot — and the
+//!   resulting tape must pass `validate_structure`, which the reference
+//!   itself records as `true`.
+//!
+//! What is NOT compared to the reference is `boundary_hash[1..5]`: those are
+//! hashes of stepped state, i.e. the trajectory. Their non-vacuity is
+//! covered instead by `input_tape::validate`, which replays the tape and
+//! re-derives every boundary — a self-consistency claim that holds whatever
+//! the physics does — plus the canonical-form, length and distinctness
+//! assertions below.
 
 use gc_data::teams;
 use gc_sim::fixed_clock;
@@ -80,11 +115,17 @@ fn build_frames() -> Vec<InputFrame> {
     frames
 }
 
-#[test]
-fn input_tape_new_matches_the_reference_lua_boundary_hashes_and_frame_wires() {
-    let reference = reference();
-    let tune = Tuning::new();
+/// Every fixed part of the recording: the identity the reference was
+/// captured with, the kickoff snapshot it started from, and the five frames.
+struct Recording {
+    identity: InputTapeIdentity,
+    initial: match_snapshot::MatchSnapshot,
+    frames: Vec<InputFrame>,
+    tune: Tuning,
+}
 
+fn recording() -> Recording {
+    let tune = Tuning::new();
     let home = teams::get("nebula").expect("nebula is an authored team");
     let away = teams::get("orion").expect("orion is an authored team");
     let ownership = sim_match::ownership_for_teams(home, away, None);
@@ -104,28 +145,6 @@ fn input_tape_new_matches_the_reference_lua_boundary_hashes_and_frame_wires() {
         ownership: ownership.clone(),
         combat: None,
     };
-
-    assert_eq!(
-        identity.tape_version.to_string(),
-        expect(&reference, "identity.tape_version")
-    );
-    assert_eq!(
-        identity.input_version.to_string(),
-        expect(&reference, "identity.input_version")
-    );
-    assert_eq!(
-        identity.snapshot_version.to_string(),
-        expect(&reference, "identity.snapshot_version")
-    );
-    assert_eq!(identity.tuning, expect(&reference, "identity.tuning"));
-    assert_eq!(
-        (identity.seed as i64).to_string(),
-        expect(&reference, "identity.seed")
-    );
-    assert_eq!(
-        identity.tick_rate.to_string(),
-        expect(&reference, "identity.tick_rate")
-    );
 
     let mut state = sim_match::new(sim_match::NewMatchOptions {
         home,
@@ -153,38 +172,214 @@ fn input_tape_new_matches_the_reference_lua_boundary_hashes_and_frame_wires() {
     state.marks.home.resize(n, None);
     state.marks.away.resize(n, None);
     let initial = match_snapshot::capture(&state, None);
-    let frames = build_frames();
 
-    for (index, frame) in frames.iter().enumerate() {
-        let wire = input_frame::encode(frame).expect("canonical frame encodes");
-        assert_eq!(
-            wire,
-            expect(&reference, &format!("frame_wire[{index}]")),
-            "frame_wire[{index}]"
-        );
+    Recording {
+        identity,
+        initial,
+        frames: build_frames(),
+        tune,
     }
+}
 
-    let tape = input_tape::new(&identity, &initial, &frames, &tune).expect("tape constructs");
+fn canonical_hash(hash: &str) -> bool {
+    hash.len() == 16
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The identity words and the five frame wires: the parts of the recording
+/// that are pure encoding, compared byte for byte with the Lua reference in
+/// both directions.
+#[test]
+fn input_frame_wires_and_tape_identity_match_the_reference_lua_byte_for_byte() {
+    let reference = reference();
+    let recording = recording();
+    let identity = &recording.identity;
+
+    assert_eq!(
+        identity.tape_version.to_string(),
+        expect(&reference, "identity.tape_version")
+    );
+    assert_eq!(
+        identity.input_version.to_string(),
+        expect(&reference, "identity.input_version")
+    );
+    assert_eq!(
+        identity.snapshot_version.to_string(),
+        expect(&reference, "identity.snapshot_version")
+    );
+    assert_eq!(identity.tuning, expect(&reference, "identity.tuning"));
+    assert_eq!(
+        (identity.seed as i64).to_string(),
+        expect(&reference, "identity.seed")
+    );
+    assert_eq!(
+        identity.tick_rate.to_string(),
+        expect(&reference, "identity.tick_rate")
+    );
+
+    for (index, frame) in recording.frames.iter().enumerate() {
+        let wire = input_frame::encode(frame).expect("canonical frame encodes");
+        let expected = expect(&reference, &format!("frame_wire[{index}]"));
+        assert_eq!(wire, expected, "frame_wire[{index}]");
+        // The reader half of the same claim: an encoder and a decoder that
+        // agreed with each other but not with the reference would pass the
+        // assertion above only if BOTH matched Lua, and this one proves the
+        // decoder reads Lua's own bytes rather than merely its own output.
+        let decoded = input_frame::decode(expected).expect("the reference wire decodes");
+        assert_eq!(&decoded, frame, "frame_wire[{index}] decodes back");
+    }
+}
+
+/// The frozen reference recording, read as DATA by the Rust reader.
+///
+/// `from_frozen_recording` is handed the reference's own six boundary
+/// hashes and must accept them. That checks, against real Lua output: every
+/// hash's canonical form, the one-more-hash-than-frames length contract,
+/// and — the load-bearing one — `boundary_hash[0]` against the hash this
+/// build derives from the kickoff snapshot, which pins `match_snapshot`'s
+/// serialization order and digest algorithm without stepping a tick.
+#[test]
+fn the_frozen_reference_recording_is_accepted_and_structurally_valid() {
+    let reference = reference();
+    let recording = recording();
+    let frozen: Vec<String> = (0..=recording.frames.len())
+        .map(|index| expect(&reference, &format!("boundary_hash[{index}]")).to_string())
+        .collect();
+
+    let tape = input_tape::from_frozen_recording(
+        &recording.identity,
+        &recording.initial,
+        &recording.frames,
+        &frozen,
+        &recording.tune,
+    )
+    .expect("the frozen Lua recording is a well-formed tape for this build");
 
     assert_eq!(tape.version.to_string(), expect(&reference, "tape.version"));
     assert_eq!(
         tape.frames.len().to_string(),
         expect(&reference, "frame_count")
     );
-    assert_eq!(tape.boundary_hashes.len(), frames.len() + 1);
+    assert_eq!(tape.boundary_hashes, frozen);
+    assert_eq!("true", expect(&reference, "validate_structure_ok"));
+    assert!(input_tape::validate_structure(&tape).is_ok());
+
+    // NON-VACUOUS. `from_frozen_recording` accepting the reference above is
+    // only evidence if it would reject a recording whose tick-zero boundary
+    // does not agree with the snapshot, and one whose hash is not canonical.
+    let mut wrong_zero = frozen.clone();
+    wrong_zero[0] = "0123456789abcdef".to_string();
+    assert!(
+        input_tape::from_frozen_recording(
+            &recording.identity,
+            &recording.initial,
+            &recording.frames,
+            &wrong_zero,
+            &recording.tune,
+        )
+        .is_err(),
+        "a tick-zero boundary that disagrees with the snapshot must be rejected"
+    );
+
+    let mut malformed = frozen.clone();
+    malformed[3] = "not-a-hash".to_string();
+    assert!(
+        input_tape::from_frozen_recording(
+            &recording.identity,
+            &recording.initial,
+            &recording.frames,
+            &malformed,
+            &recording.tune,
+        )
+        .is_err(),
+        "a malformed boundary hash must be rejected"
+    );
+
+    let short = frozen[..frozen.len() - 1].to_vec();
+    assert!(
+        input_tape::from_frozen_recording(
+            &recording.identity,
+            &recording.initial,
+            &recording.frames,
+            &short,
+            &recording.tune,
+        )
+        .is_err(),
+        "a tape must carry one more boundary hash than it has frames"
+    );
+}
+
+/// `input_tape::new`'s own output, checked for the shape the format
+/// promises rather than for the trajectory it recorded.
+///
+/// `boundary_hash[0]` is still compared to the Lua reference — it is the
+/// pre-step boundary, so it is content, not trajectory. Everything after it
+/// is checked structurally (count, canonical form, distinctness) and for
+/// self-consistency through `input_tape::validate`, which replays the tape
+/// and re-derives every boundary hash it claims.
+#[test]
+fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
+    let reference = reference();
+    let recording = recording();
+
+    let tape = input_tape::new(
+        &recording.identity,
+        &recording.initial,
+        &recording.frames,
+        &recording.tune,
+    )
+    .expect("tape constructs");
+
+    assert_eq!(tape.version.to_string(), expect(&reference, "tape.version"));
+    assert_eq!(
+        tape.frames.len().to_string(),
+        expect(&reference, "frame_count")
+    );
+    assert_eq!(
+        tape.frames, recording.frames,
+        "a tape carries the frames it was handed, unaltered"
+    );
+    assert_eq!(tape.boundary_hashes.len(), recording.frames.len() + 1);
+    assert_eq!(
+        tape.boundary_hashes[0],
+        expect(&reference, "boundary_hash[0]"),
+        "the pre-step boundary hash diverges from the reference Lua run \
+         (a match_snapshot serialization or digest regression)"
+    );
     for (index, hash) in tape.boundary_hashes.iter().enumerate() {
-        assert_eq!(
-            hash,
-            expect(&reference, &format!("boundary_hash[{index}]")),
-            "boundary_hash[{index}] diverges from the reference Lua run \
-             (a determinism regression, not merely a spec failure)"
+        assert!(
+            canonical_hash(hash),
+            "boundary_hash[{index}] is not 16 lowercase hex characters: {hash}"
+        );
+    }
+    // Non-vacuity for everything after the first: a tape whose boundaries
+    // never moved would satisfy every structural assertion above while
+    // recording nothing.
+    for index in 1..tape.boundary_hashes.len() {
+        assert_ne!(
+            tape.boundary_hashes[index],
+            tape.boundary_hashes[index - 1],
+            "boundary_hash[{index}] repeats its predecessor; the tape recorded no progress"
         );
     }
 
-    // The same structural/full-replay validation `sim/replay.lua`'s
-    // `validate_context` performed, confirmed against real Lua's own pass.
-    assert_eq!("true", expect(&reference, "validate_structure_ok"));
+    // The replaced trajectory comparison's actual subject: a tape's
+    // boundaries must be the ones a replay of it re-derives. This holds
+    // whatever the physics does, and fails the moment the recorded
+    // boundaries and the replayed ones disagree.
     assert_eq!("true", expect(&reference, "validate_ok"));
-    assert!(input_tape::validate_structure(&tape).is_ok());
-    assert!(input_tape::validate(&tape, &tune).is_ok());
+    assert!(input_tape::validate(&tape, &recording.tune).is_ok());
+
+    // And the same construction twice is the same tape: the format carries
+    // no ambient state.
+    let again = input_tape::new(
+        &recording.identity,
+        &recording.initial,
+        &recording.frames,
+        &recording.tune,
+    )
+    .expect("tape constructs");
+    assert_eq!(again.boundary_hashes, tape.boundary_hashes);
 }
