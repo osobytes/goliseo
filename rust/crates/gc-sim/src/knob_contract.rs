@@ -150,14 +150,14 @@ pub struct KnobMoveOpts<'a> {
     /// Displacement as a fraction of the knob's range; defaults to
     /// [`DEFAULT_PERTURBATION_FRACTION`].
     pub perturbation: Option<f64>,
+    /// The direction the metric must move in when the knob is perturbed. A
+    /// shift that clears the noise floor with the OPPOSITE sign fails the
+    /// contract: a backwards-wired knob is a bug, not a pass.
+    pub expect: ExpectedShift,
     /// Displacement direction; defaults to [`Perturb::Up`].
     ///
     /// This is which way the KNOB moves, not which way the metric is expected
     /// to respond — that is [`Self::expect`].
-    pub expect: ExpectedShift,
-    /// The direction the metric must move in when the knob is perturbed. A
-    /// shift that clears the noise floor with the OPPOSITE sign fails the
-    /// contract: a backwards-wired knob is a bug, not a pass.
     pub direction: Option<Perturb>,
 }
 
