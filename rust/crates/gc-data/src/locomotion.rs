@@ -200,20 +200,38 @@ pub const BASE_TURN_KNOB: &str = "LOCO_BASE_TURN";
 pub const FACE_TURN_MULT_KNOB: &str = "LOCO_FACE_TURN_MULT";
 /// Knob id for the remaining facing angle at which the damped ease-out takes
 /// over from bounded-rate rotation, in degrees.
+///
+/// Consumed as a CHORD length after `to_radians()` (an exact multiply), for
+/// the reason above: chord and arc agree to better than half a percent over
+/// this knob's whole declared range, and the alternative is a transcendental
+/// on the hot path.
 pub const TURN_EASE_KNOB: &str = "LOCO_TURN_EASE_DEG";
 /// Knob id for the floor under the damped ease-out's rate, as a fraction of
 /// the full facing rate. Without a floor the ease is asymptotic and never
 /// lands.
 pub const FACE_EASE_FLOOR_KNOB: &str = "LOCO_FACE_EASE_FLOOR";
-/// Knob id for the commanded-versus-current angle beyond which a direction
-/// change is a reversal (brake through zero) rather than an arc, in degrees.
-pub const REVERSE_ARC_KNOB: &str = "LOCO_REVERSE_ARC_DEG";
-/// Knob id for the movement-versus-facing angle beyond which a context is a
-/// strafe, in degrees.
-pub const STRAFE_ARC_KNOB: &str = "LOCO_STRAFE_ARC_DEG";
-/// Knob id for the movement-versus-facing angle beyond which a context is a
-/// backpedal, in degrees.
-pub const BACKPEDAL_ARC_KNOB: &str = "LOCO_BACKPEDAL_ARC_DEG";
+// The three arc thresholds below are authored as **cosines**, not degrees,
+// and that is a determinism requirement rather than a style choice. Each is
+// compared against a dot product once per player per tick; expressed in
+// degrees, every comparison would need a `cos()` call on the simulation's
+// hot path. `sin`/`cos`/`atan2` are not correctly-rounded, and Rust links a
+// different libm for `wasm32-unknown-unknown` than the host libm a native
+// build uses -- so a native peer and a browser peer would disagree in the low
+// bits and a rollback resimulation would desync. Measured, not theorized: an
+// earlier draft of this module used `to_radians().cos()` here and the
+// compiled wasm module diverged from the native build at boundary 12 of the
+// OMP-1 fixture. See `gc_sim::locomotion`'s module doc.
+
+/// Knob id for the cosine of the commanded-versus-current angle beyond which
+/// a direction change is a reversal (brake through zero) rather than an arc.
+/// `-0.5` is 120 degrees.
+pub const REVERSE_ARC_COS_KNOB: &str = "LOCO_REVERSE_ARC_COS";
+/// Knob id for the cosine of the movement-versus-facing angle beyond which a
+/// context is a strafe. `0.57` is about 55 degrees.
+pub const STRAFE_ARC_COS_KNOB: &str = "LOCO_STRAFE_ARC_COS";
+/// Knob id for the cosine of the movement-versus-facing angle beyond which a
+/// context is a backpedal. `-0.5` is 120 degrees.
+pub const BACKPEDAL_ARC_COS_KNOB: &str = "LOCO_BACKPEDAL_ARC_COS";
 /// Knob id for the extra angular rate available at a standstill, as a
 /// fraction of the context rate. Near-zero-speed turns are cheap.
 pub const TURN_LOW_SPEED_BONUS_KNOB: &str = "LOCO_TURN_LOW_SPEED_BONUS";

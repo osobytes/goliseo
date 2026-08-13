@@ -52,9 +52,9 @@
 use crate::tuning::Tuning;
 use gc_core::vec2::Vec2;
 use gc_data::locomotion::{
-    self, BACKPEDAL_ARC_KNOB, BASE_TURN_KNOB, CONTEXT_KNOBS, DIR_SNAP_SPEED_KNOB,
+    self, BACKPEDAL_ARC_COS_KNOB, BASE_TURN_KNOB, CONTEXT_KNOBS, DIR_SNAP_SPEED_KNOB,
     FACE_EASE_FLOOR_KNOB, FACE_TURN_MULT_KNOB, JOG_THROTTLE_KNOB, LocoContext, PACE_CURVE,
-    PACE_REF_HI_KNOB, PACE_REF_LO_KNOB, REVERSE_ARC_KNOB, STRAFE_ARC_KNOB, STRENGTH_CURVE,
+    PACE_REF_HI_KNOB, PACE_REF_LO_KNOB, REVERSE_ARC_COS_KNOB, STRAFE_ARC_COS_KNOB, STRENGTH_CURVE,
     TECHNIQUE_CURVE, TURN_EASE_KNOB, TURN_LOW_SPEED_BONUS_KNOB,
 };
 
@@ -280,10 +280,10 @@ pub fn resolve(
     let looking = face_target.x != 0.0 || face_target.y != 0.0;
     if moving && looking {
         let cos = dot(move_dir.normalized(), face_target.normalized());
-        if cos < tune.value(BACKPEDAL_ARC_KNOB).to_radians().cos() {
+        if cos < tune.value(BACKPEDAL_ARC_COS_KNOB) {
             return LocoContext::Backpedal;
         }
-        if cos < tune.value(STRAFE_ARC_KNOB).to_radians().cos() {
+        if cos < tune.value(STRAFE_ARC_COS_KNOB) {
             return LocoContext::Strafe;
         }
     }
@@ -304,25 +304,62 @@ pub fn resolve(
     }
 }
 
-/// Rotate `from` toward `to` by at most `max_step` radians.
-fn rotate_toward(from: Vec2, to: Vec2, max_step: f64) -> Vec2 {
-    let angle = signed_angle(from, to);
-    let magnitude = angle.abs();
-    if magnitude <= max_step {
+/// A chord this close to 2 means the two unit directions are opposite.
+///
+/// At exactly 2 there is no shorter arc between them and `from + delta * t`
+/// passes through the origin at `t = 0.5`, so there is nothing to normalize.
+const ANTIPODAL_CHORD: f64 = 1.999_9;
+
+/// Rotate `from` toward `to` (both unit) by at most `max_step` of **chord**,
+/// then renormalize.
+///
+/// ## Why chord and not angle
+///
+/// The obvious implementation is `atan2` for the remaining angle and
+/// `sin`/`cos` to rotate by a clamped step. It is also a desync. Those three
+/// are the transcendentals ARCHITECTURE.md §1 singles out as
+/// implementation-approximated, and Rust links a *different* libm for
+/// `wasm32-unknown-unknown` than a native build uses — so a native peer and a
+/// browser peer disagree in the low bits of every turn, every tick, and a
+/// rollback resimulation desyncs.
+///
+/// This is measured, not theorized. The `atan2`/`sin`/`cos` draft of this
+/// module reproduced its own re-recorded OMP-1 boundary hashes natively and
+/// diverged inside the compiled wasm module at boundary 12
+/// (`ts/packages/wasm/src/determinism.spec.ts`).
+///
+/// Normalized-lerp needs only `+`, `*` and `sqrt`. IEEE 754 specifies `sqrt`
+/// as correctly rounded, which is exactly why `gc_core::vec2` is allowed on
+/// the determinism path at all, so every peer computes the same bits.
+///
+/// The cost is that the step is a chord rather than an arc. Chord
+/// `= 2 sin(theta/2)`, so for one tick's worth of any rate in the declared
+/// range the two agree to better than half a percent, and the difference only
+/// matters at all for a knob that is a feel parameter to begin with.
+/// `normalize(lerp(from, to, t))` for `t` in `(0, 1)` lies strictly on the
+/// shorter arc, so this cannot overshoot at any step size.
+fn ease_chord(from: Vec2, to: Vec2, max_step: f64) -> Vec2 {
+    if max_step <= 0.0 {
+        return from;
+    }
+    let delta = to.sub(from);
+    let chord = delta.length();
+    if chord == 0.0 {
         return to;
     }
-    rotate(from, max_step * angle.signum())
-}
-
-/// Signed angle from `from` to `to`, in `-pi..pi`.
-fn signed_angle(from: Vec2, to: Vec2) -> f64 {
-    let cross = from.x * to.y - from.y * to.x;
-    (cross).atan2(dot(from, to))
-}
-
-fn rotate(v: Vec2, angle: f64) -> Vec2 {
-    let (s, c) = (angle.sin(), angle.cos());
-    Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+    if chord >= ANTIPODAL_CHORD {
+        // Opposite directions: both arcs are the same length, so there is no
+        // "toward". Break the tie toward the left-hand perpendicular — the
+        // same way on every peer, which is the only property that matters —
+        // and take the same size of step toward that instead. One tick later
+        // the chord is below the threshold and the ordinary path resumes.
+        let perp = Vec2::new(-from.y, from.x);
+        return ease_chord(from, perp, max_step);
+    }
+    if max_step >= chord {
+        return to;
+    }
+    from.add(delta.scale(max_step / chord)).normalized()
 }
 
 /// Bounded-rate rotation with a damped ease-out below `ease`.
@@ -332,33 +369,31 @@ fn rotate(v: Vec2, angle: f64) -> Vec2 {
 /// heading instead of hitting it and stopping dead. Two properties matter and
 /// both are structural rather than tuned:
 ///
-/// - **No overshoot, therefore no terminal oscillation.** The step is clamped
-///   to the remaining angle, so the angle is monotonically non-increasing and
-///   can never change sign. This holds at every value of every knob.
+/// - **No overshoot, therefore no terminal oscillation.** [`ease_chord`]
+///   never passes its target, so the remaining angle is monotonically
+///   non-increasing and can never change sign. This holds at every value of
+///   every knob.
 /// - **It lands.** A pure proportional ease is asymptotic; `floor` puts a
 ///   lower bound under the rate so the remaining angle reaches zero in
 ///   finite time rather than shrinking forever.
+///
+/// `ease` is a chord threshold, for [`ease_chord`]'s reason.
 fn ease_toward(current: Vec2, want: Vec2, rate: f64, ease: f64, floor: f64, dt: f64) -> Vec2 {
     if current.x == 0.0 && current.y == 0.0 {
         return want;
     }
     let current = current.normalized();
     let want = want.normalized();
-    let angle = signed_angle(current, want);
-    let magnitude = angle.abs();
-    if magnitude == 0.0 {
+    let chord = want.sub(current).length();
+    if chord == 0.0 {
         return want;
     }
-    let effective = if ease > 0.0 && magnitude < ease {
-        rate * (magnitude / ease).max(clamp01(floor))
+    let effective = if ease > 0.0 && chord < ease {
+        rate * (chord / ease).max(clamp01(floor))
     } else {
         rate
     };
-    let step = (effective * dt).min(magnitude);
-    if step >= magnitude {
-        return want;
-    }
-    rotate(current, step * angle.signum())
+    ease_chord(current, want, effective * dt)
 }
 
 /// One tick of locomotion: the five ordered steps.
@@ -403,13 +438,13 @@ pub fn step(k: Kinematics, cmd: &Command, prof: &Profile, dt: f64, tune: &Tuning
         if speed0 <= snap {
             dir = cmd_dir;
             target = target_full;
-        } else if dot(dir0, cmd_dir) < tune.value(REVERSE_ARC_KNOB).to_radians().cos() {
+        } else if dot(dir0, cmd_dir) < tune.value(REVERSE_ARC_COS_KNOB) {
             reversing = true;
         } else {
             // Near-zero-speed turns are cheap; a body at pace traces an arc.
             let low_speed = 1.0 - clamp01(speed0 / prof.top_speed.max(1.0));
             let bonus = 1.0 + tune.value(TURN_LOW_SPEED_BONUS_KNOB) * low_speed;
-            dir = rotate_toward(dir0, cmd_dir, prof.turn_rate * bonus * dt);
+            dir = ease_chord(dir0, cmd_dir, prof.turn_rate * bonus * dt);
             target = target_full;
         }
     }

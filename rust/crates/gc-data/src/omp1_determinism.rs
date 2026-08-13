@@ -436,8 +436,8 @@ mod tests {
         // documented two-step re-record command does not mention this file;
         // a re-record that stops at the JSON leaves `gc-data`'s own unit test
         // red, which is how this line came to be updated here.
-        assert_eq!(f.expected_final_hash, "daeb420ca7e65b87");
-        assert_eq!(f.expected_sequence_digest, "6787fe4650984880");
+        assert_eq!(f.expected_final_hash, "0e590d3818dd7042");
+        assert_eq!(f.expected_sequence_digest, "f78c98bf964e1b53");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -459,7 +459,7 @@ mod tests {
         // re-record, same commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "daeb420ca7e65b87"
+            "0e590d3818dd7042"
         );
     }
 

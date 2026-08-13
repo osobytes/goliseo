@@ -310,52 +310,59 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
 ///
 /// AGENTS.md §9 requires every feature to ship one of these, and the
 /// locomotion rework is the first feature to register a whole *family* of
-/// knobs. `LOCO_CARRY_TOP_MULT` is the one with a claim worth asserting: it
-/// is how fast a body may move with the ball at its feet relative to the same
-/// body empty-handed.
+/// knobs. `LOCO_BASE_TURN` is the one worth asserting: it is the shared
+/// angular rate every context multiplies, for the movement heading and for
+/// facing alike, so it is the knob that makes turn arcs exist at all. Halve
+/// it and bodies commit to a line for longer, take longer to work the ball
+/// into a chance, and the gaps between chances get LONGER.
 ///
-/// **The direction is the opposite of the issue's intuition, and that is the
-/// finding.** The issue reasons that a slower carrier is caught more often, so
-/// turnovers rise. Measured, lowering the multiplier LOWERS turnovers by 1.12
-/// per minute against a 1.08 threshold. The mechanism is visible in a second,
-/// independent measurement: in `gc-sim`'s own outfield AI baseline the same
-/// change raises `ai_dribble_close_share` and roughly halves
-/// `ai_dribble_heavy_losses_per_min`. A carrier moving slower relative to its
-/// own touch push keeps the ball tighter to its feet, and a ball at the feet
-/// is not a ball being nicked. The claim asserted here is the corroborated
-/// one, not the assumed one.
+/// ## What the issue proposed, and what it measures
 ///
-/// The issue proposes `possession_balance` for this knob. Measured, that is
-/// the wrong pairing at any seed count a per-PR gate can afford: the metric's
-/// per-match sd is 0.11 against a paired delta of 0.02, so 48 seeds report
-/// `DECORATION` for a knob that is demonstrably wired (the transcript is in
-/// the PR). `turnovers_per_min` reads the same pressure with a fraction of
-/// the variance, so that is what the claim is asserted against.
+/// The issue names two pairings: `loco.run.decel` against a new
+/// `time_to_reverse` metric, and `loco.carry.top_speed_mult` against
+/// `possession_balance`. Neither is used here, for two different reasons, and
+/// both are worth recording rather than quietly dropping.
 ///
-/// The issue also proposes a `time_to_reverse` metric with a
-/// `LOCO_RUN_DECEL_MULT` claim against it. That metric needs new
-/// `MetricsPlayerView` fields and both harness adapters, which is a follow-up
-/// PR in this stack; this test is the coverage the primitive ships with, not
-/// the coverage it ends up with.
+/// `time_to_reverse` does not exist yet: it needs new `MetricsPlayerView`
+/// fields and both harness adapters, which is a follow-up PR in this stack.
+///
+/// The carry/possession pairing was measured and is too subtle for any seed
+/// count a per-PR gate can afford. `possession_balance`'s per-match sd is
+/// 0.11 against a paired delta of 0.02; swapping to `turnovers_per_min`
+/// (same pressure, far less variance) and going to 96 seeds and full-length
+/// matches still lands at -0.28 against a 0.38 threshold — five minutes of
+/// compute to report `DECORATION` for a knob that is not decoration. The
+/// contract is right to refuse it; that is the gate working. It is recorded
+/// here because "raise the seeds until it passes" is the tempting wrong
+/// answer, and because the balance sweep, which can afford the seeds, is
+/// where that pairing belongs.
 #[test]
-fn carrying_speed_moves_the_turnover_rate() {
+fn turn_rate_moves_the_gaps_between_chances() {
     let seeds = seeds(48);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
-        knob: "LOCO_CARRY_TOP_MULT",
-        metric: "turnovers_per_min",
+        knob: "LOCO_BASE_TURN",
+        metric: "longest_drought_s",
         seeds: &seeds,
         duration: DURATION,
-        perturbation: None,
-        // The direction is the claim, not an afterthought: a slower carrier
-        // takes tighter touches and loses the ball LESS. A knob wired
-        // backwards passes any magnitude-only assertion.
-        expect: ExpectedShift::Decreases,
+        // The full declared range rather than the default third of it: this
+        // knob is the shared BASE, so every context multiplier damps it, and
+        // a third of the range does not clear the metric's own noise.
+        perturbation: Some(1.0),
+        // The direction is the claim, not an afterthought: bodies that turn
+        // more slowly take LONGER between chances. A knob wired backwards
+        // passes any magnitude-only assertion.
+        expect: ExpectedShift::Increases,
         direction: Some(Perturb::Down),
     });
     assert!(outcome.moved, "{}", outcome.report);
     assert!(
         outcome.delta.abs() > outcome.threshold,
         "the verdict must be the measurement, not a flag: {}",
+        outcome.report
+    );
+    assert!(
+        outcome.noise.sd > 0.0,
+        "the noise floor must be measured, not assumed: {}",
         outcome.report
     );
     assert!(

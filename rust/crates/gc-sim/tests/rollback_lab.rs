@@ -505,7 +505,7 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // same commit as `gc-data/src/omp1_determinism.json`. Like the two
     // literals in `gc_data::omp1_determinism`'s own test, #504's documented
     // re-record command does not mention this one either.
-    assert_eq!(rollback_lab::tape_digest(&tape), "4377af400b8a1c36");
+    assert_eq!(rollback_lab::tape_digest(&tape), "35dd70af7e9b32a3");
 }
 
 #[test]

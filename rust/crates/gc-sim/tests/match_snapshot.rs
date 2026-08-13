@@ -1940,12 +1940,12 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
     // NOTE: this length is a property of the 120 stepped ticks above, not of
     // the snapshot SHAPE -- the canonical number encoding is variable-width,
     // so a value that lands on a different mantissa costs a different number
-    // of bytes. #488 (locomotion) moved eight bytes' worth without touching a
-    // field: 21343 -> 21351, 20825 -> 20833. What the test actually proves --
+    // of bytes. #488 (locomotion) moved seven bytes' worth without touching a
+    // field: 21343 -> 21350, 20825 -> 20832. What the test actually proves --
     // that the arithmetic below accounts for every byte, and that decision
     // children are positional -- is unchanged.
     let encoded = match_snapshot::encode(&match_snapshot::capture(&state, None));
-    let expected = 21351 - 10 * legacy_key_bytes
+    let expected = 21350 - 10 * legacy_key_bytes
         + 10 * "z;".len()
         + "k9:formation;".len()
         + "s5:2-1-1;".len()
@@ -1953,7 +1953,7 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
         + 10 * "k19:keeper_get_up_timer;nz;".len()
         + transition_bytes;
     assert_eq!(encoded.len(), expected);
-    assert_eq!(encoded.len(), 20833);
+    assert_eq!(encoded.len(), 20832);
 
     let decision_marker = "k17:outfield_decision;d;";
     let next_field_marker = "k9:is_keeper;";

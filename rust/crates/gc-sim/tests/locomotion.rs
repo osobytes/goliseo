@@ -190,7 +190,15 @@ fn facing_converges_without_overshoot_at_every_tunable_extreme() {
                 };
                 let cmd = moving(Vec2::new(0.0, 0.0), FacingIntent::Toward(want));
                 let mut remaining = signed_angle(k.facing, want).abs();
-                let opening_sign = signed_angle(k.facing, want).signum();
+                // Sign stability is only meaningful once the body is off the
+                // antipode. At exactly 180 degrees the two arcs are the same
+                // length, `+pi` and `-pi` name the same direction, and which
+                // side of atan2's branch cut the first step lands on is not
+                // an overshoot. `remaining` still has to fall monotonically
+                // through that tick, which is the property that matters, and
+                // it is asserted unconditionally below.
+                const SETTLED: f64 = 3.0;
+                let mut settled_sign: Option<f64> = None;
                 let mut landed = None;
                 for tick in 0..2400 {
                     k = locomotion::step(k, &cmd, &profile, DT, &tune);
@@ -201,13 +209,16 @@ fn facing_converges_without_overshoot_at_every_tunable_extreme() {
                          from {remaining} to {} -- that is overshoot",
                         next.abs()
                     );
-                    if next != 0.0 {
-                        assert!(
-                            next.signum() == opening_sign,
-                            "{id}={value}, start {start_deg} deg, tick {tick}: the remaining \
-                             angle changed sign -- the facing crossed its target and is \
-                             oscillating"
-                        );
+                    if next != 0.0 && next.abs() < SETTLED {
+                        match settled_sign {
+                            None => settled_sign = Some(next.signum()),
+                            Some(sign) => assert!(
+                                next.signum() == sign,
+                                "{id}={value}, start {start_deg} deg, tick {tick}: the remaining \
+                                 angle changed sign -- the facing crossed its target and is \
+                                 oscillating"
+                            ),
+                        }
                     }
                     remaining = next.abs();
                     if remaining == 0.0 && landed.is_none() {
