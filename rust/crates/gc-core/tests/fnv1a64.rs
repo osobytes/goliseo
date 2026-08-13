@@ -30,3 +30,21 @@ fn core_fnv1a64_keeps_bulk_and_byte_at_a_time_updates_identical_across_every_byt
     assert_eq!(hash(&bytes), "4242dc5249c33625");
     assert_eq!(incremental.hex(), "4242dc5249c33625");
 }
+
+/// `finish()` is the zero-allocation escape hatch for a caller that only
+/// wants the `u64` (a cache key, a fingerprint compared with `==`) --
+/// `gc_sim::ball_prediction::ball_fingerprint` is exactly that caller. It
+/// must report the same bits `hex()` renders, for every published vector,
+/// so the two never silently drift into disagreement.
+#[test]
+fn core_fnv1a64_finish_agrees_with_hex_on_every_published_vector() {
+    for input in [b"".as_slice(), b"a", b"foobar", b"hello"] {
+        let mut state = Fnv1a64State::new();
+        state.update(input);
+        assert_eq!(
+            format!("{:016x}", state.finish()),
+            state.hex(),
+            "finish() disagreed with hex() for input {input:?}"
+        );
+    }
+}
