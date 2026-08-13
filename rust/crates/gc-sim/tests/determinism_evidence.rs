@@ -223,9 +223,12 @@ fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence
     assert!(report.contains("coverage=tackle,aerial,keeper,full_time"));
     assert!(!report.contains("coverage=goal_kickoff"));
 
-    // The reported half must be *present and observed*, not pinned. An
-    // `events=` field echoing the fixture's own frozen counts back would look
-    // identical here and report nothing, which is what it did before #505.
+    // The reported half must be *present*. It cannot be shown *observed* here:
+    // on an unperturbed tree `result.observed` equals the fixture's own frozen
+    // claims by construction, so a reporter echoing the fixture back is
+    // indistinguishable from one reading the run. That distinction is what
+    // `the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures`
+    // below exists for — do not weaken it into this test.
     assert!(report.contains("|drift="));
     assert!(report.contains(&format!(
         "|score={}-{}|",
@@ -343,6 +346,111 @@ fn the_behavioral_drift_report_names_a_moved_window_event_tick() {
         )),
         "windows.tackle.event_tick:24->25;windows.keeper.event_tick:1692->none"
     );
+}
+
+/// Extract one `name=value` field from a rendered `GC_DETERMINISM` line, so
+/// the assertions below compare whole field values rather than hunting for
+/// substrings that a neighbouring field could satisfy.
+fn report_field(report: &str, name: &str) -> String {
+    let prefix = format!("{name}=");
+    report
+        .split('|')
+        .find_map(|part| part.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("the report must carry a {name}= field"))
+        .to_string()
+}
+
+/// `report()`'s own go-red demonstration, and the only place in this file
+/// where the reporter's central claim is provable at all.
+///
+/// `events=` and `score=` are observations *of this run*. Before #505
+/// `events=` iterated the fixture's frozen `event_counts` — harmless while a
+/// count mismatch was an `Err` no caller could reach this line past, and a lie
+/// the moment that check became a report. Since the demotion, `events=` is the
+/// only place a reader learns what actually happened, so an unasserted
+/// reporter here is precisely the failure shape AGENTS.md §9 warns about.
+///
+/// Why it cannot be proved by the campaign test: on a green tree the
+/// campaign's observation *equals* the frozen fixture by construction, so the
+/// echoing implementation and the correct one render byte-identical lines.
+/// Reverting `event_parts` to iterate `fixture.event_counts` leaves every
+/// other test in this file green. Handing `report` a result whose observation
+/// deliberately diverges is the only thing that separates them — and since
+/// `report` is pure over its argument and every field of
+/// `DeterminismEvidenceResult` is `pub`, it costs no campaign to do.
+#[test]
+fn the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures() {
+    let frozen = determinism_evidence::fixture_claims();
+    assert!(
+        !frozen.event_counts.is_empty(),
+        "the frozen fixture must record counts for this test to have anything to diverge from"
+    );
+
+    // A divergence of the shape #488 and #489 actually produce: the same event
+    // kinds still fire, at different counts, with a different scoreline.
+    let observed = determinism_evidence::BehaviorClaims {
+        score_home: frozen.score_home + 3,
+        score_away: frozen.score_away + 4,
+        event_counts: frozen
+            .event_counts
+            .iter()
+            .map(|(name, count)| (name.clone(), count + 1000))
+            .collect(),
+        window_event_ticks: frozen.window_event_ticks.clone(),
+    };
+    let result = determinism_evidence::DeterminismEvidenceResult {
+        fixture_id: "test-only".to_string(),
+        ticks: 7201,
+        boundaries: 7202,
+        final_hash: "0".to_string(),
+        sequence_digest: "0".to_string(),
+        score_home: observed.score_home,
+        score_away: observed.score_away,
+        outcome: determinism_evidence::Outcome::Away,
+        snapshot_bytes: 0,
+        coverage: determinism_evidence::DeterminismCoverage::default(),
+        drift: determinism_evidence::behavioral_drift(&frozen, &observed),
+        observed: observed.clone(),
+    };
+    let report = determinism_evidence::report(&result);
+
+    let render_counts = |claims: &determinism_evidence::BehaviorClaims| {
+        claims
+            .event_counts
+            .iter()
+            .map(|(name, count)| format!("{name}:{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert_ne!(
+        render_counts(&observed),
+        render_counts(&frozen),
+        "the perturbation must actually diverge from the recording, or this test proves nothing"
+    );
+
+    assert_eq!(
+        report_field(&report, "events"),
+        render_counts(&observed),
+        "events= must render this run's counts"
+    );
+    assert_ne!(
+        report_field(&report, "events"),
+        render_counts(&frozen),
+        "events= must not echo the frozen fixture's counts back — that is the pre-#505 bug"
+    );
+    assert_eq!(
+        report_field(&report, "score"),
+        format!("{}-{}", observed.score_home, observed.score_away),
+        "score= must render this run's score"
+    );
+    assert_ne!(
+        report_field(&report, "score"),
+        format!("{}-{}", frozen.score_home, frozen.score_away),
+        "score= must not echo the fixture's expected_score — the same bug one field over"
+    );
+    // And the drift that same divergence produces still reaches the line, so a
+    // reader of a drifted run sees both what happened and what moved.
+    assert_ne!(report_field(&report, "drift"), "none");
 }
 
 #[test]

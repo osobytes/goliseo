@@ -1144,6 +1144,13 @@ pub fn record(tune: &Tuning) -> Result<Omp1Recording, String> {
 /// `event_counts` back — harmless while a count mismatch was an `Err` nobody
 /// could reach this line past, and a lie the moment that check became a
 /// report.
+///
+/// That distinction is invisible to a campaign on a green tree, where the
+/// observation and the fixture are equal by construction, so it is pinned by
+/// `the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures` in
+/// this crate's `tests/determinism_evidence.rs` — which feeds `report` a
+/// deliberately divergent observation. Change either field's source and that
+/// test is what goes red; nothing else will.
 #[must_use]
 pub fn report(result: &DeterminismEvidenceResult) -> String {
     let fixture = omp1_determinism::fixture();
