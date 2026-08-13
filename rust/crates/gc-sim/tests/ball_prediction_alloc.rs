@@ -614,3 +614,75 @@ fn the_steady_state_guard_actually_detects_a_deliberate_allocation() {
          assertions in this file are not actually protecting anything"
     );
 }
+
+// ---------------------------------------------------------------------
+// flush_tail's own push_cursor() call -- distinct from the inline push
+// inside extend_one -- is unreachable from every fixture above. All of them
+// use `sample_stride = 1` (the default), under which a successful
+// `extend_one` always pushes exactly at the point a subsequent stop would
+// otherwise flush, so `stored + TIME_EPSILON < cursor_time` is never true at
+// a stop. This is the same shape as the `ExtendStop::Budget` gap fixed
+// earlier in this file's history: a default config value making a branch
+// unreachable from the whole suite. `ball_prediction.rs` already has
+// fixtures with `sample_stride > 1` (`:204`, `:613`), so this borrows the
+// shape rather than inventing a new one.
+// ---------------------------------------------------------------------
+
+/// Chosen so a stop lands strictly mid-stride: `MID_STRIDE_STEP_BUDGET %
+/// MID_STRIDE_SAMPLE_STRIDE != 0` (`40 % 3 == 1`), so the last inline push
+/// inside `extend_one` lands at step 39 (a multiple of 3) and the
+/// `ExtendStop::Budget` stop lands at step 40 -- one tick later, not itself
+/// a stride multiple, which is exactly the gap `flush_tail`'s own push
+/// exists to close. Verified directly before writing this test (not merely
+/// inferred from the arithmetic): a throwaway instrumented run reported
+/// `sample_count() == 15`, one more than the 14 inline pushes (`t = 0` plus
+/// multiples of 3 up to 39) would produce on their own.
+const MID_STRIDE_SAMPLE_STRIDE: i64 = 3;
+const MID_STRIDE_STEP_BUDGET: i64 = 40;
+
+fn mid_stride_config() -> BallPredictionConfig {
+    BallPredictionConfig {
+        step_budget: MID_STRIDE_STEP_BUDGET,
+        sample_stride: MID_STRIDE_SAMPLE_STRIDE,
+        ..BallPredictionConfig::default()
+    }
+}
+
+fn warmed_mid_stride() -> (BallPredictor, MatchState) {
+    let state = flying_ball_state();
+    let mut predictor = BallPredictor::new(mid_stride_config());
+    predictor.begin_tick();
+    let horizon = predictor.config().max_horizon;
+    let _ = predictor.position_at_time(&state, horizon - 0.001);
+    (predictor, state)
+}
+
+#[test]
+fn steady_state_flush_tail_push_mid_stride_allocates_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut predictor, state) = warmed_mid_stride();
+    let horizon = predictor.config().max_horizon;
+
+    let bytes = measure_allocations(|| {
+        predictor.begin_tick();
+        let answer = predictor.position_at_time(&state, horizon - 0.001);
+        assert_eq!(
+            answer, None,
+            "this test's premise requires the same budget-denied stop as the tests above, \
+             this time landing mid-stride so flush_tail's own push_cursor() fires"
+        );
+    });
+
+    assert_eq!(
+        bytes, 0,
+        "flush_tail's push_cursor(), reached by a stop landing mid-stride, allocated {bytes} \
+         bytes at steady state"
+    );
+    assert_eq!(
+        predictor.sample_count(),
+        15,
+        "this test's premise requires flush_tail's push to have actually fired (14 inline \
+         pushes plus 1 from flush_tail); if this is 14, the mid-stride stop stopped landing on \
+         a stride boundary and no longer exercises the branch this test is for"
+    );
+}
