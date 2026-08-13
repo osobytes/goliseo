@@ -314,7 +314,7 @@ does not silently accept a repeated-family lineup.
 - #111 snapshots, hashes, replays, predicts, and confirms every authoritative
   combat field/event.
 - #112 emits only the same observable abstract intent available to humans.
-- #113 presents these states without inventing outcomes in `game/`.
+- #113 presents these states without inventing outcomes in `ts/packages/render`.
 - #114 predeclares metrics and tunes without weakening the anti-chain cap.
 
 Any downstream need to change targeting, control vocabulary, keeper immunity,

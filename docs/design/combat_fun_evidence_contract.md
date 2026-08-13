@@ -887,7 +887,7 @@ waiting for #151; the later human gate remains required for #114.
 
 ### 4.7 Human-proxy and adversarial policy roles
 
-`combat_sim_observation/v1` is the only schema available inside `sim/` and to
+`combat_sim_observation/v1` is the only schema available inside `gc-sim` and to
 shipped gameplay AI. It contains authoritative public simulation state only:
 
 - self: stable player/slot/team id, family and public source-sequence id,
@@ -929,7 +929,7 @@ use the section 4.0 canonical encoding. The allowlist and digest cover the
 schema tag, row counts, row order, every public field above, and their catalog
 versions, and reject a missing, duplicate, reordered, or undeclared field.
 
-`human_proxy_observation/v1` is evidence-only and is built outside `sim/`. It
+`human_proxy_observation/v1` is evidence-only and is built outside `gc-sim`. It
 joins a simulation observation to recorded cue visible/occluded state,
 presented cue geometry, viewport/theme/presentation identity, render/device
 timestamps, and accessibility presentation. The harness then applies a

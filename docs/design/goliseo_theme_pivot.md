@@ -76,9 +76,9 @@ families keeps the match learnable.
    loot cannot rescue an unfun fixed-loadout match.
 8. **Manager choices stay visible.** A loadout earns its setup cost only when
    the player can identify its effect during the next match.
-9. **Presentation does not own outcomes.** `sim/` resolves actions and emits
-   states. `game/` selects animations, particles, sound, camera response, and
-   attached models.
+9. **Presentation does not own outcomes.** `gc-sim` resolves actions and emits
+   states. `ts/packages/render` selects animations, particles, sound, camera
+   response, and attached models.
 
 ## Multi-theme art rules
 
