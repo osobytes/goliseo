@@ -1,5 +1,12 @@
 # OMP-1 determinism evidence
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 Status: **native pass on the authoritative snapshot-v11 fixture**. The accepted
 snapshot-v4 Chrome/Firefox evidence remains historical until CI records the v11
 browser run; the snapshot-v1 browser artifact is also preserved below.
@@ -51,6 +58,47 @@ floating-point countdown rather than a change to the 60 Hz authority. OMP-2
 must preserve this recorded boundary or deliberately replace the countdown
 with an integer tick budget and version the fixture.
 
+**What a campaign gates on is narrower than what it checks** (#505, #512). Two
+repository-owner decisions, recorded on those issues, split the campaign's
+assertions by what they prove:
+
+| Gated — the run goes red | Reported — printed, never red |
+| --- | --- |
+| every boundary hash, `expected_final_hash`, `expected_sequence_digest`, two independent replays agreeing, every restore window replaying to its pinned hashes | `DeterminismCoverage`: which of a tackle, a catch, a header and a full time **occurred** |
+| the recording reaches full time and consumes exactly `frame_count` frames | `expected_score` |
+| | `event_counts` |
+| | each window's `event_tick`, including whether the window still contains the event it is scoped around |
+
+**After #512, OMP-1 gates on exactly one thing: the boundary-hash chain.** #505
+drew the line at *"these behaviors occurred"* against *"exactly 147 tackles
+occurred and the score was 1-0"*, keeping the first as a gate. #512 withdrew
+that carve-out on measurement: this fixture's `frame_wires` are **frozen button
+presses**, so `MOVE_ACCEL` 1100 → 1105 — 0.45% — puts every player somewhere
+slightly different, the recorded presses stop producing the header, and the
+campaign failed `fixture did not cover aerial`. With frozen inputs, *which*
+behaviors occurred is a claim about one recorded scenario exactly as much as
+*how many* is. All of it is incidental to the determinism guarantee the fixture
+exists to provide, and gating on any of it foreclosed every queued gameplay
+rework (#488, #489, #490, #491).
+
+**The gap that leaves.** Nothing in this repository now gates "the simulation
+still produces football". That is real and is not being papered over: the
+replacement is **#518**, a live-AI behavior fixture whose bots are driven by
+*current* code and therefore adapt to a tuning change, so it can carry the
+claim OMP-1 structurally cannot. It was filed with #512's decision precisely so
+the gap would not be left as an intention.
+
+A moved claim is reported as **drift** — the recorded value and the current
+one, side by side — through three channels: `scripts/check.sh`'s determinism
+gate (`coverage=` and `drift=` on the `GC_DETERMINISM` line, the latter
+escalated to a `BEHAVIORAL DRIFT` block when non-empty),
+`ts/packages/wasm/src/determinism.spec.ts`'s log line, and the
+`record_omp1_derived_baseline` recorder's warning block. A lost headline
+behavior appears as `coverage.aerial:covered->absent`. Drift is not
+self-evidently fine: read it the way a drifted boundary hash is read —
+intended, or a finding? If intended, record it in the PR that causes it, with
+the previous value and the new one.
+
 ## Hash and repeated-run result
 
 Every boundary is encoded with canonical snapshot version 11 and hashed with
@@ -68,15 +116,18 @@ The authoritative values are:
 boundaries=7202
 final_hash=bfbb106aea5480f8
 sequence_digest=0bfd0ed355f87322
-score=1-0
-outcome=home
 final_snapshot_bytes=21820
 ```
 
-The complete match produced:
+The complete match produced — **reported, not gated** since #505 (and, for
+`coverage`, since #512); these are the values current drift is measured
+against:
 
 ```text
+coverage=tackle,aerial,keeper,full_time
+score=1-0 outcome=home
 catch=1 claim=3 header=2 pass=4 reception=1 shot=2 tackle=147 touch=180
+window event ticks: tackle=24 keeper=1692 aerial=1788 full_time=7200
 ```
 
 These values were last refreshed for

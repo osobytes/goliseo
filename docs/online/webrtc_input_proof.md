@@ -1,5 +1,12 @@
 # OMP-0 WebRTC input proof
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 This is the issue #5 spike. It proves the browser transport shape needed by a
 later rollback client without putting WebRTC or JavaScript in `core/`, `data/`,
 or `sim/`. It does not drive a real match, provide signaling, or select

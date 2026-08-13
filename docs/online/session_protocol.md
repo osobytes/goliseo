@@ -1,5 +1,13 @@
 # OMP-3 session protocol and immutable match identity
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 `game.online.protocol` is the transport-neutral control-plane contract for the
 first direct-host 4v4 combat-soccer fixture. It defines what peers agree on
 before readiness and how later coordinators describe lifecycle events. It does

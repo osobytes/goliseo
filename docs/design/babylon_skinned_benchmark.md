@@ -1,5 +1,12 @@
 # Babylon skinned-character benchmark (#341)
 
+> **Pre-port record (LÖVE/Lua), kept as history.** Everything below was written
+> against the Lua tree on LÖVE that commit `2c0d449` (#467) deleted when the
+> Rust + TypeScript port reached parity. Its file paths, module names, commands
+> and measurements describe that tree: they are accurate for the work they
+> record and **name nothing you can open or run today**. The live tree is
+> `rust/crates/gc-*` and `ts/packages/*` — see `ARCHITECTURE.md`.
+
 **Question.** #330 chooses between migrating presentation to Babylon and optimising
 the LÖVE renderer, and it rests on an assumption: that a real animation system
 handles skeletons cheaply enough that character count stops being the binding

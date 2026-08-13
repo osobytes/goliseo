@@ -1,5 +1,13 @@
 # OMP-1 fixed simulation tick
 
+> **Module names below are pre-port `require` paths.** The contract this document
+> describes is current; the way it names files is not. Read `sim.foo` as
+> `gc_sim::foo` (`rust/crates/gc-sim/src/foo.rs`), `game.online.foo` as
+> `gc_netcode::foo`, `core.foo` as `gc_core::foo`, `data.foo` as `gc_data::foo`,
+> and any `game/**` or `spec/**` path as its `ts/packages/**` counterpart. A
+> `love .` command, a `love.*` API or a love.js measurement is **pre-port
+> evidence** — commit `2c0d449` (#467) deleted that tree.
+
 Live matches advance on exactly 60 simulation ticks per second. Rendering,
 input sampling, audio ambience, replay playback, and renderer-owned effects
 continue on the display's normal render cadence; none of them may pass a
