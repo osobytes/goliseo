@@ -136,6 +136,19 @@ export interface DeterminismEvidence {
   readonly score_away: number;
   readonly outcome: "home" | "away" | "draw";
   readonly snapshot_bytes: number;
+  /**
+   * The headline behaviors the campaign observed, comma-joined in
+   * `goal_kickoff,tackle,aerial,keeper,full_time` order. The **gated** half of
+   * the split issue #505 recorded: assert on this, not on the scoreline.
+   */
+  readonly coverage: string;
+  /**
+   * Every behavioral claim of the frozen recording this build no longer
+   * reproduces: `"none"`, or `claim:recorded->observed` entries joined by
+   * `;`. Reported, never gating — but surface it. A demoted assertion that
+   * prints nothing is a deleted assertion.
+   */
+  readonly behavioral_drift: string;
 }
 
 /**

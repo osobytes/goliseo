@@ -185,24 +185,272 @@ fn determinism_evidence_migrates_only_wires_that_were_canonical_within_the_v1_bo
     assert!(determinism_evidence::migrate_legacy_fixture_wire(&oversized).is_err());
 }
 
+/// The campaign's **gated** half: the fixture still replays deterministically
+/// to its pinned hashes, and still covers the four headline behaviors it is
+/// evidence of.
+///
+/// What this test deliberately no longer asserts (#505, decision recorded on
+/// the issue): the score, the event counts and the per-window event ticks.
+/// Those are read off `result` and printed below rather than compared, so a
+/// gameplay rework can move them without failing a determinism test that has
+/// nothing to do with determinism. The reporting that replaces them is
+/// exercised by the three `the_behavioral_drift_report_*` tests, and surfaced
+/// to humans by `scripts/check.sh`'s determinism gate and
+/// `ts/packages/wasm/src/determinism.spec.ts`.
 #[test]
 fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence_command() {
     let tune = Tuning::new();
     let result = determinism_evidence::verify(&tune).expect("the frozen OMP-1 fixture reproduces");
     assert_eq!(result.ticks, 7201);
     assert_eq!(result.boundaries, 7202);
-    assert_eq!(result.score_home, 1);
-    assert_eq!(result.score_away, 0);
-    assert_eq!(result.outcome, determinism_evidence::Outcome::Home);
     assert!(!result.coverage.goal_kickoff);
     assert!(result.coverage.tackle);
     assert!(result.coverage.aerial);
     assert!(result.coverage.keeper);
     assert!(result.coverage.full_time);
 
+    // As recorded, and as reproduced by this build: 1-0 home; 147 tackles,
+    // 180 touches, 2 headers, 1 catch; tackle at tick 24, catch at 1692,
+    // header at 1788, full time at 7200. Printed rather than asserted — if a
+    // gameplay change moved these, that is the demotion working. Restate the
+    // new values here and say why in the PR that moves them.
     let report = determinism_evidence::report(&result);
+    println!("{report}");
+    println!(
+        "drift vs the frozen recording: {}",
+        determinism_evidence::render_drift(&result.drift)
+    );
     assert!(report.contains("coverage=tackle,aerial,keeper,full_time"));
     assert!(!report.contains("coverage=goal_kickoff"));
+
+    // The reported half must be *present*. It cannot be shown *observed* here:
+    // on an unperturbed tree `result.observed` equals the fixture's own frozen
+    // claims by construction, so a reporter echoing the fixture back is
+    // indistinguishable from one reading the run. That distinction is what
+    // `the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures`
+    // below exists for — do not weaken it into this test.
+    assert!(report.contains("|drift="));
+    assert!(report.contains(&format!(
+        "|score={}-{}|",
+        result.observed.score_home, result.observed.score_away
+    )));
+    for (name, count) in &result.observed.event_counts {
+        assert!(
+            report.contains(&format!("{name}:{count}")),
+            "the report must carry the observed count for {name}"
+        );
+    }
+    assert_eq!(
+        result
+            .observed
+            .window_event_ticks
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["tackle", "keeper", "aerial", "full_time"],
+        "every window reports the tick its subject fired on"
+    );
+}
+
+/// The reported half's own go-red demonstration, standing rather than
+/// transcribed into a commit message (AGENTS.md §9, and the shape #502
+/// settled on). `behavioral_drift` is pure over two `BehaviorClaims`, so each
+/// class of drift is provable in microseconds instead of 7,201 ticks.
+///
+/// Without these three tests, a refactor that quietly stopped comparing one
+/// of the three demoted claims would look exactly like a build with no drift.
+#[test]
+fn the_behavioral_drift_report_names_a_moved_score_and_event_count() {
+    let recorded = determinism_evidence::BehaviorClaims {
+        score_home: 1,
+        score_away: 0,
+        event_counts: [("tackle".to_string(), 147), ("touch".to_string(), 180)]
+            .into_iter()
+            .collect(),
+        window_event_ticks: [("tackle".to_string(), Some(24))].into_iter().collect(),
+    };
+    assert!(determinism_evidence::behavioral_drift(&recorded, &recorded).is_empty());
+    assert_eq!(
+        determinism_evidence::render_drift(&determinism_evidence::behavioral_drift(
+            &recorded, &recorded
+        )),
+        "none"
+    );
+
+    let mut observed = recorded.clone();
+    observed.score_away = 2;
+    observed.event_counts.insert("tackle".to_string(), 151);
+    let drift = determinism_evidence::behavioral_drift(&recorded, &observed);
+    assert_eq!(
+        determinism_evidence::render_drift(&drift),
+        "score:1-0->1-2;event_counts.tackle:147->151"
+    );
+    assert_eq!(drift[0].claim, "score");
+    assert_eq!(drift[0].recorded, "1-0");
+    assert_eq!(drift[0].observed, "1-2");
+}
+
+/// An event kind the recording never saw, and one it saw that this build does
+/// not, are both named — the two directions `finish_campaign` used to return
+/// `fixture gained unexpected event` / `fixture event count drifted` for.
+#[test]
+fn the_behavioral_drift_report_names_a_gained_and_a_lost_event_kind() {
+    let recorded = determinism_evidence::BehaviorClaims {
+        score_home: 1,
+        score_away: 0,
+        event_counts: [("catch".to_string(), 1)].into_iter().collect(),
+        window_event_ticks: Default::default(),
+    };
+    let observed = determinism_evidence::BehaviorClaims {
+        event_counts: [("save".to_string(), 3)].into_iter().collect(),
+        ..recorded.clone()
+    };
+    assert_eq!(
+        determinism_evidence::render_drift(&determinism_evidence::behavioral_drift(
+            &recorded, &observed
+        )),
+        "event_counts.catch:1->absent;event_counts.save:absent->3"
+    );
+}
+
+/// A window whose event moved, and one whose event never fired at all. The
+/// second case is the one that matters: `verify_window` still fails a window
+/// that lost its event entirely (that is coverage, and it stays gated), so a
+/// `none` here can only come from the reporter being handed an incomplete
+/// observation — which is exactly the silent-report failure this test exists
+/// to catch.
+#[test]
+fn the_behavioral_drift_report_names_a_moved_window_event_tick() {
+    let recorded = determinism_evidence::BehaviorClaims {
+        score_home: 1,
+        score_away: 0,
+        event_counts: std::collections::BTreeMap::new(),
+        window_event_ticks: [
+            ("tackle".to_string(), Some(24)),
+            ("keeper".to_string(), Some(1692)),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let observed = determinism_evidence::BehaviorClaims {
+        window_event_ticks: [
+            ("tackle".to_string(), Some(25)),
+            ("keeper".to_string(), None),
+        ]
+        .into_iter()
+        .collect(),
+        ..recorded.clone()
+    };
+    assert_eq!(
+        determinism_evidence::render_drift(&determinism_evidence::behavioral_drift(
+            &recorded, &observed
+        )),
+        "windows.tackle.event_tick:24->25;windows.keeper.event_tick:1692->none"
+    );
+}
+
+/// Extract one `name=value` field from a rendered `GC_DETERMINISM` line, so
+/// the assertions below compare whole field values rather than hunting for
+/// substrings that a neighbouring field could satisfy.
+fn report_field(report: &str, name: &str) -> String {
+    let prefix = format!("{name}=");
+    report
+        .split('|')
+        .find_map(|part| part.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("the report must carry a {name}= field"))
+        .to_string()
+}
+
+/// `report()`'s own go-red demonstration, and the only place in this file
+/// where the reporter's central claim is provable at all.
+///
+/// `events=` and `score=` are observations *of this run*. Before #505
+/// `events=` iterated the fixture's frozen `event_counts` — harmless while a
+/// count mismatch was an `Err` no caller could reach this line past, and a lie
+/// the moment that check became a report. Since the demotion, `events=` is the
+/// only place a reader learns what actually happened, so an unasserted
+/// reporter here is precisely the failure shape AGENTS.md §9 warns about.
+///
+/// Why it cannot be proved by the campaign test: on a green tree the
+/// campaign's observation *equals* the frozen fixture by construction, so the
+/// echoing implementation and the correct one render byte-identical lines.
+/// Reverting `event_parts` to iterate `fixture.event_counts` leaves every
+/// other test in this file green. Handing `report` a result whose observation
+/// deliberately diverges is the only thing that separates them — and since
+/// `report` is pure over its argument and every field of
+/// `DeterminismEvidenceResult` is `pub`, it costs no campaign to do.
+#[test]
+fn the_report_carries_this_runs_counts_and_score_not_the_frozen_fixtures() {
+    let frozen = determinism_evidence::fixture_claims();
+    assert!(
+        !frozen.event_counts.is_empty(),
+        "the frozen fixture must record counts for this test to have anything to diverge from"
+    );
+
+    // A divergence of the shape #488 and #489 actually produce: the same event
+    // kinds still fire, at different counts, with a different scoreline.
+    let observed = determinism_evidence::BehaviorClaims {
+        score_home: frozen.score_home + 3,
+        score_away: frozen.score_away + 4,
+        event_counts: frozen
+            .event_counts
+            .iter()
+            .map(|(name, count)| (name.clone(), count + 1000))
+            .collect(),
+        window_event_ticks: frozen.window_event_ticks.clone(),
+    };
+    let result = determinism_evidence::DeterminismEvidenceResult {
+        fixture_id: "test-only".to_string(),
+        ticks: 7201,
+        boundaries: 7202,
+        final_hash: "0".to_string(),
+        sequence_digest: "0".to_string(),
+        score_home: observed.score_home,
+        score_away: observed.score_away,
+        outcome: determinism_evidence::Outcome::Away,
+        snapshot_bytes: 0,
+        coverage: determinism_evidence::DeterminismCoverage::default(),
+        drift: determinism_evidence::behavioral_drift(&frozen, &observed),
+        observed: observed.clone(),
+    };
+    let report = determinism_evidence::report(&result);
+
+    let render_counts = |claims: &determinism_evidence::BehaviorClaims| {
+        claims
+            .event_counts
+            .iter()
+            .map(|(name, count)| format!("{name}:{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert_ne!(
+        render_counts(&observed),
+        render_counts(&frozen),
+        "the perturbation must actually diverge from the recording, or this test proves nothing"
+    );
+
+    assert_eq!(
+        report_field(&report, "events"),
+        render_counts(&observed),
+        "events= must render this run's counts"
+    );
+    assert_ne!(
+        report_field(&report, "events"),
+        render_counts(&frozen),
+        "events= must not echo the frozen fixture's counts back — that is the pre-#505 bug"
+    );
+    assert_eq!(
+        report_field(&report, "score"),
+        format!("{}-{}", observed.score_home, observed.score_away),
+        "score= must render this run's score"
+    );
+    assert_ne!(
+        report_field(&report, "score"),
+        format!("{}-{}", frozen.score_home, frozen.score_away),
+        "score= must not echo the fixture's expected_score — the same bug one field over"
+    );
+    // And the drift that same divergence produces still reaches the line, so a
+    // reader of a drifted run sees both what happened and what moved.
+    assert_ne!(report_field(&report, "drift"), "none");
 }
 
 #[test]
@@ -386,45 +634,34 @@ fn record_omp1_derived_baseline() {
     // event_counts, expected_score and windows are derived from the same
     // replay but are the fixture's BEHAVIORAL claims, so they are copied
     // verbatim rather than refreshed (see gc_data::omp1_determinism's module
-    // doc). Say so loudly when the replay disagrees: the re-recorded fixture
-    // will still fail finish_campaign/verify_window, and that is a decision
-    // about what this fixture is evidence of, not a hash refresh.
-    let mut behavioral: Vec<String> = Vec::new();
-    if recording.score_home != fixture.expected_score.home
-        || recording.score_away != fixture.expected_score.away
-    {
-        behavioral.push(format!(
-            "expected_score {}-{} -> {}-{}",
-            fixture.expected_score.home,
-            fixture.expected_score.away,
-            recording.score_home,
-            recording.score_away
-        ));
-    }
-    for (name, pinned_count) in &fixture.event_counts {
-        let actual = recording.event_counts.get(name).copied().unwrap_or(0);
-        if actual != *pinned_count {
-            behavioral.push(format!("event_counts.{name} {pinned_count} -> {actual}"));
-        }
-    }
-    for name in recording.event_counts.keys() {
-        if !fixture.event_counts.contains_key(name) {
-            behavioral.push(format!(
-                "event_counts.{name} absent -> {}",
-                recording.event_counts[name]
-            ));
-        }
-    }
-    for window in &fixture.windows {
-        let key = window.event_kind.as_deref().unwrap_or(&window.name);
-        let actual = recording.event_ticks.get(key).copied();
-        if actual != window.event_tick {
-            behavioral.push(format!(
-                "windows.{}.event_tick {:?} -> {:?}",
-                window.name, window.event_tick, actual
-            ));
-        }
-    }
+    // doc). Since #505 they no longer FAIL the campaign either -- they are
+    // reported. This block is one of the three channels that reporting
+    // reaches a human through, and it is the earliest: re-recording the
+    // derived hashes is exactly when a contributor is deciding whether a
+    // behavior change was intended.
+    //
+    // It shares `behavioral_drift` with the campaign rather than
+    // re-implementing the comparison, so the recorder can never disagree with
+    // the gate about what moved.
+    let observed = determinism_evidence::BehaviorClaims {
+        score_home: recording.score_home,
+        score_away: recording.score_away,
+        event_counts: recording
+            .event_counts
+            .iter()
+            .map(|(name, count)| (name.clone(), *count))
+            .collect(),
+        window_event_ticks: fixture
+            .windows
+            .iter()
+            .map(|window| {
+                let key = window.event_kind.as_deref().unwrap_or(&window.name);
+                (window.name.clone(), recording.event_ticks.get(key).copied())
+            })
+            .collect(),
+    };
+    let behavioral =
+        determinism_evidence::behavioral_drift(&determinism_evidence::fixture_claims(), &observed);
     if behavioral.is_empty() {
         println!(
             "# behavioral claims        unchanged (event_counts, expected_score, window event ticks)"
@@ -439,10 +676,14 @@ fn record_omp1_derived_baseline() {
         println!(
             "# moving them is a larger decision than re-deriving a digest. The document below"
         );
-        println!("# keeps the pinned values, so the gate will still fail on them. Resolve that");
-        println!("# deliberately before capturing this output:");
-        for line in &behavioral {
-            println!("#   {line}");
+        println!("# keeps the pinned values. Since #505 the campaign REPORTS this difference as");
+        println!("# drift instead of failing on it, so nothing downstream will stop you: decide");
+        println!("# here whether it was intended, and record it in the PR that ships the change.");
+        for entry in &behavioral {
+            println!(
+                "#   {} {} -> {}",
+                entry.claim, entry.recorded, entry.observed
+            );
         }
     }
     println!("#");

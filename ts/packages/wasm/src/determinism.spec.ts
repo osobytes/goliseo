@@ -19,6 +19,9 @@ import { loadSimHost } from "./index.ts";
 
 const EXPECTED_FINAL_HASH = "bfbb106aea5480f8";
 const EXPECTED_SEQUENCE_DIGEST = "0bfd0ed355f87322";
+// The behaviors the recording must still exercise. `scripts/check.sh` pins
+// the same string independently as EXPECTED_COVERAGE.
+const EXPECTED_COVERAGE = "tackle,aerial,keeper,full_time";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
@@ -39,13 +42,31 @@ describe("determinism evidence, run inside the compiled wasm module", () => {
     expect(result.sequence_digest).toBe(EXPECTED_SEQUENCE_DIGEST);
 
     // Same fixture facts the native `cargo test` asserts
-    // (`crates/gc-sim/tests/determinism_evidence.rs`), pinned here too so
-    // a divergence in match outcome — not just the two headline digests
-    // — is caught.
+    // (`crates/gc-sim/tests/determinism_evidence.rs`), pinned here too so a
+    // fixture that stopped being this fixture — not just the two headline
+    // digests — is caught.
     expect(result.ticks).toBe(7201);
     expect(result.boundaries).toBe(7202);
-    expect(result.score_home).toBe(1);
-    expect(result.score_away).toBe(0);
-    expect(result.outcome).toBe("home");
+
+    // Replaces the score/outcome assertions that stood here until issue #505
+    // split the campaign's claims by what they prove. "A tackle, a catch, a
+    // header and a full time occurred" is what makes this recording evidence
+    // of anything, and it survives a deliberate gameplay rework. "The score
+    // was 1-0" does not, and gating on it foreclosed every queued one.
+    expect(result.coverage).toBe(EXPECTED_COVERAGE);
+
+    // Reported, never asserted (#505). Logged so a drifted scoreline is still
+    // visible to whoever reads the run — vitest prints console output for a
+    // passing test, which is the point: a demoted assertion that prints
+    // nothing is a deleted assertion. `scripts/check.sh`'s determinism gate
+    // prints the same field independently, from the same compiled module but
+    // outside vitest (AGENTS.md §9: never trust one signal).
+    console.log(
+      `OMP-1 reported, not gated: score=${result.score_home}-${result.score_away} ` +
+        `outcome=${result.outcome} drift=${result.behavioral_drift}`,
+    );
+    // The one thing asserted about the report: that there IS one. An empty
+    // string means the reporting path broke; "none" means it ran and agreed.
+    expect(result.behavioral_drift.length).toBeGreaterThan(0);
   }, 30_000);
 });
