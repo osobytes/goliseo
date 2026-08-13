@@ -541,40 +541,72 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   tunable-registry work), so nothing here was adjusted to chase the band —
   but the direction deserves an honest account rather than a shrug.
 
-  The most likely mechanism, traced from the code rather than guessed: the
-  deleted formula was *unconditionally* on-target-eligible for a grounded or
-  already-landed ball — for `ball_z <= 0, ball_vz <= 0` it is a strictly
-  decreasing, unbounded-below parabola, so both `z_cross < CROSSBAR` and
-  `z_cross <= KEEPER_AIR_GRAB` were satisfied by construction, however far
-  out `tz` actually was. Combined with `keeper::travel_time`'s own cutoff
-  (`ratio < 0.95`, which alone permits `eta` up to roughly 2.5s for a
-  ground shot under `FRICTION = 1.2`), the old code would commit
-  `save_pending` — and arm a multi-second `dive_delay` — against a shot that
-  was still seconds away and barely moving. Nothing in `attempt_save`'s
-  eligibility gate (`dive_timer <= 0 && dive_delay <= 0 &&
-  save_pending.is_none()`) lets a keeper attend to a second, genuinely
-  live shot while committed like that; a concurrent or immediately
-  following real chance could go unaddressed by this code path until the
-  stale commitment times out (`resolve_pending_save`'s `DEAD_SHOT_SPEED`
-  drop-out, or `save_timer`). The predictor-backed version cannot make that
-  mistake: it has nothing authoritative to say about a moment 2+ seconds
-  out, so it defers instead of committing, which plausibly frees the keeper
-  to resolve real chances it used to be spuriously locked out of — read
-  *up* in `save_rate` here, not down. This is offered as the best
-  explanation traced from the code, not a proven root cause; if a reviewer
-  wants to confirm it directly (e.g. by instrumenting how often
-  `attempt_save` used to commit against a `tz` beyond 2.0s in this fixture),
-  that instrumentation does not exist yet.
+  **Tested directly, not just traced — and the verdict is that this 60-seed
+  block's shift does not survive an independent, larger sample.** Two
+  separate instruments, both temporary and removed before this landed
+  (neither is committed):
 
-  A second, smaller, unrelated-direction effect is also real: for a ball
-  already in flight, the deleted formula and the live step function agree
-  exactly on ballistic height *except* for the discretization gap between a
-  continuous quadratic and the 60Hz semi-implicit Euler `ball_flight::step`
-  actually runs (before any bounce), which is a `+0.5 * GRAVITY * dt * t`
-  systematic *upward* bias in the live/predicted height relative to the old
-  formula. That makes some genuinely-in-flight shots read as *less*
-  reachable now (correctly), which pushes in the *other* direction from the
-  effect above and does not explain the net move by itself.
+  1. **A shadow classifier inside `attempt_save`.** At every candidate save
+     evaluation on this same 60-seed fixture, the deleted formula's verdict
+     was computed alongside the real one (never read for a decision) and
+     classified against 8,407 candidate ticks (35 distinct shot episodes hit
+     the deferred case, 7 hit a genuine height disagreement, 0 went the other
+     way — the deleted formula never *misses* a shot the real one would
+     catch, confirming it is a strict superset). Of the 35 deferred episodes,
+     34 resolve into an identical real commit within one tick once `tz`
+     crosses the horizon — the deferral is real but consequence-free almost
+     every time it fires, exactly as `keeper_prediction.rs` proves for one
+     constructed case. Of the 7 genuine-disagreement episodes, only 2 were
+     followed by a goal within 3 seconds. This *is* the failure mode #486
+     names — the deleted formula would have offered the keeper a save
+     attempt on a ball that had already bounced out of reach — but it fires
+     roughly once per 8-9 matches, not every match, which is too rare to
+     move a 60-seed aggregate on its own.
+  2. **A paired significance test, reusing #487's `knob_contract` machinery
+     (`mean_sd`, `NOISE_SIGMAS = 2.0`) even though there is no knob to
+     perturb here — old vs. new is a discrete code branch, not a tunable, so
+     the two arms were run by temporarily bypassing the predictor query in
+     place (uncommitted) rather than through `KnobMoveOpts`.** On the
+     official, pinned 60-seed block (`20001..20060`): paired `save_rate`
+     delta `+0.0180`, SE `0.0109`, **t = 1.66σ** — directionally the same
+     number as the table above (as it must be, same seeds), but *below*
+     `NOISE_SIGMAS`. `goals_total`: delta `-0.167`, SE `0.089`, t = -1.86σ.
+     Neither clears the bar this repository's own convention uses to call a
+     shift real rather than noise. On an independent 200-seed block
+     (`50001..50200`, well clear of every reserved range —
+     `outfield_ai_baseline_keeps_its_seeds_clear_of_every_other_locked_block`
+     enumerates them), the picture does not just fail to replicate, it
+     **flips sign**: paired `save_rate` delta `-0.0025`, SE `0.0027`, t =
+     -0.93σ; `goals_total` delta `+0.080`, SE `0.051`, t = 1.57σ. 144/200
+     matches (72%) are byte-identical between old and new code, matching the
+     60-seed block's ~72% unaffected rate — consistent with a rare,
+     narrowly-scoped mechanism, not a systematic shift. A single outlier
+     match (`+0.60` save_rate) dominates a meaningful share of the 60-seed
+     block's total; that is a sampling-noise signature, not a population
+     effect.
+
+  **Conclusion: this is not a regression.** The mechanism in #1 is real,
+  measured, and unambiguously in the correctness direction (the keeper no
+  longer offers a save attempt on a ball it can't reach) — but it is too
+  rare (roughly one disagreement episode per match, only ~12% of episodes
+  producing any downstream goal) to reliably move `save_rate`/`goals_total`
+  one way or the other on any seed sample tried, official or supplementary.
+  The 60-seed table above is accurate as recorded and the re-freeze below is
+  correct as measured — the pinned seed block is what it is — but it should
+  be read as **this particular seed block's noise**, not as evidence this
+  change pushes the game away from #487's target band. Nothing here was
+  tuned to make either number look better; both the 60-seed and the 200-seed
+  results are reported as measured.
+
+  A second, smaller, mechanistically distinct effect exists but is even
+  smaller: for a ball already in flight, the deleted formula and the live
+  step function agree exactly on ballistic height *except* for the
+  discretization gap between a continuous quadratic and the 60Hz
+  semi-implicit Euler `ball_flight::step` actually runs (before any bounce),
+  a `+0.5 * GRAVITY * dt * t` systematic *upward* bias in the live/predicted
+  height relative to the old formula. It pushes in the opposite direction
+  from #1 (some genuinely-in-flight shots read as *less* reachable, now
+  correctly) and is folded into the same near-zero net result above.
 
   Re-frozen as `baseline_version = 2`
   (`crates/gc-data/src/outfield_ai_baseline.rs`), measured with
