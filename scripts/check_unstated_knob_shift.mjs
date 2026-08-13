@@ -47,12 +47,39 @@
 // expression and finds `noise_floor`'s extent by counting braces, the same
 // trade every other regex-based checker in this repo makes explicitly (see
 // check_presentation_parity.mjs's own "FRAGILITY, STATED HONESTLY"). It does
-// not understand Rust scoping, comments, or string literals -- a `//` line
-// containing the literal text `expect: ExpectedShift::Unstated` would be
-// misread as a call site. That is the conservative failure direction: it
-// costs a reviewer a false positive, never a silent miss dressed as a clean
-// run. A parse that finds zero `.rs` files, or that cannot locate
-// `noise_floor`'s body at all, is a hard error, never a quiet pass.
+// not understand Rust scoping. Two categories of miss, and they are NOT
+// equally handled:
+//
+// - CALL-SITE MATCHING (`CALL_SITE_RE` against raw text). A `//` line
+//   containing the literal text `expect: ExpectedShift::Unstated` reads as a
+//   call site -- a false positive, costing a reviewer a moment, never a
+//   silent miss. But the reverse direction is real and SILENT, not loud: an
+//   import alias (`use ExpectedShift as E;` then `expect: E::Unstated`), a
+//   `const`/`static` holding the variant and referenced by name, or a helper
+//   function that returns `ExpectedShift::Unstated` for the caller to plug
+//   in -- none of these contain the literal text this regex matches, so each
+//   evades the audit entirely and reports `sites=0` for that occurrence, the
+//   same way a metric with no registered extraction function would. Every
+//   one of these requires a deliberate rewrite to reach, not an incidental
+//   code shape a reviewer would write without thinking about this gate; that
+//   is why they are not fixed here, but they are not "the conservative
+//   direction" either, and this file used to imply they were.
+// - EXEMPTION BOUNDARY (`functionBodyLineRange`'s brace counting). This ONE
+//   boundary is load-bearing for the whole audit -- widen it and a real call
+//   site vanishes, not just a hypothetical one -- so it gets two independent
+//   defenses, not one. First, `stripCommentsAndStrings` blanks `//` line
+//   comments and `"..."` string-literal content before any brace is counted,
+//   so the shape review actually found (a stray `{`/`}` sitting inside a
+//   comment) cannot perturb the count. It does NOT strip raw strings
+//   (`r"..."`, `r#"..."#`), byte strings, char literals, or `/* block */`
+//   comments -- second defense: if depth has not returned to 0 by the next
+//   line that looks like another top-level `fn` (same or lesser indentation
+//   as the exempt function's own declaration), that is a hard failure, never
+//   "the body must just be long". So an unhandled construct still cannot
+//   silently widen the exemption into the next function -- it just fails
+//   loudly instead of being stripped away quietly. A parse that finds zero
+//   `.rs` files, or that cannot locate `noise_floor`'s body at all (for
+//   either reason above), is a hard error, never a quiet pass.
 //
 //   node scripts/check_unstated_knob_shift.mjs                 -- check this repo
 //   node scripts/check_unstated_knob_shift.mjs --repo DIR      -- check a copy
@@ -64,8 +91,12 @@
 // stale allowlist entry (the field it excuses no longer uses `Unstated`) is
 // rejected and named; the two real allowlist entries, present, are accepted;
 // a bare `ExpectedShift::Unstated` match arm with no `expect:` prefix is
-// correctly NOT treated as a call site; and `noise_floor`'s own use is exempt
-// even though it is never allowlisted. `scripts/check.sh`'s own self-test
+// correctly NOT treated as a call site; `noise_floor`'s own use is exempt
+// even though it is never allowlisted; a SECOND, undeclared call site smuggled
+// inside an already-allowlisted function is still reported unallowed (one
+// allowlist entry excuses exactly one occurrence, never every occurrence
+// sharing its id); and a stray brace hidden in a comment cannot widen the
+// exemption into the next function. `scripts/check.sh`'s own self-test
 // additionally drives `--repo` over mutated COPIES of the real tree, so the
 // on-disk file walk this uses in the real gate -- which the in-memory
 // fixtures above never exercise -- is proved able to go red too.
@@ -216,11 +247,50 @@ function lineIndexOf(text, charIndex) {
   return line; // 0-indexed
 }
 
+// Blanks a `//` line comment and any `"..."` string-literal content out of
+// one line, so a stray `{`/`}` inside either cannot perturb the brace count
+// below. Not a full lexer: raw strings (`r"..."`, `r#"..."#`), byte strings
+// (`b"..."`), char literals, and `/* block */` comments are NOT recognized --
+// see the header's "FRAGILITY, STATED HONESTLY" for why a brace imbalance
+// from one of those is still caught, just later, by the top-level `fn`
+// boundary in `functionBodyLineRange` rather than by this function.
+function stripCommentsAndStrings(line) {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (inString) {
+      if (ch === "\\") {
+        i += 1; // an escaped character (\" or \\) never ends the string
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "/" && line[i + 1] === "/") {
+      break; // the rest of the line is a line comment
+    }
+    out += ch;
+  }
+  return out;
+}
+
 // The [startLine, endLine] (0-indexed, inclusive) of `fnName`'s body in
-// `text`, found by counting braces from its `fn` declaration line. Not a real
-// parser -- see the header's "FRAGILITY, STATED HONESTLY". Returns `null` if
-// the function cannot be found or its braces never balance; callers must
-// treat that as a hard failure, never as "found nothing to exempt".
+// `text`, found by counting braces -- over comment- and string-stripped text,
+// see `stripCommentsAndStrings` -- from its `fn` declaration line. Not a real
+// parser -- see the header's "FRAGILITY, STATED HONESTLY". Bounded: if the
+// brace depth has not returned to 0 by the next line that looks like another
+// top-level `fn` (same or lesser indentation than `fnName`'s own
+// declaration), that is treated as a parse failure, not as "the body must
+// just be long" -- this is what stops an unhandled construct (a block
+// comment, a raw string) from silently widening the exemption into a second
+// function. Returns `null` if the function cannot be found, its braces never
+// balance, or that boundary is crossed; callers must treat `null` as a hard
+// failure, never as "found nothing to exempt".
 function functionBodyLineRange(text, fnName) {
   const lines = text.split("\n");
   const declRe = new RegExp(`\\bfn\\s+${fnName}\\s*\\(`);
@@ -233,10 +303,22 @@ function functionBodyLineRange(text, fnName) {
   }
   if (startLine === -1) return null;
 
+  const startIndent = lines[startLine].match(/^\s*/)[0].length;
+
   let depth = 0;
   let opened = false;
   for (let i = startLine; i < lines.length; i += 1) {
-    for (const ch of lines[i]) {
+    if (i > startLine) {
+      const indent = lines[i].match(/^\s*/)[0].length;
+      if (indent <= startIndent && FN_DECL_RE.test(lines[i])) {
+        // Another top-level `fn` reached before our own braces balanced --
+        // the count is off (an unhandled comment/string construct, almost
+        // certainly), and continuing would exempt straight into this next
+        // function's body. Refuse rather than guess.
+        return null;
+      }
+    }
+    for (const ch of stripCommentsAndStrings(lines[i])) {
       if (ch === "{") {
         depth += 1;
         opened = true;
@@ -315,11 +397,54 @@ export function auditUnstatedKnobShift(repo, allowlist) {
     sites.push(...callSitesIn(relPath, text, exemptRange));
   }
 
-  const allowedIds = new Map(allowlist.map((entry) => [entry.id, entry.reason]));
-  const foundIds = new Set(sites.map(siteId));
+  // Per-OCCURRENCE, not per-id. `id` (`<path>::<fn>`) names WHICH allowlist
+  // entry can excuse a site, but one entry excuses exactly ONE occurrence,
+  // never every occurrence that happens to share its id. A `Set`/`Map` keyed
+  // on id alone cannot express that: once an id is "present", every site
+  // sharing it reads as covered no matter how many there are -- which is
+  // exactly how a second, undeclared `expect: ExpectedShift::Unstated`
+  // smuggled inside an already-allowlisted function passed review silently.
+  // Counting occurrences per id closes that: an id with 2 sites and 1
+  // allowlist entry reports exactly 1 of them unallowed, not 0.
+  const allowedCountById = new Map();
+  for (const entry of allowlist) {
+    allowedCountById.set(entry.id, (allowedCountById.get(entry.id) ?? 0) + 1);
+  }
 
-  const unallowed = sites.filter((site) => !allowedIds.has(siteId(site)));
-  const stale = allowlist.filter((entry) => !foundIds.has(entry.id));
+  const seenCountById = new Map();
+  const unallowed = [];
+  for (const site of sites) {
+    const id = siteId(site);
+    const seen = seenCountById.get(id) ?? 0;
+    const allowed = allowedCountById.get(id) ?? 0;
+    if (seen < allowed) {
+      seenCountById.set(id, seen + 1);
+    } else {
+      unallowed.push(site);
+    }
+  }
+
+  // Symmetric check for staleness: an id can have MORE allowlist entries than
+  // actual sites too (a site was deleted, or two entries were ever written
+  // for one id by mistake) -- the entries beyond what's actually found are
+  // stale, not just entries whose id has zero sites at all.
+  const totalFoundById = new Map();
+  for (const site of sites) {
+    const id = siteId(site);
+    totalFoundById.set(id, (totalFoundById.get(id) ?? 0) + 1);
+  }
+
+  const usedCountById = new Map();
+  const stale = [];
+  for (const entry of allowlist) {
+    const found = totalFoundById.get(entry.id) ?? 0;
+    const used = usedCountById.get(entry.id) ?? 0;
+    if (used < found) {
+      usedCountById.set(entry.id, used + 1);
+    } else {
+      stale.push(entry);
+    }
+  }
 
   return { filesScanned: files.length, sites, unallowed, stale };
 }
@@ -583,6 +708,84 @@ fn locomotion_top_speed_moves_sprint_distance() {
         FIXTURE_ALLOWLIST,
         /could not locate noise_floor's function body/,
       ) && ok;
+  }
+
+  // BLOCKING FINDING 1 (PR #511 review): a second, undeclared call site
+  // smuggled inside an ALREADY-allowlisted function must still be reported.
+  // One allowlist entry excuses exactly one occurrence sharing its id, never
+  // every occurrence -- see the per-occurrence counting comment in
+  // auditUnstatedKnobShift. Before that fix this fixture passed silently:
+  // the id was present in the allowlist, so both the legitimate site and the
+  // smuggled one read as covered.
+  {
+    const smuggledFiles = new Map(files);
+    smuggledFiles.set(
+      "rust/crates/gc-sim/tests/knob_contract.rs",
+      FIXTURE_KNOB_CONTRACT_TESTS.replace(
+        '            knob: "NOT_A_KNOB",\n            expect: ExpectedShift::Unstated,\n        })\n    });\n}',
+        '            knob: "NOT_A_KNOB",\n            expect: ExpectedShift::Unstated,\n        })\n    });\n' +
+          "    // smuggled: a second, undeclared knob test riding along beside the legitimate one\n" +
+          "    let smuggled = knob_contract::knob_moves_metric(&KnobMoveOpts {\n" +
+          '        knob: "SMUGGLED_KNOB",\n' +
+          "        expect: ExpectedShift::Unstated,\n" +
+          "    });\n}",
+      ),
+    );
+    if (smuggledFiles.get("rust/crates/gc-sim/tests/knob_contract.rs") === FIXTURE_KNOB_CONTRACT_TESTS) {
+      console.error(
+        "FAIL: the smuggled-second-site fixture edit did not change anything -- the scenario no longer reproduces the shape",
+      );
+      ok = false;
+    } else {
+      const result = auditUnstatedKnobShift(new MemoryRepo(smuggledFiles), FIXTURE_ALLOWLIST);
+      const smuggledFn = "knob_contract_panics_on_an_unregistered_knob_or_metric";
+      const totalInFn = result.sites.filter((s) => s.fn === smuggledFn).length;
+      const unallowedInFn = result.unallowed.filter((s) => s.fn === smuggledFn).length;
+      if (result.unallowed.length === 1 && totalInFn === 2 && unallowedInFn === 1) {
+        console.log(
+          "ok  a second, undeclared call site smuggled inside an already-allowlisted function is reported unallowed",
+        );
+      } else {
+        console.error(
+          `FAIL: a second call site smuggled inside ${smuggledFn} should leave 2 sites in that ` +
+            `function with exactly 1 unallowed (and 0 unallowed elsewhere), got ${totalInFn} sites ` +
+            `in-function / ${unallowedInFn} unallowed in-function / ${result.unallowed.length} unallowed total`,
+        );
+        ok = false;
+      }
+    }
+  }
+
+  // BLOCKING FINDING 2 (PR #511 review): a stray brace hidden inside a
+  // `/* block comment */` -- a construct stripCommentsAndStrings does not
+  // recognize, see FRAGILITY, STATED HONESTLY -- must never let the
+  // exemption's brace count silently rebalance inside the NEXT function. It
+  // must hard-fail at the top-level `fn` boundary instead. Before that fix,
+  // this fixture's exemption silently widened past noise_floor's real end
+  // and into knob_moves_metric, swallowing whatever sat there.
+  {
+    const braceInComment = new Map(files);
+    braceInComment.set(
+      KNOB_CONTRACT_SRC,
+      FIXTURE_KNOB_CONTRACT_SRC.replace(
+        "    let opts = KnobMoveOpts {",
+        "    /* a stray brace hides in this block comment: { */\n    let opts = KnobMoveOpts {",
+      ),
+    );
+    if (braceInComment.get(KNOB_CONTRACT_SRC) === FIXTURE_KNOB_CONTRACT_SRC) {
+      console.error(
+        "FAIL: the brace-in-comment fixture edit did not change anything -- the scenario no longer reproduces the shape",
+      );
+      ok = false;
+    } else {
+      ok =
+        expectRed(
+          "a stray brace in a comment cannot widen the exemption past the next function",
+          braceInComment,
+          FIXTURE_ALLOWLIST,
+          /could not locate noise_floor's function body/,
+        ) && ok;
+    }
   }
 
   if (!ok) {
