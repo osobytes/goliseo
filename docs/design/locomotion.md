@@ -113,11 +113,73 @@ true rather than merely asserted.
 Behavioral fixtures are a different matter: the *values* in every replay move,
 because the simulation moves. See the PR for the full list.
 
+## Determinism: the turn math may not touch libm
+
+`sin`, `cos` and `atan2` are the three functions ARCHITECTURE.md §1 names as
+implementation-approximated, and its wasm paragraph is arguing browser against
+browser. Rust links a **different** libm for `wasm32-unknown-unknown` than a
+native build uses, so the two disagree in the low bits. On a per-tick,
+per-player path that is a native peer and a browser peer desyncing in the same
+match — measured, not theorized: the first draft of this module reproduced its
+own re-recorded OMP-1 boundary hashes natively and diverged inside the compiled
+wasm module at boundary 12 of 7,202.
+
+The second draft removed the transcendentals by bounding the rotation with
+**chord** distance in a lerp-then-renormalize. That is deterministic, and it is
+also **not a bounded angular rate** — the defect design review caught. Chord
+`= 2 sin(theta/2)` tracks the angle only while the *remaining* angle is near
+the step, not merely while the step is small, so the achieved rate collapses as
+the remaining angle grows: at a nominal 18°/tick, 89% of nominal at 90°
+remaining, 53% at 135°, **1.3% at 179°**. Facing has no reversal short-circuit,
+so `FacingIntent::Toward` — the jockey/contain case this feature exists for —
+asks for exactly those angles whenever play swings around a defender, whose
+facing would have nearly frozen and then rushed to catch up.
+
+What ships is an exact rotation on top of `gc_core::deterministic_math::cos_sin`,
+which halves the angle to under 0.0625 rad (exact — a power-of-two scale),
+evaluates truncated Maclaurin series in Horner form, applies the double-angle
+identities back up, and renormalizes. Only `+ - * /` and `sqrt`, every one
+correctly rounded by IEEE 754, in a fixed evaluation order: bit-identical across
+targets by construction rather than by luck. It sits beside
+`negative_log_one_minus`, which exists in that module for precisely the same
+reason.
+
+No inverse trig is needed anywhere, which is the part worth remembering:
+
+- **Comparing two angles is comparing two cosines.** `cos` is monotone on
+  `0..=pi`, so "the remaining angle is inside one step" is exactly
+  `dot(from, to) >= cos(step)`. Clamping the step to `pi` keeps that monotone.
+- **Which way to turn is the sign of the cross product**, and at the antipode,
+  where it is zero and both arcs are equal, `>= 0` breaks the tie the same way
+  on every peer.
+
+`gc-sim`'s remaining ten `sin`/`cos` sites are **not** fixed by this and are a
+live desync risk; removing this module's three moved the first wasm divergence
+from boundary 12 to boundary 7006. That is #517, and `cos_sin` is the primitive
+its direction 3 asks for.
+
+> **The lesson for the next reader.** Every test in `tests/locomotion.rs` passed
+> throughout the chord defect and none of them could have failed: an upper bound
+> on the step, monotone convergence, and no oscillation are all satisfied by a
+> rate that is far too *low*. `facing_turns_at_its_nominal_rate_from_any_remaining_angle`
+> pins the achieved rate from below as well as above, across the whole domain.
+> When a quantity has a declared unit, assert the unit.
+
 ## Tunables
 
 `LOCO_*` in the `Locomotion` panel category, flat SCREAMING_SNAKE, plus the
 already-shipped `MOVE_ACCEL` / `START_ACCEL` / `MOVE_DECEL` as the shared
 bases and `SPRINT_MULT` as the sprint context's top-speed multiplier.
+
+Turn rates are in `deg/s` and that unit is now literally true: the body turns
+by exactly `rate * dt` per tick until the last partial step, which lands on the
+target exactly. The three arc thresholds are authored as **cosines** rather than
+degrees, because each is compared against a dot product every tick and a `cos()`
+there would put a libm call back on the determinism path. `LOCO_TURN_EASE_DEG`
+stays in degrees: the ease region is entered exactly (chord is monotone in the
+angle, so the threshold comparison is equivalent), and the ramp *inside* it is
+chord-proportional — a feel choice between two monotone 0→1 shapes, not an
+approximation standing in for one.
 
 > **Do not use dotted ids.** `Tuning::deserialize`'s parser accepts only
 > `[A-Za-z0-9_]` in a key and skips malformed lines *without erroring*, and

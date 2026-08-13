@@ -338,7 +338,13 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
 /// where that pairing belongs.
 #[test]
 fn turn_rate_moves_the_gaps_between_chances() {
-    let seeds = seeds(48);
+    // 96 rather than the 48 the other cases here use. Worth knowing why: the
+    // CHORD-bounded draft of `locomotion` (the rate defect design review
+    // caught) passed this at 48, because collapsing the achieved rate at
+    // large remaining angles amplified the knob's apparent effect. Fixing the
+    // rate to be honest SHRANK the measured delta, from +1.48 to +0.69. A
+    // gate that got easier when the code got wronger is worth naming.
+    let seeds = seeds(96);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "LOCO_BASE_TURN",
         metric: "longest_drought_s",

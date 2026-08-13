@@ -243,8 +243,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         seed: 733,
         frame_count: 80,
         initial_hash: "6edfabacb5ecc6cd",
-        final_hash: "e847a47acc6bb32b",
-        tape_digest: "a1738e24b819c4d3",
+        final_hash: "e3eb737ca3353add",
+        tape_digest: "c5ecfbfb2228e9a7",
     },
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
@@ -257,8 +257,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: None,
             initial_hash: "ba131fc89cabd89a",
-            final_hash: "8ffe6f7a4a887b69",
-            tape_digest: "fa0dd10f45ffd8b0",
+            final_hash: "a8223c0fe7c55fba",
+            tape_digest: "0e3fccf43dfaaddc",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -270,8 +270,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: None,
             initial_hash: "0c6f04fe7cdbdcb6",
-            final_hash: "40eae623909cb84d",
-            tape_digest: "bf3f635ebf293067",
+            final_hash: "359d8a6339b3803a",
+            tape_digest: "d6610980ce1c1364",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -283,8 +283,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "bfc22640819ecd1b",
-            final_hash: "df29d149c3704cf6",
-            tape_digest: "c23ab8e1c74ebdaa",
+            final_hash: "f5bd8668fbe96de5",
+            tape_digest: "e26626b0528529d8",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -296,8 +296,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
             initial_hash: "11e9080994725ece",
-            final_hash: "ee69dda56b9eb0e7",
-            tape_digest: "f17a9d15fae3a639",
+            final_hash: "a7c25e58bd982c14",
+            tape_digest: "3883e400e429adc3",
         },
     ],
     budgets: Omp2RollbackBudgets {
