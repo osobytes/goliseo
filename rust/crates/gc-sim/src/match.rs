@@ -36,6 +36,7 @@ use crate::ai;
 use crate::ball_flight::{
     self, AIR_FRICTION, BALL_RADIUS, FRICTION, GRAVITY, GROUND_GRAB_HEIGHT, in_mouth,
 };
+use crate::ball_prediction::BallPredictor;
 use crate::brain;
 use crate::combat;
 use crate::combat_feasibility;
@@ -4453,6 +4454,58 @@ fn end_dive(p: &mut MatchPlayer) {
     p.keeper_get_up_timer = KEEPER_GET_UP_POSE;
 }
 
+/// One `attempt_save` candidate evaluation: what the deleted gravity-only
+/// quadratic would have decided, beside what the predictor-backed code
+/// actually decided, for the #490 save-rate investigation.
+///
+/// This is a diagnostic value, not a gameplay one — nothing in `step`'s
+/// normal path reads it. It exists so the classifier
+/// `tests/keeper_shadow_classifier.rs` drives can re-derive the exact
+/// candidate/deferred/disagree counts from the real `attempt_save` logic,
+/// rather than a second, hand-maintained implementation of its gating that
+/// could silently drift from the real one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SaveShadowObservation {
+    /// What `s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz` (the
+    /// deleted formula) would have decided, at the same `tz` the real
+    /// decision uses.
+    pub old_on_target: bool,
+    /// Whether the real predictor query resolved at all
+    /// (`position_at_time` returned `Some`) — `false` means this candidate
+    /// deferred rather than committing or refusing.
+    pub new_resolved: bool,
+    /// What the real, predictor-backed code decided. Only meaningful when
+    /// `new_resolved` is `true`; `false` (not `None`) when the query
+    /// deferred, so a caller that ignores `new_resolved` still gets a safe
+    /// "not on target" reading rather than a stale `true`.
+    pub new_on_target: bool,
+    /// The team the shot threatens (i.e. NOT the keeper's own team).
+    pub attacker: Team,
+}
+
+thread_local! {
+    /// `None` (the default) means no test has subscribed: `attempt_save`
+    /// skips the shadow computation entirely, so this costs nothing and
+    /// changes nothing in the path the sim-correctness review already
+    /// covered. `Some` accumulates observations for whichever test called
+    /// [`shadow_observations_begin`].
+    static SAVE_SHADOW: std::cell::RefCell<Option<Vec<SaveShadowObservation>>> =const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Start recording [`SaveShadowObservation`]s on this thread. Diagnostic
+/// only — see that type's doc comment.
+pub fn shadow_observations_begin() {
+    SAVE_SHADOW.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop recording and return everything captured since
+/// [`shadow_observations_begin`], leaving recording off.
+pub fn shadow_observations_take() -> Vec<SaveShadowObservation> {
+    SAVE_SHADOW.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+}
+
 /// The keeper of the threatened goal COMMITS against an on-target shot: it
 /// picks its verdict now (catch / parry / beaten — pure and deterministic,
 /// a function of reach, handling, pace and angle), but the ball is NOT
@@ -4462,12 +4515,26 @@ fn end_dive(p: &mut MatchPlayer) {
 /// must not mean diving early. So a shot always visibly travels from the
 /// shooter's boot to the keeper's glove — no teleports, no gloves closing
 /// on empty air.
+///
+/// The contact HEIGHT that decides on-target comes from
+/// [`crate::ball_prediction::BallPredictor::position_at_time`], an
+/// authoritative query against the shared prediction service — never the
+/// closed-form ballistic fallback ([`crate::ball_prediction::BallEstimate`]),
+/// which this function cannot even reach: the two types don't convert (#486).
+/// A shot whose arrival falls outside the service's horizon/budget defers
+/// the commit to a later tick rather than guessing.
 #[allow(clippy::too_many_lines)]
 fn attempt_save(s: &mut MatchState, tune: &Tuning) {
     let speed = s.ball_vel.length();
     if speed < 1.0 || s.ball_vel.x == 0.0 {
         return; // a dead or purely-vertical ball is not an on-target shot
     }
+    // One predictor for the whole call, not one per keeper: at most one
+    // keeper's "toward this goal" gate is ever true for a given ball
+    // velocity, but sharing the instance means a second candidate's query
+    // (same ball, same tick) reuses the first's buffer instead of re-running
+    // scratch ticks the cache already has (#486).
+    let mut predictor = BallPredictor::default();
     for ki in 0..s.players.len() {
         let keeper_idx = (ki + 1) as i64;
         let keeper = s.players[ki].clone();
@@ -4529,16 +4596,77 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
         // moment the save actually resolves.
         let eta_contact =
             keeper::travel_time((dxa - KEEPER_HANDS).max(0.0) * x_frac, speed, k_fric);
-        // Height when it reaches the keeper's line, at the real arrival
-        // time (the geometric t is fine for y — friction shrinks both
-        // velocity components equally, so the path stays straight — but
-        // gravity runs on the clock).
+        // Height when it reaches the keeper's line, at the real arrival time
+        // (the geometric t is fine for y — friction shrinks both velocity
+        // components equally, so the path stays straight). The height is
+        // NOT fine to solve by hand: a gravity-only quadratic ignores drag
+        // and the ground bounce, so it can place a shot under the bar (or
+        // over it) that the real stepped trajectory would not — the exact
+        // failure mode #486 exists to close. Query the shared prediction
+        // service instead: it steps the ball through the same
+        // `ball_flight::step` the live sim runs, so this answer cannot
+        // drift from what the ball will actually do.
         let tz = eta.unwrap_or(t);
-        let z_cross = s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz;
+        // Diagnostic only (#490): computed and recorded ONLY when a test has
+        // called `shadow_observations_begin`, so the normal `step` path
+        // (SAVE_SHADOW always `None`) never spends this work and never sees
+        // a behavior difference from the code the sim-correctness review
+        // covered.
+        let shadow_recording = SAVE_SHADOW.with(|cell| cell.borrow().is_some());
+        let old_on_target_shadow = shadow_recording && {
+            let old_z = s.ball_z + s.ball_vz * tz - 0.5 * GRAVITY * tz * tz;
+            y_goal >= goal.y - SAVE_PAD
+                && y_goal <= goal.y + goal.h + SAVE_PAD
+                && old_z < CROSSBAR
+                && old_z <= KEEPER_AIR_GRAB
+        };
+        let attacker_shadow = if keeper.team == Team::Home {
+            Team::Away
+        } else {
+            Team::Home
+        };
+        let Some(sample) = predictor.position_at_time(s, tz) else {
+            // The real trajectory doesn't resolve inside the service's
+            // horizon/budget — only possible for a shot so slow `tz` runs
+            // past `predict.max_horizon` (2s). Conservative and deliberate:
+            // do not commit this tick rather than guess with the old
+            // gravity-only formula. `attempt_save` runs every live tick and
+            // `tz` only shrinks as the ball closes in, so a genuine
+            // on-target shot still resolves on a later tick, well before it
+            // reaches the line — this defers the commit, it never causes a
+            // miss. See `tests/keeper_prediction.rs`'s
+            // `a_query_that_cannot_resolve_inside_the_horizon_defers_the_commit_instead_of_guessing`.
+            if shadow_recording {
+                SAVE_SHADOW.with(|cell| {
+                    if let Some(obs) = cell.borrow_mut().as_mut() {
+                        obs.push(SaveShadowObservation {
+                            old_on_target: old_on_target_shadow,
+                            new_resolved: false,
+                            new_on_target: false,
+                            attacker: attacker_shadow,
+                        });
+                    }
+                });
+            }
+            continue;
+        };
+        let z_cross = sample.z;
         let on_target = y_goal >= goal.y - SAVE_PAD
             && y_goal <= goal.y + goal.h + SAVE_PAD
             && z_cross < CROSSBAR
             && z_cross <= KEEPER_AIR_GRAB;
+        if shadow_recording {
+            SAVE_SHADOW.with(|cell| {
+                if let Some(obs) = cell.borrow_mut().as_mut() {
+                    obs.push(SaveShadowObservation {
+                        old_on_target: old_on_target_shadow,
+                        new_resolved: true,
+                        new_on_target: on_target,
+                        attacker: attacker_shadow,
+                    });
+                }
+            });
+        }
         // How far the keeper has to dive along its line to reach the shot.
         let dive_dist = (keeper.pos.y - y_cross).abs();
         let block_reach = species::block_reach(keeper.owned_verb);
