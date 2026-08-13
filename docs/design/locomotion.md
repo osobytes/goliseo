@@ -77,11 +77,21 @@ its old product too — their *meaning* changed from absolute to relative, and
 their descriptions say so. Only the previously unreachable cases behave
 differently, which is the entire point.
 
-> Worth recording: the authored `SprintCarry` values were already within 1–5%
-> of `Sprint x Carry` (`1.35 x 0.92 = 1.24` against an authored `1.18`, and so
-> on down all four). The composition was implicit in the numbers before it was
-> in the code, which is some evidence the peer-context enumeration was always
-> the wrong shape rather than merely an incomplete one.
+> Worth recording: the authored `SprintCarry` values were already close to
+> `Sprint × Carry` — three of the four within about 2%, the fourth 5.25% out.
+>
+> | | `Sprint × Carry` | authored | difference |
+> | --- | --- | --- | --- |
+> | top | `1.35 × 0.92 = 1.242` | `1.18` | **+5.25%** |
+> | accel | `0.85 × 0.90 = 0.765` | `0.75` | +2.00% |
+> | decel | `0.80 × 1.05 = 0.840` | `0.85` | −1.18% |
+> | turn | `0.55 × 0.80 = 0.440` | `0.45` | −2.22% |
+>
+> That is some evidence the peer-context enumeration was always the wrong
+> shape rather than merely an incomplete one. It is evidence only: the shipped
+> `LOCO_SPRINT_CARRY_*` defaults were re-derived by exact division, not by this
+> approximation, so the old product is preserved exactly and nothing is tuned
+> differently by the observation.
 
 `shielding_costs_more_than_backing_off_empty_handed` is the mechanic in one
 tier-1 assertion, and it checks top speed, acceleration *and* turn rate —

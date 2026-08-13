@@ -191,10 +191,23 @@ impl CarryMode {
 /// product. Only the cases that were previously *unreachable* behave
 /// differently, which is the point.
 ///
-/// Worth recording: the authored `SprintCarry` values were already within
-/// 1-5% of `Sprint x Carry` (`1.35 x 0.92 = 1.24` against an authored `1.18`,
-/// and so on down the four). The composition was implicit in the numbers
-/// before it was in the code.
+/// Worth recording: the authored `SprintCarry` values were already close to
+/// `Sprint x Carry`. Three of the four are within about 2% and the fourth is
+/// 5.25% out:
+///
+/// | | `Sprint x Carry` | authored | difference |
+/// | --- | --- | --- | --- |
+/// | top | `1.35 x 0.92 = 1.242` | `1.18` | **+5.25%** |
+/// | accel | `0.85 x 0.90 = 0.765` | `0.75` | +2.00% |
+/// | decel | `0.80 x 1.05 = 0.840` | `0.85` | -1.18% |
+/// | turn | `0.55 x 0.80 = 0.440` | `0.45` | -2.22% |
+///
+/// The composition was close to implicit in the numbers before it was in the
+/// code. Note what this is and is not: it is *evidence* that the
+/// peer-context enumeration was the wrong shape, not the source of any
+/// shipped value. The `LOCO_SPRINT_CARRY_*` defaults were re-derived by exact
+/// division of the old absolutes by `Sprint`'s, so the product is preserved
+/// exactly and nothing is tuned differently by this observation.
 pub static CARRY_KNOBS: &[ContextKnobs] = &[
     ContextKnobs {
         top_mult: "LOCO_CARRY_TOP_MULT",

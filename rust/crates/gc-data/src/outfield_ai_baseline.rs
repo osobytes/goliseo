@@ -5,13 +5,25 @@
 //! A deliberate re-freeze is:
 //!   1. confirm the change is intended and record it in the drift log of
 //!      docs/design/fun_metrics.md;
-//!   2. re-run the frozen fixture and bump `baseline_version` -- this
-//!      repository does not currently provide a runner that drives that
-//!      re-run outside `cargo test`'s own self-reproducibility checks (see
-//!      `gc_sim::outfield_ai_baseline` for the record shape and
-//!      `serialize`). Regenerating by hand defeats the purpose of a frozen
-//!      control, so treat a moved baseline as a finding to investigate
-//!      first, not a check to clear.
+//!   2. re-record with the runner, which bumps `baseline_version` itself:
+//!
+//!        cd rust
+//!        cargo test -p gc-sim --test outfield_ai_baseline -- \
+//!            --ignored --nocapture record_outfield_ai_baseline
+//!
+//!      then splice its `pub const RECORD` block over this file's. The
+//!      runner emits this doc header and that block only -- the type
+//!      definitions between them live here and are not regenerated, so
+//!      do not overwrite the whole file with its output.
+//!
+//!      Until #488 no such runner existed, and this paragraph said so;
+//!      `measure` and `serialize` both existed and nothing drove them
+//!      together, so every re-freeze until then was the hand edit the
+//!      line above warns against.
+//!
+//!      Regenerating by hand defeats the purpose of a frozen control, so
+//!      treat a moved baseline as a finding to investigate first, not a
+//!      check to clear.
 //!
 //! See `sim::outfield_ai_baseline` and docs/design/fun_metrics.md.
 //!
@@ -140,7 +152,7 @@ pub struct OutfieldAiBaselineRecord {
 
 /// The frozen baseline recording.
 pub const RECORD: OutfieldAiBaselineRecord = OutfieldAiBaselineRecord {
-    baseline_version: 3,
+    baseline_version: 4,
     identity: OutfieldAiBaselineIdentity {
         schema: "outfield_ai_baseline",
         schema_version: 1,
