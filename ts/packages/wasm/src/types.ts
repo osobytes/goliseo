@@ -138,15 +138,20 @@ export interface DeterminismEvidence {
   readonly snapshot_bytes: number;
   /**
    * The headline behaviors the campaign observed, comma-joined in
-   * `goal_kickoff,tackle,aerial,keeper,full_time` order. The **gated** half of
-   * the split issue #505 recorded: assert on this, not on the scoreline.
+   * `goal_kickoff,tackle,aerial,keeper,full_time` order.
+   *
+   * Reported, never gating since issue #512 — surface it, do not compare it
+   * to a pinned string. OMP-1's inputs are frozen button presses, so a 0.45%
+   * locomotion change moves this set; #518 is the live-AI fixture meant to
+   * gate the claim instead.
    */
   readonly coverage: string;
   /**
    * Every behavioral claim of the frozen recording this build no longer
    * reproduces: `"none"`, or `claim:recorded->observed` entries joined by
-   * `;`. Reported, never gating — but surface it. A demoted assertion that
-   * prints nothing is a deleted assertion.
+   * `;`, including `coverage.<behavior>` since #512. Reported, never gating —
+   * but surface it. A demoted assertion that prints nothing is a deleted
+   * assertion.
    */
   readonly behavioral_drift: string;
 }

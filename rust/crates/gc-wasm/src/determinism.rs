@@ -42,9 +42,14 @@ pub struct DeterminismEvidence {
     pub snapshot_bytes: f64,
     #[wasm_bindgen(getter_with_clone)]
     /// The headline behaviors this campaign observed, comma-joined in
-    /// `goal_kickoff,tackle,aerial,keeper,full_time` order — the **gated**
-    /// half of #505's split, exposed so a caller can assert on it instead of
-    /// on the scoreline.
+    /// `goal_kickoff,tackle,aerial,keeper,full_time` order.
+    ///
+    /// **Reported, never gating since #512** — it was the one thing #505 left
+    /// a caller to assert on, and measurement showed a 0.45% locomotion change
+    /// moves it, because OMP-1's inputs are frozen button presses. A caller
+    /// surfaces this; a caller that compares it to a pinned string has
+    /// re-grown the gate #512 removed. A changed set also arrives inside
+    /// `behavioral_drift` as `coverage.<behavior>` entries.
     pub coverage: String,
     #[wasm_bindgen(getter_with_clone)]
     /// Every recorded behavioral claim this build no longer reproduces,
@@ -59,14 +64,14 @@ pub struct DeterminismEvidence {
 
 /// Run a complete OMP-1 determinism campaign against the frozen 7,201-tick
 /// fixture, exactly as `gc_sim::determinism_evidence::verify` does natively,
-/// and return its evidence. The caller compares `final_hash`,
-/// `sequence_digest` and `coverage` against the pinned native-build values;
-/// this function makes no claim about what they should be — see this crate's
-/// report for what was actually observed under wasm.
+/// and return its evidence. The caller compares `final_hash` and
+/// `sequence_digest` against the pinned native-build values; this function
+/// makes no claim about what they should be — see this crate's report for what
+/// was actually observed under wasm.
 ///
-/// `score_home`/`score_away`/`outcome` and `behavioral_drift` are the
-/// *reported*, non-gating half (#505): a caller must surface them, not assert
-/// on them.
+/// `coverage`, `score_home`/`score_away`/`outcome` and `behavioral_drift` are
+/// the *reported*, non-gating half (#505, #512): a caller must surface them,
+/// not assert on them.
 ///
 /// # Errors
 ///
@@ -92,7 +97,7 @@ pub fn run_determinism_evidence() -> Result<DeterminismEvidence, JsValue> {
         score_away: result.score_away as f64,
         outcome: outcome.to_string(),
         snapshot_bytes: result.snapshot_bytes as f64,
-        coverage: determinism_evidence::coverage_list(&result.coverage),
+        coverage: determinism_evidence::coverage_list(&result.observed.coverage),
         behavioral_drift: determinism_evidence::render_drift(&result.drift),
     })
 }
