@@ -1,13 +1,45 @@
 # Design: Fun metrics & simulation-based balance search
 
-**Scope:** `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`, `sim/sweep.lua`, `main.lua`, `spec/sim/*`
+> **Every number in this document was measured before the port, and none of
+> them has been re-measured since.** The mechanism described here is live —
+> `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
+> `gc_sim::tripwire` and `gc_data::fun_baseline` are the Rust modules that
+> carry it — but the tables, sweeps, candidates and drift-log entries below
+> were all produced between **2026-07-05 and 2026-08-10** by the Lua tree on
+> LÖVE that commit `2c0d449` (#467) deleted, through a `love . --sim` /
+> `--sweep` / `--search` / `--eval` / `--tripwire` CLI that no longer exists.
+>
+> Two consequences, both of which have been read backwards at least once:
+>
+> - **The Phase 2 sensitivity table is not present-day evidence.** It was
+>   measured on 2026-07-05 against the Lua `sim/bot.lua` human proxy, on that
+>   tree's balance and that tree's mechanics. Reuse of its rankings to justify
+>   a knob today needs a fresh sweep, not a citation. §9 of `AGENTS.md` is the
+>   standard a knob claim has to meet now: `gc_sim::knob_contract::assert_moves`
+>   against a *measured* noise floor.
+> - **The fun tripwire is not currently wired into any gate.** The prose below
+>   says it runs in `check.sh` and fails the build on drift; that was true of
+>   the Lua tree. `gc_sim::tripwire` ports the measurement and comparison, but
+>   nothing calls `tripwire::measure` today, so the 30-seed signature is not
+>   checked by `./scripts/check.sh` or CI. The frozen combat-disabled Outfield
+>   AI baseline **is** still enforced, as an ordinary Rust test
+>   (`gc-sim/tests/outfield_ai_baseline.rs`, run by gate 3).
+>
+> The history is kept, not deleted: it records why the bands, the candidates
+> and the non-refresh rule are what they are.
+
+**Scope:** `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
+`gc_sim::tripwire`, and their tests under `rust/crates/gc-sim/tests/`
+(pre-port: `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`,
+`sim/sweep.lua`, `main.lua`, `spec/sim/*`)
 
 Combat evidence is governed separately by
 [`combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md). The
 soccer-only tripwire and its historical `fun` name remain regression tools;
 neither is a measurement of human enjoyment or a combat-active baseline.
 
-CLI (all headless, exit when done):
+**Pre-port CLI (deleted with the Lua tree; kept so the runs cited below can be
+read).** Every command in this document is one of these:
 
 ```
 love . --sim [n]          n matches at current defaults, metric report
@@ -18,7 +50,17 @@ love . --tripwire [write] fun-signature snapshot vs data/fun_baseline.lua
                           (in check.sh; exit 1 on drift; `write` refreshes)
 ```
 
-**Status (2026-07-10):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
+**Today there is no CLI.** The same measurements are library calls in
+`gc-sim`, reached from a Rust test or a scratch harness:
+`headless::run_batch` plays a seeded batch and `headless::report` prints it;
+`sweep::sensitivity` and `sweep::paired_delta` do the per-knob sweep;
+`tripwire::measure` / `compare` / `report` produce and check the fun
+signature, and `tripwire::serialize` emits a `gc_data::fun_baseline` literal
+to paste over `rust/crates/gc-data/src/fun_baseline.rs`;
+`outfield_ai_baseline::measure` reproduces the frozen control. Rebuilding a
+runnable entry point over them is not done — see the banner above.
+
+**Status (2026-07-10, pre-port):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
 runs 30 seeded matches in check.sh and fails the gate when any banded-metric
 mean (or the composite) drifts more than 5% from the checked-in baseline —
 the sim is deterministic per seed, so a behavior-neutral change reproduces
@@ -26,7 +68,7 @@ the snapshot exactly. On intended drift: re-run `--sim 100`, log the shift in
 the drift log below, then `love . --tripwire write`. Candidate A is validated
 (re-validated twice); B died in the 2026-07-10 re-validation. A ships as an
 F1 preset — awaiting a hands-on playtest verdict before any change to
-`sim/tuning.lua` defaults.
+`gc_sim::tuning` defaults.
 
 ## Why
 
@@ -84,7 +126,8 @@ been re-measured, and the column stays unbanded until something is.
 ## The human proxy (the big caveat)
 
 AI-vs-AI matches measure the AI ecosystem, not the player's hands. The
-controlled slot is driven by `sim/bot.lua`, a deliberately human-ish input
+controlled slot is driven by `gc_sim::bot` (measured pre-port as
+`sim/bot.lua`), a deliberately human-ish input
 driver: it re-decides only every ~0.2 s (reaction latency), adds aim noise from
 its own seeded RNG, dribbles/charges/shoots/passes with simple heuristics, and
 chases/jockeys off the ball. It can also reactively juke a committed defender,
@@ -125,7 +168,7 @@ are signal; small ones are bot artifacts until verified by hand with F1.
 4. **Tripwire — done.** A 30-seed smoke batch in `scripts/check.sh` fails loudly
    when a sim change moves a banded metric beyond the checked-in tolerance.
 
-## Baseline signature (defaults)
+## Baseline signature (defaults) — pre-port, 2026-07-09
 
 `love . --sim 100`, all knobs at defaults, 2026-07-09 (post keeper-fix — the
 original 2026-07-05 table is superseded; the shift is recorded in the drift
@@ -162,7 +205,18 @@ What the baseline says (under this bot — relative claims only):
 - `lead_changes` ≈ 0 follows directly from goal scarcity; it will only become
   meaningful once goals_total lives in its band.
 
-## Phase 2: sensitivity sweep (2026-07-05)
+## Phase 2: sensitivity sweep — pre-port, measured 2026-07-05
+
+**Provenance, because this table is the one most often mistaken for current
+evidence.** It was produced on **2026-07-05** by `love . --sweep 30` on the Lua
+tree, against that tree's `sim/bot.lua` human proxy, that tree's knob ranges,
+and a build that still capped matches at three goals (#268 removed the cap on
+2026-07-30, and the mechanics batches logged in the drift log below moved the
+baseline repeatedly afterwards). It has not been re-measured on `gc-sim`. Read
+it as the record of how the *method* was validated — including the honest
+sanity check that knobs the sim ignores came back at exactly 0.000 — not as a
+ranking you may cite for a knob today. A present-day claim that a knob moves a
+metric is made with `gc_sim::knob_contract::assert_moves` (`AGENTS.md` §9).
 
 `love . --sweep 30` — every knob to its min and max, paired against the
 default baseline (fun 0.238, goals 1.10) on seeds 1–30. Knobs that matter,
@@ -223,10 +277,11 @@ Caveats before shipping either:
   mattered. There is no goal cap any more — a match runs its 120 seconds and is
   decided on score — so neither candidate shortens one. The measurements above
   were taken under the cap and are left as recorded.
-- **Bot-relative.** All numbers are under the `sim/bot.lua` proxy. Verify by
-  playing: both candidates ship as F1-panel presets (`data/tuning_presets.lua`,
-  F4 cycles Defaults → A → B; F2 persists the choice across runs). Defaults in
-  `sim/tuning.lua` stay untouched until a candidate survives hands-on play.
+- **Bot-relative.** All numbers are under the pre-port `sim/bot.lua` proxy
+  (now `gc_sim::bot`). Verify by playing: both candidates ship as F1-panel
+  presets (`gc_data::tuning_presets`, F4 cycles Defaults → A → B; F2 persists
+  the choice across runs). Defaults in `gc_sim::tuning` stay untouched until a
+  candidate survives hands-on play.
 - `pass_completion` (~0.49) stays just below its band in every config tested —
   no knob in the current panel moves it much. If passing should feel more
   reliable, that's a *mechanics* change (lead, receiver magnetism), not a knob.
@@ -262,12 +317,12 @@ Conclusions:
 ## Frozen combat-disabled Outfield AI baseline (#59)
 
 Everything above is the **soccer fun tripwire**: a 30-seed human-proxy smoke
-test with a 5% tolerance band, checked in as `data/fun_baseline.lua`. This
+test with a 5% tolerance band, checked in as `gc_data::fun_baseline`. This
 section is a *different* artifact with a different job, and the two must not be
 confused or merged. The locked evidence contract
 (`docs/design/combat_fun_evidence_contract.md` §4.4) requires the soccer
 tripwire to stay combat-disabled and to never be refreshed from a combat
-fixture; nothing in #59 touches `data/fun_baseline.lua`.
+fixture; nothing in #59 touches `gc_data::fun_baseline`.
 
 ### Why it exists
 
@@ -280,7 +335,8 @@ combat-disabled gameplay-AI **policy id** plus a common-seed **baseline** that
 
 ### The policy id
 
-`sim/outfield_ai_policy.lua` publishes the identity, e.g.
+`gc_sim::outfield_ai_policy` (pre-port: `sim/outfield_ai_policy.lua`) publishes
+the identity, e.g.
 
 ```text
 outfield_ai_policy/v1/combat_disabled/303228d776b65a19
@@ -290,8 +346,8 @@ It is `schema / schema version / combat mode / FNV-1a-64 of a canonical
 serialization`. What gets hashed is an explicitly **declared** surface —
 `outfield_ai_policy.SURFACE` plus the `AI`-category tuning defaults — not
 whatever happens to be in the AI modules. The surface covers five modules:
-`sim/outfield_decision.lua`, `sim/outfield_press.lua`, `sim/offball_runs.lua`,
-`sim/possession_transition.lua`, and `sim/ai.lua`, whose off-ball support
+`gc_sim::outfield_decision`, `gc_sim::outfield_press`, `gc_sim::offball_runs`,
+`gc_sim::possession_transition`, and `gc_sim::ai`, whose off-ball support
 weights (`IMPORTANCE_K`, `CENTER_SIGMA`, `LANE_WIDTH`, `LANE_BLOCK`) feed
 `offball_runs`' pass-lane scoring. Declaring the surface is what makes the id
 stable in both directions:
@@ -306,13 +362,13 @@ stable in both directions:
 A live tuning-panel nudge does **not** move the id: the policy is the shipped
 balance, so `knob.default` is hashed and `tuning.values` is not.
 
-Some genuinely behavioural constants stay file-local — `sim/ai.lua`'s
-intercept-sampling grid, `sim/offball_runs.lua`'s run-shape geometry,
-`sim/outfield_press.lua`'s contain and lane weights. Changing one of those
+Some genuinely behavioural constants stay file-local — `gc_sim::ai`'s
+intercept-sampling grid, `gc_sim::offball_runs`' run-shape geometry,
+`gc_sim::outfield_press`' contain and lane weights. Changing one of those
 moves the recorded metrics but not the id on its own. **Every** module in the
 surface therefore exposes a `VERSION` as the declared landing spot for such a
-change, and `sim/outfield_ai_policy.lua` asserts at load that each one exists
-and leads its field list, so the promise cannot quietly rot. A spec checks the
+change, and `gc_sim::outfield_ai_policy` asserts that each one exists
+and leads its field list, so the promise cannot quietly rot. A test checks the
 same thing. Bumping `VERSION` is how a file-local policy change is declared.
 
 Whether or not anyone remembers to bump it, behaviour that moves play is caught
@@ -320,8 +376,9 @@ by the metric signature below. It is never absorbed.
 
 ### The baseline artifact
 
-`data/outfield_ai_baseline.lua`, produced and verified by
-`sim/outfield_ai_baseline.lua`.
+`gc_data::outfield_ai_baseline::RECORD`
+(`rust/crates/gc-data/src/outfield_ai_baseline.rs`), produced and verified by
+`gc_sim::outfield_ai_baseline`.
 
 | Field | Value |
 | --- | --- |
@@ -346,20 +403,38 @@ and `seed_hash`. `signature` covers identity plus every recorded statistic.
 
 ### Commands
 
+**Today.** The verification is an ordinary Rust test — no CLI, no flag:
+
+```sh
+cd rust && cargo test -p gc-sim --test outfield_ai_baseline
+```
+
+`outfield_ai_baseline_reproduces_the_frozen_fixture_exactly` re-runs the
+fixture through `gc_sim::outfield_ai_baseline::measure` and compares it against
+the frozen `gc_data::outfield_ai_baseline::RECORD`, so it runs inside
+`cargo test --workspace` — gate 3 of `./scripts/check.sh`, which
+`.github/workflows/ci.yml`'s `gate` job invokes rather than mirroring, so the
+two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
+`outfield_ai_baseline::serialize` over a fresh `measure` and pasting the result
+over `rust/crates/gc-data/src/outfield_ai_baseline.rs`; the ceremony below is
+what the acknowledgement flag used to enforce, and it is now enforced by review
+rather than by an argument parser.
+
+**Pre-port**, for reading the history below:
+
 ```sh
 love . --ai-baseline                          # verify (exit 1 when a metric moved)
 love . --ai-baseline write --refreeze-ack     # deliberately re-freeze
 ```
 
 Both `./scripts/check.sh` and the `quality` job in `.github/workflows/ci.yml`
-run the verification. That CI job mirrors `check.sh` by hand, so a gate added
-to only one of them is a gate that does not run; `--ai-baseline` is also listed
-in `conf.lua`'s `headless_flags`, because this check belongs to the no-display
+ran the verification on that tree; `--ai-baseline` was also listed in
+`conf.lua`'s `headless_flags`, because this check belongs to the no-display
 tier of AGENTS.md §9 and must not try to open a GL context on a CI runner.
 
 ### The non-refresh rule
 
-**A failing `love . --ai-baseline` is a finding, not a chore.** #148 and #149
+**A failing baseline comparison is a finding, not a chore.** #148 and #149
 cite this artifact as their control, so refreshing it to go green destroys the
 only record that the control moved.
 
@@ -405,11 +480,13 @@ comparison, its technique and tactic comparisons, its constant sweeps, and its
 visual review all remain open. This section freezes the control those
 experiments — and #149's calibration — measure against.
 
-## Baseline drift log
+## Baseline drift log — every entry is pre-port (2026-07-08 to 2026-08-10)
 
-Sim changes move the baseline; re-run `love . --sim 100` after touching
-`sim/match.lua` and log meaningful shifts here (this is the manual tripwire
-until phase 4 automates it).
+The ritual still stands: a sim change that moves the fun signature owes a
+100-match validation and an entry here before the baseline is refreshed. The
+commands each entry cites are the deleted Lua CLI (see the banner at the top),
+and no entry has been re-measured on `gc-sim`. Every number below is the Lua
+tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
 
 - **2026-08-10 — a keeper's dive ends when it takes possession (#450).**
   `dive_timer` used to outlive the catch, so on the tick a keeper released the
