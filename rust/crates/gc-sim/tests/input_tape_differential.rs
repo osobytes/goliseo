@@ -408,7 +408,7 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
     assert_eq!(again.boundary_hashes, tape.boundary_hashes);
 }
 
-/// DELIBERATELY TRAJECTORY-COUPLED — #520 CLASS A, NOT CLASS B.
+/// DELIBERATELY TRAJECTORY-COUPLED — #520 CLASS A, RETIRED AND CONVERTED.
 ///
 /// Every other case in this file is a format test and none of them can be
 /// reddened by a gameplay change. This one can, and is meant to be: it
@@ -428,17 +428,37 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 /// simulation moved", a red in any other case in this file says "the wire
 /// moved", and nobody has to read an assertion index to tell which.
 ///
-/// CONSEQUENCE FOR #520. This case belongs to the same class as
-/// `match_step_ai_ai`, `session_ai_driven` and `rollback_session`, so a
-/// deliberate sim change legitimately trips it and it needs the class-A
-/// treatment — a retirement recorded per `tools/lua_reference/README.md`
-/// rule 2 — rather than a rewrite. #520 classified the whole of
-/// `input_tape_differential` as class B; that is right for the format
-/// claims and wrong for this one assertion, which is a correction to the
-/// issue's premise rather than to its decision.
+/// RETIRED UNDER #520, superseded by #516, last held at `4c6d1eb` (verified
+/// green there by running this file at that commit, not assumed). #520
+/// classified the whole of `input_tape_differential` as class B; that was
+/// right for the format claims and wrong for this one assertion, and the
+/// decision was extended rather than the premise defended.
+///
+/// Converted per `tools/lua_reference/README.md` rule 4 rather than deleted:
+/// same scenario, same bit-exact comparison, against a baseline recorded from
+/// this build. **The replacement is weaker and the gap is not a technicality.**
+/// It detects change; it cannot detect "wrong but consistently wrong", because
+/// a value that was already wrong when it was recorded is now the expectation.
+/// The Lua vector could catch that class and nothing left in the workspace
+/// can. `input_tape_lua_reference.txt` stays in the tree, unmodified — the
+/// four sibling cases in this file still read it for the format claims #523
+/// rewrote them to make.
+/// Boundaries 1..n, recorded from THIS build. Boundary 0 is not here: it is
+/// the pre-step state, so it is content rather than trajectory, and the
+/// sibling case above still compares it against the Lua vector.
+///
+/// Re-recorded by reading the assertion's own failure output — four values,
+/// so no recorder is warranted. Any deliberate simulation change moves these.
+const STEPPED_BASELINE: [&str; 5] = [
+    "13e1c0eeb985864b",
+    "c0f58d2202d1e598",
+    "ab8518cd19f3c9a1",
+    "b9635d726e622a1a",
+    "0a592d7c1995f509",
+];
+
 #[test]
-fn the_stepped_boundaries_still_hash_match_the_reference_lua_run() {
-    let reference = reference();
+fn the_stepped_boundaries_reproduce_their_recorded_baseline() {
     let recording = recording();
 
     let tape = input_tape::new(
@@ -450,15 +470,16 @@ fn the_stepped_boundaries_still_hash_match_the_reference_lua_run() {
     .expect("tape constructs");
 
     assert_eq!(tape.boundary_hashes.len(), recording.frames.len() + 1);
-    for (index, hash) in tape.boundary_hashes.iter().enumerate() {
+    assert_eq!(tape.boundary_hashes.len(), STEPPED_BASELINE.len() + 1);
+    for (index, expected) in STEPPED_BASELINE.iter().enumerate() {
+        let boundary = index + 1;
         assert_eq!(
-            hash,
-            expect(&reference, &format!("boundary_hash[{index}]")),
-            "boundary_hash[{index}] diverges from the reference Lua run. \
-             Unlike every other case in this file, THIS ONE IS TRAJECTORY-COUPLED \
-             by design: a deliberate simulation change trips it legitimately and \
-             it needs a recorded retirement, not a rewrite. A format regression \
-             would have reddened the wire, identity or tick-zero cases instead."
+            &tape.boundary_hashes[boundary], expected,
+            "boundary_hash[{boundary}] diverges from the recorded baseline. \
+             Unlike every other case in this file, THIS ONE IS \
+             TRAJECTORY-COUPLED by design: a deliberate simulation change \
+             trips it legitimately and re-records it. A format regression \
+             would have reddened the wire, identity or tick-zero cases."
         );
     }
 }
