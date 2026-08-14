@@ -488,6 +488,62 @@ commands each entry cites are the deleted Lua CLI (see the banner at the top),
 and no entry has been re-measured on `gc-sim`. Every number below is the Lua
 tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
 
+- **2026-08-14 — the gameplay AI's pass/throw decisions moved onto the same
+  `MatchInput` charge-and-release seam a human uses, instead of calling
+  `release_pass` directly (#531 phase 2, re-recording phase 1's #535
+  blast radius).** `baseline_version` **9 → 10**, signature
+  `ac397926cf724b7b` → `95850e11e242ea9b`, `snapshot_version` **11 → 12**
+  (`pass_intent` added to `MatchPlayer`; `tuning_hash` and `content_hash`
+  unchanged — no knob defaults or content moved), `fixture_hash`
+  `eda80b6ca32829a2` → `110e1af740715032`. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  This is a genuine trajectory change, not a schema artifact: an AI pass or
+  throw now costs the same charge time and hold-duration interception
+  exposure a human always paid, and the soft cone
+  (`select_pass_target`/`select_throw_target`) resolves the receiver instead
+  of the AI's own scorer. See #531/#535 for the seam's design and the full
+  enumerated blast radius.
+
+  | metric | frozen (v9) | re-frozen (v10) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.264791 | 0.267473 | +0.002682 |
+  | `goals_total` | 1.683333 | 1.883333 | +0.200000 |
+  | `goals_home` | 0.616667 | 0.650000 | +0.033333 |
+  | `goals_away` | 1.066667 | 1.233333 | +0.166667 |
+  | `shots` | 33.016667 | 29.000000 | −4.016667 |
+  | `shots_per_goal` | 22.572327 | 16.433642 | −6.138685 |
+  | `save_rate` | 0.911370 | 0.889098 | −0.022272 |
+  | `passes` | 33.700000 | 32.683333 | −1.016667 |
+  | `pass_completion` | 0.553037 | 0.524982 | −0.028055 |
+  | `turnovers_per_min` | 8.784997 | 9.778232 | +0.993235 |
+  | `possession_balance` | 0.560170 | 0.518344 | −0.041826 |
+  | `longest_drought_s` | 11.537500 | 13.325278 | +1.787778 |
+  | `decided_late` | 0.642449 | 0.667803 | +0.025354 |
+  | `lead_changes` | 0.066667 | 0.016667 | −0.050000 |
+  | `margin` | 1.183333 | 1.050000 | −0.133333 |
+  | `duration` | 116.805000 | 117.205000 | +0.400000 |
+  | `ai_dribble_carry_s` | 25.724444 | 28.371944 | +2.647500 |
+  | `ai_dribble_close_share` | 0.845731 | 0.843196 | −0.002535 |
+  | `ai_dribble_sprint_share` | 0.147908 | 0.140410 | −0.007498 |
+  | `ai_dribble_juke_share` | 0.081623 | 0.075924 | −0.005700 |
+  | `ai_dribble_touches_per_min` | 105.131959 | 99.758856 | −5.373103 |
+  | `ai_dribble_heavy_losses_per_min` | 0.636747 | 0.437461 | −0.199285 |
+  | `ai_jukes` | 31.933333 | 30.933333 | −1.000000 |
+
+  `fun` is comparable across these two rows — no metric was registered or
+  retired between v9 and v10, only the producer's mechanics changed — but it
+  should not be read as a verdict on balance. `pass_completion` drops from
+  0.553 to 0.525, moving toward, not yet past, the 0.52 floor #531's issue
+  body predicted; `ai_dribble_carry_s` and `longest_drought_s` both rise,
+  consistent with an AI that now has to hold the ball through a charge
+  instead of releasing on the spot. **This entry is the drift record the
+  recorder's own re-freeze protocol requires, not the phase-3 balance
+  re-measurement #531 tracks separately** — phase 3 re-runs the harness from
+  scratch and publishes the new numbers as the reference rather than as a
+  delta against the AI-exempt baseline above, which measured a different
+  producer's rules.
+
 - **2026-08-13 — passing: soft-scored receiver selection, a registered
   distance-to-speed curve, and a lead solver measured against the real
   locomotion profile (#491, sim half).** `baseline_version` **8 → 9**,

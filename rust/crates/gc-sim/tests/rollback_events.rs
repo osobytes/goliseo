@@ -121,6 +121,7 @@ fn make_player(
         charge: 0.0,
         pass_charge: 0.0,
         pass_target: None,
+        pass_intent: gc_sim::pass_intent::new_state(),
         windup_timer: 0.0,
         windup_shot: None,
         jockey_timer: 0.0,
@@ -941,7 +942,7 @@ fn rollback_events_defensively_copies_inputs_diffs_confirmed_records_and_compact
     let next_diff = rollback_events::apply(&mut timeline, 1, 1, &[supplied(&next)]).unwrap();
     assert_eq!(next_diff.added.len(), 0);
     assert_eq!(match_snapshot::hash(&initial), initial_hash);
-    assert_eq!(match_snapshot::VERSION, 11);
+    assert_eq!(match_snapshot::VERSION, 12);
 }
 
 #[test]

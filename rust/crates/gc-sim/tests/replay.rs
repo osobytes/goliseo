@@ -40,11 +40,17 @@ use gc_sim::tuning::Tuning;
 // wrong". What this file actually proves -- that `replay` reports the first
 // diverging boundary, rejects tampering, and refuses mismatched identities --
 // is asserted against these hashes rather than by them.
+//
+// #531 phase 2 EXCEPTION: unlike #488, this bumped `match_snapshot::VERSION`
+// (11 -> 12, the new `pass_intent` field on every `MatchPlayer`), which
+// changes the canonical byte encoding of every captured snapshot including
+// boundary 0's zero-tick kickoff state -- so this one time all four values
+// below moved together, for the schema reason and no other.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "07857e40c78bdd99",
-    "d5a84b58ddccd7be",
-    "f110ef4a498c3a06",
-    "559d9c6518dd6695",
+    "9447e27f341cfaf9",
+    "e598a0f82e726e86",
+    "d1da2f62315fa218",
+    "a82ccba59631f487",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks
