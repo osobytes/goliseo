@@ -6229,6 +6229,28 @@ fn update_ball(
             // unaffected — shoot already commits a wind-up payload
             // (`windup_timer`/`windup_shot`), and dribble is not a
             // multi-tick commitment at all.
+            //
+            // DISCLOSED PRODUCER ASYMMETRY: `owner.stun_timer <= 0.0` predates
+            // #531 and used to gate only the (single-tick, no persisted
+            // state) call to `ai_outfield_decision` -- a stunned AI simply
+            // skipped one decision. `outfield_actions` (the human branch
+            // just above) has never had an equivalent stun check at all. Now
+            // that a charging `pass_intent` survives across ticks, the two
+            // producers diverge under stun: a stunned AI carrier's charge
+            // FREEZES (this whole branch, including the "if Charging,
+            // materialize" arm, is skipped while `stun_timer > 0.0`), while
+            // an equally-stunned human's `pass_charge` keeps accumulating
+            // through `outfield_actions` regardless. This costs the AI MORE
+            // hold time, not less, so it is not exploitable, but it is a
+            // real producer asymmetry this PR's own thesis is to remove, and
+            // it is reachable: a still-in-possession player can be stunned
+            // by the non-dispossessing slide-tackle body collision (see the
+            // stun assignment near the slide-collision handling above).
+            // Left as a disclosed asymmetry rather than fixed here — closing
+            // it means deciding whether stun should also freeze a human's
+            // charge (a second behavioural change) or never freeze the AI's
+            // (losing a pre-existing AI-only protection), and that decision
+            // belongs with review, not a silent choice in this diff.
             if s.players[(owner_idx - 1) as usize].pass_intent.stage
                 == pass_intent::PassIntentStage::Idle
             {

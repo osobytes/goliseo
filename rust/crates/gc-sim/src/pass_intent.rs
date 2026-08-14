@@ -164,6 +164,27 @@ pub struct PassIntentSignals {
 /// (a short pass) that tick is the same tick the intent was committed:
 /// `current_charge` starts at `0.0`, so `0.0 >= target_charge` is
 /// immediately true and the tap releases with no hold at all.
+///
+/// BENIGN EDGE CASE at `target_charge == 1.0` exactly (reachable: a
+/// committed distance beyond what any charge can reach clamps here, see
+/// `commit_outfield_pass_intent`/`commit_keeper_pass_intent`'s callers).
+/// This function can still return `Charging` (holding) on the very tick the
+/// shared charge-accumulation code separately fires its OWN "full meter
+/// lets fly on its own" check (`owner.pass_charge >= 1.0` inside
+/// `outfield_actions`/`keeper_actions`), because that check runs AFTER this
+/// one, against the value THIS tick's accumulation just produced — one step
+/// ahead of what `current_charge` (this tick's pre-accumulation value) let
+/// this function see. The release still fires correctly, through the same
+/// verb, on that tick; only the retained `PassIntentState` is briefly stale
+/// (`Charging`, pointing at a target/threshold nothing will read again).
+/// It self-heals the very next tick regardless of what the player does
+/// next: `update_ball`'s unconditional per-tick sweep resets `pass_intent`
+/// for anyone who isn't the ball owner, and losing possession is exactly
+/// what a release does. `validate_state` does not reject the stale value
+/// (a `Charging` state with a target and an in-range threshold is
+/// internally well-formed), so nothing observable breaks — this is
+/// documented so the next person tracing a materialize/full-meter
+/// interaction doesn't have to rediscover it.
 #[must_use]
 pub fn materialize(
     state: &PassIntentState,

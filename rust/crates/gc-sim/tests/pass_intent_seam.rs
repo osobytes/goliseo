@@ -614,3 +614,129 @@ fn a_rollback_boundary_mid_charge_resimulates_to_exactly_one_release_no_strand_n
         "the two timelines must converge bit-for-bit after the release"
     );
 }
+
+// ---------------------------------------------------------------------
+// A real tackle mid-charge dispossesses the AI and releases no pass.
+// ---------------------------------------------------------------------
+
+/// #531's headline claim -- that the AI now pays the same interception
+/// exposure during a hold a human always paid -- otherwise rests on code
+/// inspection (`attempt_steals` never reads the owner's producer type,
+/// `pass_intent`, or `pass_charge`; only the challenger's own state) plus
+/// indirect corroboration from `tests/keeper_shadow_classifier.rs`'s moved
+/// counts and `outfield_ai_baseline`'s moved `turnovers_per_min`. This
+/// drives the property directly: a real standing-poke tackle, through the
+/// same `attempt_steals` a human's own dash always goes through -- not a
+/// simulated loss (`losing_possession_mid_charge_clears_pass_intent_and_pass_charge`
+/// above forces `s.owner = None` by hand, which proves the reset wiring but
+/// not that a tackle can actually land mid-charge in the first place).
+///
+/// The challenger is parked on `s.controlled` with `human_controlled: true`
+/// so its single `dash` press reaches `move_human_player`'s standing-poke
+/// branch -- the exact path a real player's tackle button takes -- while
+/// the AI carrier, a different (away) player index, stays fully
+/// AI-decided throughout.
+#[test]
+fn a_real_tackle_mid_charge_dispossesses_the_ai_and_releases_no_pass() {
+    let tune = fast_charge_tuning(3.0); // default PASS_RANGE_MIN/MAX: a
+    // 200px pass needs several real ticks to charge at the registered
+    // rate ceiling, leaving a genuine window to tackle into.
+
+    let carrier_pos = Vec2::new(500.0, 270.0);
+    let target_pos = Vec2::new(700.0, 270.0);
+    // 30px from the carrier/ball: inside STAND_REACH (34px, species_reach
+    // is 0 for the "none" verb every fixture player here uses), outside
+    // both players' collision radii (12px each) so no push-apart physics
+    // disturbs the fixture before the tackle is thrown.
+    let challenger_pos = Vec2::new(470.0, 270.0);
+
+    let players = vec![
+        make_player("h_keeper", Team::Home, true, 20.0, 50.0),
+        make_player(
+            "h_challenger",
+            Team::Home,
+            false,
+            challenger_pos.x,
+            challenger_pos.y,
+        ),
+        make_player("h3", Team::Home, false, 900.0, 50.0),
+        make_player("h4", Team::Home, false, 900.0, 150.0),
+        make_player("h5", Team::Home, false, 900.0, 250.0),
+        make_player("a_keeper", Team::Away, true, 940.0, 270.0),
+        make_player("a_carrier", Team::Away, false, carrier_pos.x, carrier_pos.y),
+        make_player("a_target", Team::Away, false, target_pos.x, target_pos.y),
+        make_player("a3", Team::Away, false, 100.0, 450.0),
+        make_player("a4", Team::Away, false, 100.0, 100.0),
+    ];
+    // h_keeper=1, h_challenger=2, h3=3, h4=4, h5=5, a_keeper=6,
+    // a_carrier=7, a_target=8, a3=9, a4=10.
+    let carrier_idx = 7;
+    let challenger_idx = 2;
+
+    let mut state = base_state(players, Some(carrier_idx), carrier_pos);
+    state.human_controlled = true;
+    state.controlled = challenger_idx;
+    for player in &mut state.players {
+        player.move_speed = 0.01;
+    }
+
+    // Let the AI commit and hold a genuine charge first -- the challenger
+    // presses nothing yet.
+    let mut observed_charging = false;
+    for _ in 0..3 {
+        step_once(&mut state, &tune);
+        let carrier = &state.players[(carrier_idx - 1) as usize];
+        if carrier.pass_intent.stage == PassIntentStage::Charging && carrier.pass_charge > 0.0 {
+            observed_charging = true;
+        }
+    }
+    assert!(
+        observed_charging,
+        "the fixture must actually be mid-charge before the tackle for this test to prove \
+         anything"
+    );
+    assert!(
+        !state.events.iter().any(|e| e.kind == MatchEventKind::Pass),
+        "must not have released yet"
+    );
+
+    // The real tackle: a standing poke, thrown on this tick only, through
+    // the same input path a human's dash button always uses.
+    sim_match::step(
+        &mut state,
+        DT,
+        StepInput::Legacy(match_snapshot::MatchInput {
+            dash: true,
+            ..match_snapshot::MatchInput::default()
+        }),
+        None,
+        &tune,
+    );
+
+    assert_eq!(
+        state.owner, None,
+        "a successful poke tackle knocks the ball loose -- attempt_steals unconditionally \
+         clears s.owner on any successful tackle, sliding or standing"
+    );
+    let carrier = &state.players[(carrier_idx - 1) as usize];
+    assert_eq!(
+        carrier.pass_intent.stage,
+        PassIntentStage::Idle,
+        "the dispossessed carrier's intent must reset the same tick"
+    );
+    assert_eq!(carrier.pass_charge, 0.0);
+
+    // A few more neutral ticks: the tackled carrier must never reclaim the
+    // ball and resolve the charge it was interrupted mid-way through.
+    let mut pass_ever_fired = false;
+    for _ in 0..30 {
+        step_once(&mut state, &tune);
+        if state.events.iter().any(|e| e.kind == MatchEventKind::Pass) {
+            pass_ever_fired = true;
+        }
+    }
+    assert!(
+        !pass_ever_fired,
+        "the interrupted charge must never resolve into a release"
+    );
+}
