@@ -165,6 +165,63 @@ fn step_frames(s: &mut MatchState, n: u32, tune: &Tuning) {
     }
 }
 
+// The AI's pass/throw decisions charge over several ticks before releasing
+// instead of calling the resolver the instant they decide (#531), so a case
+// built as "one `step()` call, then assert a release happened" no longer
+// holds: a single tick may land mid-charge. `PASS_CHARGE_RATE`'s default
+// reaches a full charge in well under a second (`docs/design`'s tunable
+// table); 3 seconds is a generous budget against every range/tuning
+// combination these fixtures use.
+const PASS_INTENT_BUDGET_TICKS: u32 = 180;
+
+/// Steps at the canonical 1/60s tick until `kind` fires as an event on that
+/// exact tick, or `budget` ticks pass without it. `MatchState::events` is
+/// cleared and rebuilt every tick (`match::step`'s own doc), so checking
+/// `has_event` right after each step reads only that tick's events -- and on
+/// success this function stops there, leaving every other post-release
+/// assertion (ball velocity/spin, `receive_timer`, `s.owner`) reading the
+/// exact tick the release happened on, the same way the single-`step()`
+/// fixtures this replaces did.
+fn step_until_event(s: &mut MatchState, kind: MatchEventKind, budget: u32, tune: &Tuning) -> bool {
+    for _ in 0..budget {
+        step(s, 1.0 / 60.0, &no_input(), tune);
+        if has_event(s, kind) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Like [`step_until_event`], but re-pins `held` positions before every
+/// step. A handful of fixtures in this file place a specific defender at an
+/// exact distance off a passing lane to force a particular blocker
+/// determination -- and unlike the pre-#531 same-tick release, that
+/// determination is now read live at release, several ticks after the
+/// fixture set the position up (see `commit_outfield_pass_intent`'s doc
+/// comment on `try_pass`/`release_pass`'s own live blocker check). Left
+/// free to move under its own AI between the setup tick and release, that
+/// defender drifts and can flip the very geometry the fixture is testing --
+/// re-pinning holds the fixture's premise true at the tick it is finally
+/// checked, exactly as a single immediate `step()` used to.
+fn step_until_event_pinning(
+    s: &mut MatchState,
+    kind: MatchEventKind,
+    budget: u32,
+    tune: &Tuning,
+    held: &[(i64, Vec2)],
+) -> bool {
+    for _ in 0..budget {
+        for &(idx, pos) in held {
+            s.players[(idx - 1) as usize].pos = pos;
+        }
+        step(s, 1.0 / 60.0, &no_input(), tune);
+        if has_event(s, kind) {
+            return true;
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------------
 // match.new
 // ---------------------------------------------------------------------
@@ -905,7 +962,17 @@ fn distributes_to_a_teammate_instead_of_hoofing_it() {
     }
     s.owner = Some(ki);
     s.players[(ki - 1) as usize].hold_timer = 0.0; // hold already elapsed: distribute this step
-    step(&mut s, 0.016, &no_input(), &tune);
+    // The AI keeper charges over several ticks before releasing (#531)
+    // instead of distributing the instant the hold clock expires.
+    assert!(
+        step_until_event(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune
+        ),
+        "the keeper never released a pass within budget"
+    );
     assert!(s.owner.is_none(), "the keeper releases the ball");
     // A paced short throw (arrives with a touch left), not a long clear.
     let speed = s.ball_vel.length();
@@ -1853,7 +1920,16 @@ fn the_keeper_lobs_over_a_defender_on_its_throwing_lane_and_lands_near_a_mate() 
     s.players[9].pos = Vec2::new(950.0, 40.0); // player 10
     s.owner = Some(ki);
     s.players[(ki - 1) as usize].hold_timer = 0.0;
-    step(&mut s, 0.001, &no_input(), &tune);
+    // The AI keeper charges over several ticks before releasing (#531).
+    assert!(
+        step_until_event(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune
+        ),
+        "the keeper never released a pass within budget"
+    );
     assert!(s.owner.is_none(), "keeper released the ball");
     assert!(s.ball_vz > 0.0, "it was lobbed over the camped defender");
     assert!(
@@ -2237,7 +2313,16 @@ fn an_ai_carrier_under_pressure_passes_to_an_open_teammate() {
     s.players[(controlled - 1) as usize].pos = Vec2::new(200.0, 100.0);
     s.owner = Some(carrier);
     s.ball = Vec2::new(582.0, 270.0);
-    step(&mut s, 0.016, &no_input(), &tune);
+    // The AI carrier charges over several ticks before releasing (#531).
+    assert!(
+        step_until_event(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune
+        ),
+        "the carrier never released a pass within budget"
+    );
     assert!(
         has_event(&s, MatchEventKind::Pass),
         "the pressured carrier moves the ball on"
@@ -2264,20 +2349,49 @@ fn floats_a_throw_over_the_traffic_when_outlets_are_marked_but_not_swarmed() {
     let tune = Tuning::new();
     let mut s = new_match();
     s.players[0].pos = Vec2::new(40.0, 270.0); // home keeper
-    // Every outlet has a marker 40px away: not SAFE (60) but receivable (>=30).
+    // Every outlet has a marker 40px away, ON the keeper->outlet throwing
+    // lane: not SAFE (60) but receivable (>=30) for selection purposes, and
+    // -- the property this fixture actually exercises -- a genuine blocker
+    // under `ai::lane_blocker`'s own geometry (perpendicular distance ~0,
+    // lane fraction well inside its (0.1, 0.95) window). #531 unified the
+    // AI's own distribution onto `keeper_throw`/`plan_throw`, the same
+    // lane-based blocker check a human's charged throw already used
+    // (design decision 3 in #531's PR body); a marker merely sitting near
+    // the RECEIVER rather than on the LANE -- this fixture's shape before
+    // that unification -- no longer registers as a blocker, because
+    // `lane_blocker` only looks at the segment between thrower and target.
     s.players[1].pos = Vec2::new(250.0, 150.0);
     s.players[2].pos = Vec2::new(250.0, 390.0);
     s.players[3].pos = Vec2::new(420.0, 270.0);
     s.players[4].pos = Vec2::new(560.0, 200.0);
-    s.players[6].pos = Vec2::new(290.0, 150.0);
-    s.players[7].pos = Vec2::new(290.0, 390.0);
-    s.players[8].pos = Vec2::new(460.0, 270.0);
-    s.players[9].pos = Vec2::new(600.0, 200.0);
+    s.players[6].pos = Vec2::new(215.27, 169.85); // 40px off outlet 1, on its lane
+    s.players[7].pos = Vec2::new(215.27, 370.15); // 40px off outlet 2, on its lane
+    s.players[8].pos = Vec2::new(380.0, 270.0); // 40px off outlet 3, on its lane
+    s.players[9].pos = Vec2::new(520.36, 205.34); // 40px off outlet 4, on its lane
     s.players[5].pos = Vec2::new(938.0, 270.0); // away keeper home
     s.owner = Some(1);
     s.ball = Vec2::new(40.0, 270.0);
     s.players[0].hold_timer = 0.0;
-    step(&mut s, 0.001, &no_input(), &tune);
+    // The AI keeper charges over several ticks before releasing (#531), and
+    // the blocker fraction that decides loft-vs-roll is read LIVE at release
+    // (`plan_throw`, called from `keeper_throw` -- see its doc comment) --
+    // so every outlet/marker pair this fixture places has to still be where
+    // it was set up when the charge finally crosses threshold, not wherever
+    // its own off-ball AI wandered to in the meantime.
+    let held: Vec<(i64, Vec2)> = [1usize, 2, 3, 4, 6, 7, 8, 9]
+        .into_iter()
+        .map(|i| ((i + 1) as i64, s.players[i].pos))
+        .collect();
+    assert!(
+        step_until_event_pinning(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune,
+            &held
+        ),
+        "the keeper never released a pass within budget"
+    );
     assert!(s.owner.is_none(), "keeper releases the ball");
     assert!(
         has_event(&s, MatchEventKind::Pass),
@@ -2354,9 +2468,25 @@ fn the_pass_button_prefers_a_teammate_whose_lane_cannot_be_cut() {
 fn a_pressured_ai_carrier_lobs_the_pass_a_chaser_would_cut_out() {
     let tune = Tuning::new();
     let mut s = new_match();
-    // Away carrier under pressure with one eligible outlet; a home defender
-    // stands 26px off the ground lane (statically clear, POSSESS_DIST is 22)
-    // but close enough to step onto the rolling ball.
+    // Away carrier under pressure with one eligible outlet, and a home
+    // defender close enough to the RELEASE POINT to make `release_pass`'s
+    // own dink-over-a-close-blocker check fire.
+    //
+    // #531 changed which check this fixture has to satisfy. Before the seam,
+    // `ai_outfield_decision` released instantly through a mid-lane
+    // `ai::lane_blocker` check (26px off the direct carrier->outlet line,
+    // inside its width but outside `POSSESS_DIST`=22). After #531,
+    // `ai_outfield_decision`'s "pass" branch (as opposed to "cross") always
+    // commits `lofted: false` (see `commit_outfield_pass_intent`'s call
+    // site), so `try_pass` never runs that mid-lane check for a plain pass
+    // at all -- only `release_pass`'s own tighter, release-point-only dink
+    // check (`RELEASE_DINK_DIST` = 44px from the PASSER, roughly toward the
+    // target) can still force a loft. A defender merely near the lane, well
+    // outside 44px of the passer, no longer triggers one; this is a real,
+    // disclosed narrowing of what makes a plain pass loft (see #531's PR
+    // body, design decisions 2 and 3, and `try_pass`'s own doc comment on
+    // the dink check), not an artifact of the multi-tick charge. Repositioned
+    // to exercise the mechanism that actually exists post-#531.
     let away_out = away_outfielders(&s);
     let carrier = away_out[0];
     let outlet = away_out[1];
@@ -2373,12 +2503,34 @@ fn a_pressured_ai_carrier_lobs_the_pass_a_chaser_would_cut_out() {
         }
     }
     s.players[(home_out[0] - 1) as usize].pos = Vec2::new(655.0, 270.0); // pressures the carrier
-    s.players[(home_out[1] - 1) as usize].pos = Vec2::new(520.0, 296.0); // lurks 26px off the lane
+    // 42px from the carrier, toward the outlet: inside RELEASE_DINK_DIST
+    // (44px), well outside POSSESS_DIST (22) so it never just steals the
+    // ball outright.
+    s.players[(home_out[1] - 1) as usize].pos = Vec2::new(558.0, 275.0);
     s.players[(home_out[2] - 1) as usize].pos = Vec2::new(824.0, 200.0); // pins an away spare
     s.players[(controlled - 1) as usize].pos = Vec2::new(824.0, 340.0); // pins the other spare
     s.owner = Some(carrier);
     s.ball = Vec2::new(582.0, 270.0);
-    step(&mut s, 0.016, &no_input(), &tune);
+    // The AI carrier charges over several ticks before releasing (#531), and
+    // the release-point dink check reads the CARRIER's and the chaser's
+    // positions live at release (`release_pass`) -- both have to still be
+    // where this fixture placed them when the charge finally crosses
+    // threshold, not wherever their own AI wandered to in the meantime.
+    let held = [
+        (carrier, s.players[(carrier - 1) as usize].pos),
+        (outlet, s.players[(outlet - 1) as usize].pos),
+        (home_out[1], s.players[(home_out[1] - 1) as usize].pos),
+    ];
+    assert!(
+        step_until_event_pinning(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune,
+            &held
+        ),
+        "the carrier never released a pass within budget"
+    );
     assert!(
         has_event(&s, MatchEventKind::Pass),
         "the pressured carrier moves the ball on"
@@ -2413,7 +2565,16 @@ fn the_keeper_floats_its_distribution_over_a_chaser_who_could_cut_it() {
     s.owner = Some(1);
     s.ball = Vec2::new(40.0, 270.0);
     s.players[0].hold_timer = 0.0;
-    step(&mut s, 0.001, &no_input(), &tune);
+    // The AI keeper charges over several ticks before releasing (#531).
+    assert!(
+        step_until_event(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune
+        ),
+        "the keeper never released a pass within budget"
+    );
     assert!(s.owner.is_none(), "keeper releases the ball");
     assert!(
         has_event(&s, MatchEventKind::Pass),
@@ -3354,7 +3515,16 @@ fn an_ai_carrier_on_the_flank_crosses_to_the_box() {
     s.owner = Some(carrier);
     let carrier_pos = s.players[(carrier - 1) as usize].pos;
     s.ball = carrier_pos.add(Vec2::new(-18.0, 0.0));
-    step(&mut s, 0.016, &no_input(), &tune);
+    // The AI carrier charges over several ticks before releasing (#531).
+    assert!(
+        step_until_event(
+            &mut s,
+            MatchEventKind::Pass,
+            PASS_INTENT_BUDGET_TICKS,
+            &tune
+        ),
+        "the winger never delivered a pass within budget"
+    );
     assert!(
         has_event(&s, MatchEventKind::Pass),
         "the winger delivers it"

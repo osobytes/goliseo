@@ -11,6 +11,11 @@ use gc_sim::slot_input::{self, MatchSlotSource, MatchSlotSourceKind};
 use gc_sim::tuning::Tuning;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+// The AI's pass/throw decisions charge over several ticks before releasing
+// instead of releasing the instant they decide (#531). See `tests/match.rs`'s
+// identically-named constant for the sizing rationale.
+const PASS_INTENT_BUDGET_TICKS: i64 = 180;
+
 fn frame_sources() -> [MatchSlotSource; 8] {
     [MatchSlotSource {
         kind: MatchSlotSourceKind::Frame,
@@ -704,17 +709,32 @@ fn fixed_match_input_slots_keeps_online_input_off_the_keeper_while_deterministic
         s.controlled, selected,
         "keeper possession cannot change slot selection"
     );
-    assert_ne!(
-        s.owner,
-        Some(1),
-        "the keeper AI releases the ball on its own schedule"
-    );
+
+    // The AI keeper charges over several ticks before releasing (#531)
+    // instead of distributing the instant the hold clock expires, so "the
+    // keeper AI releases the ball on its own schedule" no longer holds
+    // within this single tick -- step further neutral frames until it does.
     let keeper_id = s.players[0].id.clone();
-    let distributed = s.events.iter().any(|event| {
-        (event.kind == MatchEventKind::Pass || event.kind == MatchEventKind::Shot)
-            && event.player.as_deref() == Some(keeper_id.as_str())
-    });
+    let mut distributed = false;
+    for tick in 1..=PASS_INTENT_BUDGET_TICKS {
+        let frame = frame(tick, &[]);
+        sim_match::step(
+            &mut s,
+            fixed_seconds(),
+            StepInput::Frame(&frame),
+            None,
+            &tune,
+        );
+        distributed = s.events.iter().any(|event| {
+            (event.kind == MatchEventKind::Pass || event.kind == MatchEventKind::Shot)
+                && event.player.as_deref() == Some(keeper_id.as_str())
+        });
+        if distributed {
+            break;
+        }
+    }
     assert!(distributed, "the keeper AI owns distribution in slot mode");
+    assert_ne!(s.owner, Some(1), "the keeper released the ball");
 }
 
 #[test]
