@@ -10,7 +10,7 @@ use gc_render::player_pose::{self, KeeperPoseContext, OutfieldPoseContext, Playe
 use gc_sim::aerial::{AerialOutcome, AerialStyle};
 use gc_sim::keeper::{self, KeeperBehaviorState};
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::{MatchEvent, MatchEventKind, MatchInput, MatchState, PitchSize};
+use gc_sim::match_snapshot::{self, MatchEvent, MatchEventKind, MatchInput, MatchState, PitchSize};
 use gc_sim::outfield_press::StablePressMode;
 use gc_sim::tuning::Tuning;
 
@@ -656,4 +656,110 @@ fn frame_facing_never_tracks_dive_dir_while_a_keeper_leans_along_it() {
             "slot {slot} is not diving, so its facing passes straight through"
         );
     }
+}
+
+/// #491's no-latching requirement: the pass-preview marker
+/// (`control.pass_target`) is a pure function of the state handed to
+/// [`render_frame::build`] on THIS call, never a value remembered from a
+/// previous one. A rollback correction that shifts the soft cone's winner
+/// must not leave the marker on the stale one -- and since `build` never
+/// sees "the previous frame" at all (it takes one `&MatchState` and returns
+/// one owned `RenderFrame`, with no cache, no thread-local and no static
+/// anywhere in this crate), two calls with two different winners must
+/// report two different markers, in either order, with nothing carried
+/// between them.
+///
+/// Discriminates: an animation state machine that held the last non-`None`
+/// target across calls (exactly the "no latching" failure mode #491 names)
+/// would make the second assertion in each pair below fail.
+#[test]
+fn pass_target_marker_has_no_memory_across_build_calls() {
+    let mut state = fixture(31.0);
+    let controlled_index = (state.controlled - 1) as usize;
+    let other_slot = if controlled_index == 0 { 1 } else { 0 };
+    let third_slot = (0..state.players.len())
+        .find(|&i| i != controlled_index && i != other_slot)
+        .expect("fixture has at least three players");
+
+    // Winner A, then winner B: the second call must report B, not A.
+    state.players[controlled_index].pass_target = Some((other_slot + 1) as i64);
+    let first = render_frame::build(&state, &RenderFrameOptions::default());
+    assert_eq!(first.control.pass_target, Some((other_slot + 1) as i64));
+
+    state.players[controlled_index].pass_target = Some((third_slot + 1) as i64);
+    let second = render_frame::build(&state, &RenderFrameOptions::default());
+    assert_eq!(
+        second.control.pass_target,
+        Some((third_slot + 1) as i64),
+        "the marker must report the CURRENT winner, not the one the previous build() call saw"
+    );
+
+    // A rollback correction can also erase the winner outright (nobody in
+    // range/cone any more) -- the marker must clear immediately, not hold
+    // the last-known-good target.
+    state.players[controlled_index].pass_target = None;
+    let cleared = render_frame::build(&state, &RenderFrameOptions::default());
+    assert_eq!(
+        cleared.control.pass_target, None,
+        "a corrected None must clear the marker, not fall back to the last Some seen"
+    );
+
+    // And back to non-None again, to rule out a latch that only triggers
+    // once.
+    state.players[controlled_index].pass_target = Some((other_slot + 1) as i64);
+    let restored = render_frame::build(&state, &RenderFrameOptions::default());
+    assert_eq!(restored.control.pass_target, Some((other_slot + 1) as i64));
+}
+
+/// #491's structural non-interference requirement, made concrete rather
+/// than argued from `build`'s `&MatchState` signature alone (which already
+/// makes mutation a compile error -- see this file's module doc). This
+/// mirrors `gc-sim/tests/ball_prediction.rs`'s hash-parity tests: run the
+/// identical scripted match twice, one calling [`render_frame::build`]
+/// every tick the way a real renderer would (with the pass button held for
+/// several ticks, so the marker path is actually exercised, not skipped),
+/// the other never calling it, and require the two runs' final canonical
+/// state hash to agree.
+///
+/// Discriminates: this asserts a positive (the hashes match) rather than an
+/// absence of a panic, so it fails the moment a future change lets
+/// something reachable from `build` write back into the `MatchState` it was
+/// handed -- e.g. a hypothetical helper that "helpfully" clears
+/// `pass_target` after reading it. Verified by hand: swapping the state
+/// mutated between the two runs' loops (temporarily, not committed) makes
+/// this test fail as expected.
+#[test]
+fn building_frames_every_tick_changes_no_simulation_hash() {
+    let tune = Tuning::new();
+
+    fn run(build_every_tick: bool, tune: &Tuning) -> String {
+        let mut state = fixture(53.0);
+        let controlled_index = (state.controlled - 1) as usize;
+        for tick in 0..40 {
+            let input = MatchInput {
+                r#move: Vec2::new(1.0, 0.0),
+                pass_held: tick < 20,
+                pass: tick == 20,
+                ..MatchInput::default()
+            };
+            sim_match::step(&mut state, 1.0 / 60.0, StepInput::Legacy(input), None, tune);
+            if build_every_tick {
+                let frame = render_frame::build(&state, &RenderFrameOptions::default());
+                // Touch the marker field so the read is not optimized away
+                // and so this genuinely exercises the pass-preview path
+                // whenever `pass_target` is armed.
+                std::hint::black_box(frame.control.pass_target);
+            }
+        }
+        let _ = controlled_index;
+        match_snapshot::hash_canonical(&match_snapshot::capture(&state, None))
+    }
+
+    let with_builds = run(true, &tune);
+    let without_builds = run(false, &tune);
+    assert_eq!(
+        with_builds, without_builds,
+        "building a RenderFrame every tick -- including while the pass-preview marker is \
+         active -- must not change the simulation's own canonical hash"
+    );
 }
