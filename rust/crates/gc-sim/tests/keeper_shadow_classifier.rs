@@ -140,7 +140,19 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     let seeds = baseline::seeds();
     let (total, had_disagree, had_deferred) = classify(&seeds);
 
-    // Re-pinned by #488's carry-composition fix, in the SAME commit as
+    // Re-pinned by #491's passing rework, in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v8 -> v9 re-freeze, for the reason
+    // the paragraph below already gives.
+    //
+    // candidates 10507 -> 9208: the lead solver aims a driven ground pass at
+    // where the receiver WILL be rather than at their feet, so possession
+    // sequences run longer between loose balls and fewer of them end in a
+    // shot the keeper has to judge. `disagree_height` 27 -> 10 and
+    // `disagree_deferred` 210 -> 171 fall roughly in proportion. `new_only`
+    // stays structurally 0, which is the assertion that would have been a
+    // finding rather than a re-pin.
+    //
+    // Previously re-pinned by #488's carry-composition fix, in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s re-freeze. These counts are taken
     // over that fixture's 60 seeds, so the two describe one build or neither
     // describes anything -- this file's own doc asks for "the same discipline
@@ -152,11 +164,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 10507);
-    assert_eq!(total.agree_true, 2593);
-    assert_eq!(total.agree_false, 7677);
-    assert_eq!(total.disagree_deferred, 210);
-    assert_eq!(total.disagree_height, 27);
+    assert_eq!(total.candidates, 9208);
+    assert_eq!(total.agree_true, 2737);
+    assert_eq!(total.agree_false, 6290);
+    assert_eq!(total.disagree_deferred, 171);
+    assert_eq!(total.disagree_height, 10);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -198,7 +210,14 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // dominant driver rather than disagreement episodes. The shift from
     // 6/25/30 to 10/22/29 moves work between the two buckets without
     // disturbing that conclusion.
-    assert_eq!(matches_with_disagree, 10);
-    assert_eq!(matches_with_deferred, 22);
-    assert_eq!(matches_with_either, 29);
+    // Re-pinned by #491 alongside the counts above. The reconciliation still
+    // holds in the same direction: `disagree_height` alone touches 6/60
+    // matches (10%), and folding in `disagree_deferred` reaches 24/60 (40%)
+    // -- still on the right side of the 17/60 byte-divergent split this
+    // paragraph exists to explain, so deferred episodes remain the dominant
+    // driver. The shift from 10/22/29 to 6/21/24 tracks the fall in
+    // candidates and disturbs nothing about the conclusion.
+    assert_eq!(matches_with_disagree, 6);
+    assert_eq!(matches_with_deferred, 21);
+    assert_eq!(matches_with_either, 24);
 }
