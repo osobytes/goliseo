@@ -1816,8 +1816,20 @@ fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>,
 }
 
 /// Plan a keeper HAND throw to `target_idx`. Hands see the whole pitch: a
-/// throw is not a hopeful ball, it is placed.
-fn plan_throw(s: &MatchState, keeper_idx: i64, target_idx: i64) -> (Vec2, f64, f64) {
+/// throw is not a hopeful ball, it is placed. Returns `None` for the
+/// blocker fraction when the straight line to `target_idx` (after any
+/// near-opponent lead shift) is genuinely clear of `THROW_LANE_W` --
+/// `keeper_throw` reads that as "bowl it, don't loft it": a fully unmarked
+/// throw was always released flat and near-instantly, both before #531 (as
+/// `keeper_distribute`'s own clear-lane ground-bowl case, deleted with
+/// `release_throw`) and now. Losing that distinction after #531 landed
+/// meant EVERY throw, marked or not, spent a full lob's hang time and
+/// post-landing roll in the air or on a loose ball — genuinely contestable
+/// the whole way, not just when an opponent stood in the lane. Restoring
+/// it here (rather than only in the caller that first exposed it) fixes it
+/// for both keepers this function serves, exactly like `try_pass`'s own
+/// `lofted` parameter already does for outfield passes.
+fn plan_throw(s: &MatchState, keeper_idx: i64, target_idx: i64) -> (Vec2, Option<f64>, f64) {
     let keeper = &s.players[(keeper_idx - 1) as usize];
     let keeper_pos = keeper.pos;
     let keeper_team = keeper.team;
@@ -1857,16 +1869,17 @@ fn plan_throw(s: &MatchState, keeper_idx: i64, target_idx: i64) -> (Vec2, f64, f
         }
     }
     let f = ai::lane_blocker(keeper_pos, land, &opp_positions, THROW_LANE_W);
-    if let Some(f) = f {
-        (land, f.clamp(0.2, 0.8), aerial::max_touch_z() + 16.0)
-    } else {
-        (land, 0.5, THROW_CLEAR_H)
+    match f {
+        Some(f) => (land, Some(f.clamp(0.2, 0.8)), aerial::max_touch_z() + 16.0),
+        None => (land, None, THROW_CLEAR_H),
     }
 }
 
-/// Human keeper throw: aimed like a pass (facing cone), the charged range
-/// picking WHICH teammate; the flight comes from `plan_throw`
-/// (uninterferable).
+/// Keeper throw, driven by an ordinary `MatchInput` -- a human's or a
+/// charging AI's (#531): aimed like a pass (facing cone), the charged range
+/// picking WHICH teammate. The flight comes from `plan_throw`
+/// (uninterferable): lofted over a marked lane, or bowled flat and fast
+/// when the lane is genuinely clear -- see that function's doc.
 fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec2>, tune: &Tuning) {
     let keeper_facing = s.players[(keeper_idx - 1) as usize].facing;
     let aim = aim.unwrap_or(keeper_facing);
@@ -1875,15 +1888,18 @@ fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec
         return;
     };
     let (land, f, clear_h) = plan_throw(s, keeper_idx, target_idx);
-    release_pass(
-        s,
-        keeper_idx,
-        target_idx,
-        Some(f),
-        Some(clear_h),
-        Some(land),
-        tune,
-    );
+    match f {
+        Some(f) => release_pass(
+            s,
+            keeper_idx,
+            target_idx,
+            Some(f),
+            Some(clear_h),
+            Some(land),
+            tune,
+        ),
+        None => release_pass(s, keeper_idx, target_idx, None, None, None, tune),
+    }
     s.players[(keeper_idx - 1) as usize].throw_timer = KEEPER_THROW_POSE;
 }
 
@@ -4510,6 +4526,25 @@ fn commit_keeper_pass_intent(s: &mut MatchState, keeper_idx: i64, tune: &Tuning)
 /// Everyone swarmed: drop-kick a high clearance upfield (lands around
 /// `DROPKICK_DIST` away, toward the middle of the pitch). Unchanged by
 /// #531: this is a clearance, not a pass, and never called `release_pass`.
+/// Whether `target_idx` sits at least `KEEPER_SAFE_DIST` from every
+/// opponent -- the same hard gate `commit_keeper_pass_intent`'s own tier-1
+/// scan applies before a candidate is even scored. `select_throw_target`
+/// has no equivalent gate of its own: opponent proximity there is only a
+/// mild score bonus (`open.clamp(0.0, 100.0) / 40.0`), never an exclusion,
+/// so a caller that skips the scan and goes straight to the cone can hand
+/// the ball to a covered teammate the scan would have refused. Used by the
+/// human keeper's forced-release rule, which has no scan of its own to
+/// inherit this from.
+fn keeper_throw_target_is_safe(s: &MatchState, keeper_team: Team, target_idx: i64) -> bool {
+    let target_pos = s.players[(target_idx - 1) as usize].pos;
+    s.players
+        .iter()
+        .filter(|q| q.team != keeper_team)
+        .map(|q| q.pos.dist(target_pos))
+        .fold(f64::INFINITY, f64::min)
+        >= KEEPER_SAFE_DIST
+}
+
 fn keeper_dropkick_clearance(s: &mut MatchState, keeper: &MatchPlayer, fwd: f64) {
     let tx = (keeper.pos.x + fwd * DROPKICK_DIST).clamp(40.0, s.field.w - 40.0);
     let target = Vec2::new(tx, s.field.h / 2.0);
@@ -4632,6 +4667,21 @@ fn keeper_actions(s: &mut MatchState, dt: f64, input: &MatchInput, owner_idx: i6
     // value to begin with (it arms its own, much shorter one — see the
     // call site in `update_ball`), so this guard is a correctness
     // statement, not just a belt-and-braces check.
+    //
+    // `commit_keeper_pass_intent`'s own scan refuses a covered teammate
+    // outright (`KEEPER_SAFE_DIST`, checked before a candidate is even
+    // scored); `select_throw_target`'s cone has no such gate of its own —
+    // opponent proximity there is only a mild score bonus. A forced release
+    // that skipped straight to the cone inherited none of that scan's
+    // safety net, so it's re-applied here explicitly
+    // (`keeper_throw_target_is_safe`): thrown when the cone's own pick
+    // clears `KEEPER_SAFE_DIST`, cleared upfield exactly like the AI's own
+    // everyone's-covered case otherwise. This is exercised, not
+    // theoretical — `tests/match.rs`'s
+    // `the_keeper_builds_out_without_losing_the_ball_to_the_opponent`
+    // parks a human on the keeper specifically to drive this path, and
+    // failed on it (handing the ball straight to an opponent) before this
+    // safety check existed.
     let owner = &s.players[(owner_idx - 1) as usize];
     if is_human_player(s, owner_idx)
         && s.owner == Some(owner_idx)
@@ -4641,13 +4691,20 @@ fn keeper_actions(s: &mut MatchState, dt: f64, input: &MatchInput, owner_idx: i6
     {
         let owner = s.players[(owner_idx - 1) as usize].clone();
         let aim = if input.r#move.x != 0.0 || input.r#move.y != 0.0 {
-            Some(input.r#move.normalized())
+            input.r#move.normalized()
         } else {
-            Some(owner.facing)
+            owner.facing
         };
         let range = pass_range_min(tune)
             + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune));
-        keeper_throw(s, owner_idx, range, aim, tune);
+        let target = select_throw_target(s, owner_idx, range, Some(aim));
+        let safe = target.is_some_and(|t| keeper_throw_target_is_safe(s, owner.team, t));
+        if safe {
+            keeper_throw(s, owner_idx, range, Some(aim), tune);
+        } else {
+            let fwd = if owner.team == Team::Home { 1.0 } else { -1.0 };
+            keeper_dropkick_clearance(s, &owner, fwd);
+        }
         let owner = &mut s.players[(owner_idx - 1) as usize];
         owner.pass_charge = 0.0;
         owner.pass_target = None;

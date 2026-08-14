@@ -12,16 +12,26 @@
 //! `keeper_distribute`'s scoring, so it IS one of the two blessed callers
 //! rather than a third case.
 //!
-//! This is a plain source-text count rather than an AST walk: `match.rs`'s
-//! own `fn release_pass(` definition plus its two call sites are the only
-//! three occurrences of the substring `release_pass(` in the file today
-//! (verified by hand against `2ce0ca0`, before this change, where the count
-//! was eight -- the five AI-reachable call sites this issue is about, plus
-//! the two human-path calls inside `try_pass`/`keeper_throw`, plus the
-//! definition). A count is enough to catch a REINTRODUCED bypass: any new
-//! call site anywhere in the file raises the count past three and fails
-//! this test, which is the whole point -- it does not need to know which
-//! function a future bypass would live in to catch that one showed up.
+//! `keeper_throw` itself calls `release_pass` from two branches (bowled
+//! flat when `plan_throw` finds the lane genuinely clear, lofted
+//! otherwise -- see that function's own doc for why both exist), so the
+//! total is four: the `fn release_pass(` definition, `try_pass`'s one
+//! call, and `keeper_throw`'s two.
+//!
+//! This is a plain source-text count rather than an AST walk, so it is a
+//! narrower guarantee than the doc comment above might suggest: it catches
+//! an ordinary reintroduced call to `release_pass(` -- the shape every
+//! call site in this file's own history has taken, including the five
+//! #531 was written to remove -- because that is the shape `cargo fmt`
+//! normalizes call sites into. It would not catch a bypass routed through
+//! a function alias, a stored function pointer, or some other indirection
+//! that never spells the literal substring `release_pass(` in this file;
+//! nothing here parses the source as Rust. Given how this codebase's past
+//! bypasses actually looked (five ordinary direct calls), that is judged
+//! an acceptable gap for what this test is cheap enough to be worth: a
+//! reintroduced call site anywhere in the file raises the count and fails
+//! this test without needing to know in advance which function it would
+//! live in.
 use std::fs;
 use std::path::Path;
 
@@ -34,19 +44,18 @@ fn release_pass_has_no_call_site_outside_try_pass_and_keeper_throw() {
 
     let occurrences = source.matches("release_pass(").count();
     assert_eq!(
-        occurrences, 3,
-        "expected exactly 3 occurrences of `release_pass(` in match.rs -- the function's own \
-         `fn release_pass(` definition, the call inside `try_pass`, and the call inside \
-         `keeper_throw` -- found {occurrences}. A new occurrence means either a genuine new \
-         caller (which must be one of `try_pass`/`keeper_throw`/the documented forced-release \
-         rule -- see this test's module doc) or a reintroduced direct-mutation bypass of the \
-         kind #531 removed."
+        occurrences, 4,
+        "expected exactly 4 occurrences of `release_pass(` in match.rs -- the function's own \
+         `fn release_pass(` definition, the call inside `try_pass`, and `keeper_throw`'s two \
+         (bowled-flat and lofted branches) -- found {occurrences}. A new occurrence means \
+         either a genuine new caller (which must be one of `try_pass`/`keeper_throw`/the \
+         documented forced-release rule -- see this test's module doc) or a reintroduced \
+         direct-mutation bypass of the kind #531 removed."
     );
 
-    // Directly confirm the two survivors are where they are expected, so a
-    // pathological rename (e.g. two calls both still inside `try_pass`,
-    // none inside `keeper_throw`) cannot slip the count check by
-    // coincidence.
+    // Directly confirm the survivors are where they are expected, so a
+    // pathological rename (e.g. every call still inside `try_pass`, none
+    // inside `keeper_throw`) cannot slip the count check by coincidence.
     let try_pass_start = source
         .find("fn try_pass(")
         .expect("try_pass must still exist");
@@ -75,7 +84,7 @@ fn release_pass_has_no_call_site_outside_try_pass_and_keeper_throw() {
     );
     assert_eq!(
         keeper_throw_body.matches("release_pass(").count(),
-        1,
-        "keeper_throw must call release_pass exactly once"
+        2,
+        "keeper_throw must call release_pass exactly twice (bowled-flat and lofted branches)"
     );
 }

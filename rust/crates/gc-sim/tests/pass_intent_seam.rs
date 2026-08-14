@@ -475,3 +475,142 @@ fn losing_possession_mid_charge_clears_pass_intent_and_pass_charge() {
     assert_eq!(carrier.pass_charge, 0.0, "pass_charge must reset too");
     assert_eq!(carrier.pass_target, None);
 }
+
+// ---------------------------------------------------------------------
+// A rollback boundary landing mid-charge resimulates cleanly.
+// ---------------------------------------------------------------------
+
+/// `pass_intent` is the first multi-tick AI-retained state this codebase
+/// has had to survive a rollback boundary (`combat_intent`'s own
+/// materializations are within-tick edges, never a stored countdown that
+/// spans a resimulation). Correctness by construction --
+/// `PassIntentState` is a plain `Clone`-derived field on `MatchPlayer`,
+/// `match_snapshot::restore` returns a native struct clone rather than a
+/// lossy wire decode, and `pass_intent::materialize` is a pure function of
+/// already-snapshotted `pass_charge`/`pass_intent` with no clock or
+/// closure state -- is not the same claim as this test, which drives an
+/// actual boundary: capture a snapshot mid-charge, discard the live state,
+/// restore an independent copy from that exact snapshot (what a rollback
+/// correction does when the boundary it lands on requires re-simulating
+/// forward), and confirm the restored copy resolves the SAME pass, at the
+/// same tick, exactly once, with the intent left clean afterward -- no
+/// strand (an intent stuck `Charging` forever) and no duplicate (two
+/// `Pass` events for one commit).
+#[test]
+fn a_rollback_boundary_mid_charge_resimulates_to_exactly_one_release_no_strand_no_duplicate() {
+    let mut tune = fast_charge_tuning(3.0);
+    tune.set("PASS_RANGE_MAX", 300.0);
+
+    let carrier_pos = Vec2::new(100.0, 270.0);
+    let h2_pos = Vec2::new(500.0, 270.0); // ai_pass_options' pick, 400px out (clamps the charge)
+    let h3_pos = Vec2::new(395.0, 320.0); // the cone's actual receiver once charge clamps
+
+    let players = vec![
+        make_player("h_keeper", Team::Home, true, 20.0, 50.0),
+        make_player("h1", Team::Home, false, carrier_pos.x, carrier_pos.y),
+        make_player("h2", Team::Home, false, h2_pos.x, h2_pos.y),
+        make_player("h3", Team::Home, false, h3_pos.x, h3_pos.y),
+        make_player("h4", Team::Home, false, 900.0, 50.0),
+        make_player("a_keeper", Team::Away, true, 940.0, 270.0),
+        make_player("a1", Team::Away, false, 40.0, 270.0),
+        make_player("a2", Team::Away, false, 395.0, 335.0),
+        make_player("a3", Team::Away, false, 800.0, 100.0),
+        make_player("a4", Team::Away, false, 800.0, 440.0),
+    ];
+    let carrier_idx = 2;
+
+    let mut initial_state = base_state(players, Some(carrier_idx), carrier_pos);
+    for player in &mut initial_state.players {
+        player.move_speed = 0.01;
+    }
+
+    // The "predicted" timeline: step forward far enough to land mid-charge
+    // (verified below), the same way a peer's own local prediction runs
+    // ahead of an eventual authoritative correction.
+    let mut predicted = initial_state;
+    const MID_CHARGE_TICKS: i64 = 10;
+    for _ in 0..MID_CHARGE_TICKS {
+        step_once(&mut predicted, &tune);
+    }
+    let carrier = &predicted.players[(carrier_idx - 1) as usize];
+    assert_eq!(
+        carrier.pass_intent.stage,
+        PassIntentStage::Charging,
+        "the fixture must actually land mid-charge for this test to prove anything"
+    );
+    assert!(carrier.pass_charge > 0.0 && carrier.pass_charge < 1.0);
+    assert!(
+        !predicted
+            .events
+            .iter()
+            .any(|e| e.kind == MatchEventKind::Pass),
+        "must not have released yet"
+    );
+
+    // The rollback boundary: capture the mid-charge state, then throw the
+    // predicted timeline away and restore an INDEPENDENT copy from the
+    // captured snapshot -- exactly what a correction lands as, and the
+    // only path `pass_intent` has to prove it survives (a resimulation
+    // that instead restored the pre-charge `initial_boundary` and replayed
+    // forward would only reprove determinism, not the restore path).
+    let mid_charge_boundary = match_snapshot::capture(&predicted, None);
+    let (mut resimulated, _) = match_snapshot::restore(&mid_charge_boundary);
+    assert_eq!(
+        match_snapshot::hash(&match_snapshot::capture(&resimulated, None)),
+        match_snapshot::hash(&mid_charge_boundary),
+        "the restored copy must be bit-identical to what was captured"
+    );
+
+    // Continue both the (dropped) predicted timeline and the resimulated
+    // one forward, in lockstep, from the same boundary.
+    let mut predicted_pass_ticks: Vec<i64> = Vec::new();
+    let mut resimulated_pass_ticks: Vec<i64> = Vec::new();
+    for tick in 0..25 {
+        step_once(&mut predicted, &tune);
+        if predicted
+            .events
+            .iter()
+            .any(|e| e.kind == MatchEventKind::Pass)
+        {
+            predicted_pass_ticks.push(tick);
+        }
+        step_once(&mut resimulated, &tune);
+        if resimulated
+            .events
+            .iter()
+            .any(|e| e.kind == MatchEventKind::Pass)
+        {
+            resimulated_pass_ticks.push(tick);
+        }
+    }
+
+    assert_eq!(
+        predicted_pass_ticks.len(),
+        1,
+        "the predicted timeline must release exactly once"
+    );
+    assert_eq!(
+        resimulated_pass_ticks, predicted_pass_ticks,
+        "resimulating from the mid-charge boundary must release at the identical tick -- no \
+         strand (never releasing) and no duplicate (releasing twice)"
+    );
+
+    let final_predicted = &predicted.players[(carrier_idx - 1) as usize];
+    let final_resimulated = &resimulated.players[(carrier_idx - 1) as usize];
+    for (label, p) in [
+        ("predicted", final_predicted),
+        ("resimulated", final_resimulated),
+    ] {
+        assert_eq!(
+            p.pass_intent.stage,
+            PassIntentStage::Idle,
+            "{label}: pass_intent must not be stranded mid-charge after release"
+        );
+        assert_eq!(p.pass_charge, 0.0, "{label}: pass_charge must reset");
+    }
+    assert_eq!(
+        match_snapshot::hash(&match_snapshot::capture(&predicted, None)),
+        match_snapshot::hash(&match_snapshot::capture(&resimulated, None)),
+        "the two timelines must converge bit-for-bit after the release"
+    );
+}
