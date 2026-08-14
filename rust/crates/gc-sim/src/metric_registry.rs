@@ -177,6 +177,18 @@ pub fn assemble() -> MetricRegistry {
                 // fun score treats as absence rather than as a perfect zero.
                 extract: |m| m.time_to_reverse,
             },
+            // #491's two, in `gc_data::tunables::METRICS`'s authored order.
+            // Both are `None` when the match contained no release of the
+            // relevant kind, which the fold skips rather than scoring as a
+            // perfect zero.
+            Metric {
+                def: def("pass_aim_error"),
+                extract: |m| m.pass_aim_error,
+            },
+            Metric {
+                def: def("pass_lead_time"),
+                extract: |m| m.pass_lead_time,
+            },
         ],
     );
     b.build()

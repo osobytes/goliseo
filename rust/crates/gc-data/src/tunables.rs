@@ -942,6 +942,175 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
                reads this id, so it fails the knob-moves-metric contract \
                (gc_sim::knob_contract). Tracked as decoration, not balance.",
     },
+    // Passing. Its own panel tab rather than eleven more entries under
+    // Attacking, on #488's precedent for Locomotion: a subsystem with this
+    // many knobs is a tab, and a designer piloting the soft cone should not
+    // have to hunt for them between shot charge and header pace.
+    //
+    // Every range below is a PRIOR, converted from the metric ranges the
+    // issue proposed at this project's pitch scale (960 px across a
+    // full-size pitch is about 9 px per metre). `PASS_ANGULAR_WEIGHT` in
+    // particular is feel-critical, and a harness cannot feel frustration —
+    // see `gc_sim::passing`'s module doc.
+    TunableDef {
+        id: "PASS_ANGULAR_WEIGHT",
+        tier: Tier::Sim,
+        label: "Aim weight",
+        cat: "Passing",
+        // 140, not the 90 this shipped with in review: at 90 a teammate
+        // DIRECTLY BEHIND the passer costs only 180 px of score, so aiming
+        // upfield at a man 400 px away played the ball backwards to one
+        // 200 px behind (`a_long_pass_is_driven_hard_enough_to_actually_arrive`
+        // in gc-sim's tests/match.rs caught it). That is the "aim feels
+        // ignored" failure the issue warns about at low weights, and the
+        // measured constraint it produces is the only empirical input this
+        // default has. At 140 a backward teammate must be 280 px NEARER to
+        // win, while a 60-degree teammate still costs only 140 px -- soft,
+        // not a gate. Still a prior: it needs hands-on pilots.
+        default: 140.0,
+        // Per unit CHORD, not per radian, and that is a determinism
+        // requirement rather than a unit preference: see `gc_sim::passing`.
+        unit: "px/chord",
+        // The range spans the two failure modes the issue names, which is
+        // what makes it a design space rather than a comfort zone: at 10 the
+        // aim is essentially ignored, and at 400 the angular term exceeds the
+        // whole eligible distance span (PASS_ELIGIBLE_MAX - PASS_ELIGIBLE_MIN
+        // is 540 px, and 2 chord x 400 is 800), so the cone has hardened into
+        // a gate by another name. A sweep must be able to reach both.
+        min: 10.0,
+        max: 400.0,
+        step: 10.0,
+        desc: "How much a teammate's angle off the aim costs against raw distance in \
+               receiver scoring. Soft: there is no acceptance cone.",
+    },
+    TunableDef {
+        id: "PASS_ELIGIBLE_MIN",
+        tier: Tier::Sim,
+        label: "Min receiver range",
+        cat: "Passing",
+        default: 20.0,
+        unit: "px",
+        min: 5.0,
+        max: 45.0,
+        step: 1.0,
+        desc: "Teammates nearer than this are not pass candidates; a handoff is not a pass.",
+    },
+    TunableDef {
+        id: "PASS_ELIGIBLE_MAX",
+        tier: Tier::Sim,
+        label: "Max receiver range",
+        cat: "Passing",
+        default: 560.0,
+        unit: "px",
+        min: 200.0,
+        max: 1100.0,
+        step: 20.0,
+        desc: "Teammates further than this are not pass candidates.",
+    },
+    TunableDef {
+        id: "PASS_ARRIVE_PACE",
+        tier: Tier::Sim,
+        label: "Arrival pace",
+        cat: "Passing",
+        default: 120.0,
+        unit: "px/s",
+        min: 40.0,
+        max: 300.0,
+        step: 10.0,
+        desc: "Pace a ground pass still carries when it reaches the receiver; the \
+               distance-to-speed curve's intercept.",
+    },
+    TunableDef {
+        id: "PASS_SPEED_MIN",
+        tier: Tier::Sim,
+        label: "Min pass pace",
+        cat: "Passing",
+        default: 420.0,
+        unit: "px/s",
+        min: 200.0,
+        max: 600.0,
+        step: 10.0,
+        desc: "Floor under a ground pass's launch speed, so a short ball is not a tap.",
+    },
+    TunableDef {
+        id: "PASS_SPEED_MAX",
+        tier: Tier::Sim,
+        label: "Max pass pace",
+        cat: "Passing",
+        default: 700.0,
+        unit: "px/s",
+        min: 450.0,
+        max: 1000.0,
+        step: 10.0,
+        desc: "Ceiling over a ground pass's launch speed, so a long ball is not a bullet.",
+    },
+    TunableDef {
+        id: "PASS_LEAD_TOLERANCE",
+        tier: Tier::Sim,
+        label: "Lead tolerance",
+        cat: "Passing",
+        default: 1.0,
+        unit: "x",
+        // Above 1.0 is a real (bad) setting rather than padding: it promises
+        // leads the receiver needs MORE than the ball's whole flight to
+        // reach, which is the over-promise the flat-cap model made by
+        // accident. The range has to contain it for a sweep to find the edge.
+        min: 0.4,
+        max: 2.0,
+        step: 0.05,
+        desc: "How much of the receiver's modelled arrival capability a led pass may demand, \
+               as a fraction of the ball's travel time. Below 1 requires slack; above 1 \
+               promises leads the receiver cannot reach.",
+    },
+    TunableDef {
+        id: "PASS_LEAD_MIN_SPEED",
+        tier: Tier::Sim,
+        label: "Lead speed floor",
+        cat: "Passing",
+        default: 60.0,
+        unit: "px/s",
+        min: 0.0,
+        max: 200.0,
+        step: 5.0,
+        desc: "Receiver speed below which a pass is played to their feet, not led.",
+    },
+    TunableDef {
+        id: "PASS_LEAD_TIME_MIN",
+        tier: Tier::Sim,
+        label: "Shortest lead",
+        cat: "Passing",
+        default: 0.1,
+        unit: "s",
+        min: 0.05,
+        max: 0.4,
+        step: 0.05,
+        desc: "Shortest candidate lead time the solver evaluates.",
+    },
+    TunableDef {
+        id: "PASS_LEAD_TIME_MAX",
+        tier: Tier::Sim,
+        label: "Longest lead",
+        cat: "Passing",
+        default: 0.9,
+        unit: "s",
+        min: 0.3,
+        max: 1.4,
+        step: 0.05,
+        desc: "Longest candidate lead time the solver evaluates.",
+    },
+    TunableDef {
+        id: "PASS_LEAD_STEPS",
+        tier: Tier::Sim,
+        label: "Lead candidates",
+        cat: "Passing",
+        default: 5.0,
+        unit: "count",
+        min: 1.0,
+        max: 6.0,
+        step: 1.0,
+        desc: "How many candidate lead times the fixed set holds. This IS the per-release \
+               prediction query burst, so it is bounded rather than open.",
+    },
     // Defending
     TunableDef {
         id: "AI_STEAL_CD",
@@ -1339,5 +1508,39 @@ pub static METRICS: &[MetricDef] = &[
         band: [0.1, 0.25, 0.6, 1.2],
         direction: MetricDirection::Banded,
         desc: "Mean seconds to complete a 180-degree reversal, from a run.",
+    },
+    // #491's two passing metrics, appended in this order. Both exist for
+    // exactly #488's reason and are argued at length on
+    // `gc_sim::r#match::PassShadowTally`: the ten metrics above are
+    // whole-match OUTCOMES, and a 48-seed census found every one of #491's
+    // eleven passing knobs DECORATION against every one of them. These
+    // measure what the knobs actually do, at dozens of events per match.
+    //
+    // BANDS ARE PRIORS. Both are set from a 48-seed measurement at the
+    // shipped defaults, widened to the range a designer would still call
+    // playable, and neither has had a hands-on pilot. Say so before quoting
+    // either as a target.
+    MetricDef {
+        id: "pass_aim_error",
+        // Chord, not radians (`gc_sim::passing`). 0.52 is 30 degrees off
+        // aim, 1.0 is 60 degrees. Below `good_lo` the cone has hardened into
+        // a gate — a pass that ALWAYS goes exactly where you point is a pass
+        // that refuses every near-miss, which is the failure #491 deleted.
+        band: [0.0, 0.15, 0.75, 1.4],
+        direction: MetricDirection::Banded,
+        desc: "Mean angle, in chord, between where a pass was aimed and the receiver \
+               soft-cone selection chose.",
+    },
+    MetricDef {
+        id: "pass_lead_time",
+        // Seconds, averaged over every driven ground pass with an unled one
+        // counted as zero. Neither fence is desirable: at 0 nothing is ever
+        // played into a run, and past the candidate set's own ceiling the
+        // solver is throwing the ball at where a receiver might be a second
+        // later, which is a guess dressed as geometry.
+        band: [0.0, 0.1, 0.6, 1.2],
+        direction: MetricDirection::Banded,
+        desc: "Mean seconds of lead on a driven ground pass, counting a pass to the \
+               receiver's feet as zero.",
     },
 ];

@@ -4875,15 +4875,22 @@ fn aim_square_at_the_keeper_beats_a_nearer_mid_lane_teammate() {
     }
     let defender = defender.expect("home fixture has a defender");
     s.players[(defender - 1) as usize].pos = Vec2::new(150.0, 255.0);
-    let at_keeper =
-        sim_match::select_pass_target(&s, controlled, false, Some(Vec2::new(-1.0, 0.0)), None);
+    let at_keeper = sim_match::select_pass_target(
+        &s,
+        controlled,
+        false,
+        Some(Vec2::new(-1.0, 0.0)),
+        None,
+        &Tuning::new(),
+    );
     assert_eq!(at_keeper, Some(1), "square aim is a deliberate back-pass");
     // Aim at the defender instead: the keeper must not hijack the pass.
     let aim = s.players[(defender - 1) as usize]
         .pos
         .sub(s.players[(controlled - 1) as usize].pos)
         .normalized();
-    let at_defender = sim_match::select_pass_target(&s, controlled, false, Some(aim), None);
+    let at_defender =
+        sim_match::select_pass_target(&s, controlled, false, Some(aim), None, &Tuning::new());
     assert_eq!(
         at_defender,
         Some(defender),
@@ -5030,8 +5037,14 @@ fn tap_pass_setup(s: &mut MatchState) -> (Option<i64>, Option<i64>) {
 fn a_tap_picks_the_near_man_even_with_a_far_one_better_aligned() {
     let mut s = new_match();
     let (near, _far) = tap_pass_setup(&mut s);
-    let target =
-        sim_match::select_pass_target(&s, s.controlled, false, Some(Vec2::new(1.0, 0.0)), None);
+    let target = sim_match::select_pass_target(
+        &s,
+        s.controlled,
+        false,
+        Some(Vec2::new(1.0, 0.0)),
+        None,
+        &Tuning::new(),
+    );
     assert_eq!(
         target, near,
         "quick passes go short to the man you point at"
@@ -5048,6 +5061,7 @@ fn a_charged_pass_still_picks_out_the_far_man_by_range() {
         false,
         Some(Vec2::new(1.0, 0.0)),
         Some(400.0),
+        &Tuning::new(),
     );
     assert_eq!(target, far, "the charge is how you reach the long option");
 }

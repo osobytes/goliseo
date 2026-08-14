@@ -857,6 +857,20 @@ pub struct MatchMetrics {
     pub keeper_goals_recover: i64,
     /// Goals conceded with no attributable keeper state.
     pub keeper_goals_unclassified: i64,
+    /// Mean aim error of aimed pass releases, in chord (`0..=2`) — the angle
+    /// between where the passer pointed and the receiver soft-cone selection
+    /// chose. Stamped on by the headless runner from
+    /// `r#match::pass_shadow_take`, never set by [`finish`]: the tally lives
+    /// on a diagnostic thread-local rather than in simulation state, so it
+    /// cannot enter a snapshot or a state hash. `None` when the match
+    /// contained no aimed release.
+    pub pass_aim_error: Option<f64>,
+    /// Mean lead time in seconds of driven ground passes, counting an unled
+    /// pass as zero — how far into the receiver's run passes are played.
+    /// Stamped on by the headless runner, same seam and same reason as
+    /// [`Self::pass_aim_error`]. `None` when the match contained no driven
+    /// ground pass.
+    pub pass_lead_time: Option<f64>,
     /// Composite fun score, stamped on by the headless runner (never set by
     /// [`finish`]).
     pub fun: Option<f64>,
@@ -955,6 +969,10 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         keeper_goals_retreat: c.keeper_goals_by_state[KeeperState::Retreat.index()],
         keeper_goals_recover: c.keeper_goals_by_state[KeeperState::Recover.index()],
         keeper_goals_unclassified: c.keeper_goals_by_state[UNCLASSIFIED_INDEX],
+        // Both stamped on by the headless runner from the diagnostic tally;
+        // `finish` has no access to it and must not pretend otherwise.
+        pass_aim_error: None,
+        pass_lead_time: None,
         fun: None,
     }
 }

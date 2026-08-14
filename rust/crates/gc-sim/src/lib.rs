@@ -47,6 +47,7 @@ pub mod outfield_ai_baseline;
 pub mod outfield_ai_policy;
 pub mod outfield_decision;
 pub mod outfield_press;
+pub mod pass_lead;
 pub mod passing;
 pub mod placement;
 pub mod possession_transition;

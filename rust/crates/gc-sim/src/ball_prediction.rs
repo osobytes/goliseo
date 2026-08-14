@@ -544,6 +544,98 @@ impl BallPredictor {
         }
     }
 
+    /// The state a **hypothetical** launch would be in after travelling
+    /// `distance` px of ground path — the query pass leading is built on.
+    ///
+    /// # Why this is not [`Self::state_after_distance`]
+    ///
+    /// Every other query on this service answers about the *live* ball, and
+    /// for an owned ball that is "the trajectory it would take if released
+    /// now" — released at the carrier's own velocity, which is not a pass.
+    /// A lead solver has to ask about a ball that does not exist yet: this
+    /// launch speed, this direction, from the passer's boot. So the launch
+    /// state is the caller's, not the world's.
+    ///
+    /// It answers the same way everything else here does — by advancing
+    /// [`crate::ball_flight::step`], the identical function the live
+    /// simulation runs, rather than by solving a closed form — so a lead time
+    /// cannot drift from what the physics will actually do. It returns a
+    /// [`BallSample`], the authoritative type, for the same reason: the
+    /// closed-form fallback must not be reachable from a release decision.
+    ///
+    /// # Budget and cache
+    ///
+    /// It spends the shared per-tick step budget and lands in the telemetry,
+    /// so a release-tick burst is **visible** in `predict.scratch_steps` and
+    /// can exhaust the budget exactly like any other consumer. It does not
+    /// read or write the sample buffer, and deliberately: the buffer holds
+    /// the live ball's path, a hypothetical launch's path is a different
+    /// curve, and mixing them would serve one caller the other's answer. That
+    /// costs a hypothetical query its own scratch ticks every time — which is
+    /// the honest price, and why the candidate set is small and fixed.
+    ///
+    /// Pure with respect to the simulation: `state` is borrowed immutably and
+    /// only its arena is read, so this cannot enter a snapshot or a hash.
+    pub fn launch_after_distance(
+        &mut self,
+        state: &MatchState,
+        launch: BallFlight,
+        distance: f64,
+    ) -> Option<BallSample> {
+        self.telemetry.answers += 1;
+        if distance < 0.0 {
+            return None;
+        }
+        let arena = BallArena::of(state);
+        let mut cursor = launch;
+        let mut prev = BallSample {
+            time: 0.0,
+            pos: cursor.pos,
+            vel: cursor.vel,
+            z: cursor.z,
+            vz: cursor.vz,
+            path: 0.0,
+        };
+        if prev.path >= distance {
+            return Some(prev);
+        }
+        let mut path = 0.0;
+        let mut steps = 0i64;
+        loop {
+            if (steps + 1) as f64 * self.config.dt > self.config.max_horizon + TIME_EPSILON {
+                return None;
+            }
+            if self.budget_left <= 0 {
+                self.telemetry.budget_exhaustions += 1;
+                return None;
+            }
+            let before = cursor.pos;
+            ball_flight::step(&mut cursor, &arena, self.config.dt);
+            steps += 1;
+            self.budget_left -= 1;
+            self.telemetry.scratch_steps += 1;
+            path += cursor.pos.dist(before);
+            let next = BallSample {
+                time: steps as f64 * self.config.dt,
+                pos: cursor.pos,
+                vel: cursor.vel,
+                z: cursor.z,
+                vz: cursor.vz,
+                path,
+            };
+            if next.path >= distance {
+                let span = next.path - prev.path;
+                let t = if span > 0.0 {
+                    (distance - prev.path) / span
+                } else {
+                    0.0
+                };
+                return Some(lerp_sample(&prev, &next, t));
+            }
+            prev = next;
+        }
+    }
+
     /// The time at which the ball first crosses `plane`, or `None` if it
     /// does not inside the horizon (or the budget ran out first).
     ///

@@ -330,6 +330,10 @@ pub fn run_match_debug(opts: &HeadlessOpts<'_>) -> (MatchResult, MatchState, Hea
     let bot_constructed = bot_state.is_some();
 
     let mut collector = metrics::new(&to_metrics_view(&s));
+    // Arm the diagnostic pass tally for this match. `pass_shadow_take` below
+    // both reads and disarms it, so back-to-back matches never accumulate
+    // one another's releases, and any caller that never arms it pays nothing.
+    sim_match::pass_shadow_begin();
     let mut clock = fixed_clock::new();
 
     let max_steps = (duration / fixed_clock::TICK_SECONDS).ceil() as u64 + MAX_STEPS_SLACK;
@@ -387,6 +391,13 @@ pub fn run_match_debug(opts: &HeadlessOpts<'_>) -> (MatchResult, MatchState, Hea
     }
 
     let mut m = metrics::finish(&mut collector, &to_metrics_view(&s));
+    // Folded in before the fun score, so both registered passing metrics
+    // contribute to it like any other.
+    let tally = sim_match::pass_shadow_take();
+    m.pass_aim_error =
+        (tally.aimed_releases > 0).then(|| tally.aim_error_sum / tally.aimed_releases as f64);
+    m.pass_lead_time =
+        (tally.ground_releases > 0).then(|| tally.lead_time_sum / tally.ground_releases as f64);
     let (fun, per) = metrics::fun_score(&m);
     m.fun = Some(fun);
     let winner = if s.score.home > s.score.away {
