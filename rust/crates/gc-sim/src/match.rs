@@ -57,6 +57,7 @@ use crate::match_snapshot::{
 use crate::offball_runs;
 use crate::outfield_decision::{self, OutfieldDecisionContext};
 use crate::outfield_press::{self, OutfieldPressState};
+use crate::pass_intent;
 use crate::pass_lead;
 use crate::passing;
 use crate::placement;
@@ -103,6 +104,25 @@ const CROSS_CLEAR_H: f64 = 50.0;
 /// caller already holds, so a sweep can move it and two peers hash it.
 fn pass_range_min(tune: &Tuning) -> f64 {
     tune.value("PASS_RANGE_MIN")
+}
+
+/// The `pass_charge` fraction (`[0, 1]`) that would make `try_pass`'s own
+/// range formula (`pass_range_min(tune) + charge * (PASS_RANGE_MAX -
+/// pass_range_min(tune))`) reach `distance` — the inverse of that formula.
+///
+/// This is a mechanical translation of an already-scored distance into a
+/// hold duration, not a new decision (#531): the gameplay AI's own scorer
+/// picked `distance`; this only recovers the charge time a human would have
+/// needed to reach the same range tier, so the AI pays the identical charge
+/// cost a human pays for the same release. A distance at or below
+/// `pass_range_min(tune)` needs no hold at all — a tap.
+fn desired_pass_charge(distance: f64, tune: &Tuning) -> f64 {
+    let min = pass_range_min(tune);
+    let max = tune.value("PASS_RANGE_MAX");
+    if max <= min {
+        return 0.0;
+    }
+    ((distance - min) / (max - min)).clamp(0.0, 1.0)
 }
 
 const GOAL_MOUTH: f64 = 110.0;
@@ -532,6 +552,7 @@ fn build_team(
             charge: 0.0,
             pass_charge: 0.0,
             pass_target: None,
+            pass_intent: pass_intent::new_state(),
             windup_timer: 0.0,
             windup_shot: None,
             jockey_timer: 0.0,
@@ -725,6 +746,7 @@ fn place_kickoff(s: &mut MatchState, kicking: Team) {
         p.charge = 0.0;
         p.pass_charge = 0.0;
         p.pass_target = None;
+        p.pass_intent = pass_intent::reset(&p.pass_intent);
         p.windup_timer = 0.0;
         p.windup_shot = None;
         p.jockey_timer = 0.0;
@@ -4396,23 +4418,23 @@ fn run_eligible(
         && !combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), player_index))
 }
 
-/// Keeper distribution, in three tiers (all from the hands, deterministic,
-/// ties by ascending index):
-///   1. SAFE outlet (clear of opponents): a short throw — bowled along the
-///      ground when the lane is clear, floated over the blocker when it
-///      isn't.
-///   2. No safe outlet but someone is at least a step off their marker: a
-///      floated throw that sails over the opponents to that most-open
-///      teammate.
-///   3. Everyone swarmed: drop the ball and drop-kick it long upfield — a
-///      high clearance over every head, not a flat drilled ball at the
-///      opponent goal.
-fn keeper_distribute(s: &mut MatchState, keeper_idx: i64, tune: &Tuning) {
+/// Decide the AI keeper's distribution target and commit a charging pass
+/// intent for it (#531). The candidate scan — prefer a clear, safe ground
+/// lane; fall back to the most-open teammate; fall back further to a
+/// swarmed-everyone clearance — is the exact scan `keeper_distribute` always
+/// ran; only what happens with the winner changed: it used to release
+/// immediately through `release_throw`, and now it becomes an aim hint and a
+/// charge threshold that materializes through the same `MatchInput` path a
+/// human keeper's throw takes (`keeper_actions`). Which VERB executes
+/// (`try_pass`'s kicked ground pass vs. `keeper_throw`'s hand throw) is not
+/// decided here at all: it is read live from `feet_ball` at materialization,
+/// same as for a human, so it cannot go stale across a multi-tick charge.
+///
+/// The swarmed case is not a pass or throw: it stays the direct drop-kick
+/// clearance it always was in `keeper_dropkick_clearance` — it never called
+/// `release_pass`, so the seam does not reach it.
+fn commit_keeper_pass_intent(s: &mut MatchState, keeper_idx: i64, tune: &Tuning) {
     let keeper = s.players[(keeper_idx - 1) as usize].clone();
-    // Ball at the feet (received back-pass): distribution is KICKED — a
-    // normal foot pass (no throw pose, ordinary lob height), released
-    // immediately.
-    let kicked = keeper.feet_ball;
     let fwd = if keeper.team == Team::Home { 1.0 } else { -1.0 }; // +x is upfield for home
     let mut opp: Vec<Vec2> = Vec::new();
     for q in &s.players {
@@ -4462,89 +4484,76 @@ fn keeper_distribute(s: &mut MatchState, keeper_idx: i64, tune: &Tuning) {
         }
     }
 
-    if !kicked {
-        s.players[(keeper_idx - 1) as usize].throw_timer = KEEPER_THROW_POSE; // release/throw pose (visual)
-    }
-    if let Some(best) = best {
-        release_throw(s, keeper_idx, best, best_f, kicked, tune);
+    // `lofted` mirrors the old release choice: a blocked or risky lane went
+    // over the top; a clear lane (or the tier-2 fallback, which never had a
+    // clear-lane guarantee) stayed grounded only when nothing at all stood
+    // in the way. The tier-2 fallback is treated as lofted, matching its
+    // pre-#531 flight (it always resolved through a computed arc fraction).
+    let (target, lofted) = if let Some(best) = best {
+        (Some(best), best_f.is_some())
     } else if let Some(open_best) = open_best {
-        let open_best_pos = s.players[(open_best - 1) as usize].pos;
-        let f = ai::lane_blocker(keeper.pos, open_best_pos, &opp, POSSESS_DIST).unwrap_or(0.5);
-        release_throw(s, keeper_idx, open_best, Some(f), kicked, tune);
+        (Some(open_best), true)
     } else {
-        // Everyone swarmed: drop-kick a high clearance upfield (lands
-        // around DROPKICK_DIST away, toward the middle of the pitch).
-        let tx = (keeper.pos.x + fwd * DROPKICK_DIST).clamp(40.0, s.field.w - 40.0);
-        let target = Vec2::new(tx, s.field.h / 2.0);
-        s.events.push(MatchEvent {
-            kind: MatchEventKind::Shot,
-            x: s.ball.x,
-            y: s.ball.y,
-            player: Some(keeper.id.clone()),
-            save_style: None,
-            style: None,
-            outcome: None,
-            jumping: None,
-            difficulty: None,
-            shot_type: None,
-            keeper_state: None,
-            keeper_depth: None,
-            on_target: None,
-        });
-        s.owner = None;
-        s.ball_z = 0.0;
-        s.ball_spin = 0.0;
-        s.pickup_cd = RELEASE_CD;
-        s.block_grace = BLOCK_GRACE;
-        let (vel, vz) = lob_launch(keeper.pos, target, 0.5, DROPKICK_CLEAR_H);
-        s.ball_vel = vel;
-        s.ball_vz = vz;
+        (None, false)
+    };
+
+    if let Some(target) = target {
+        let target_pos = s.players[(target - 1) as usize].pos;
+        let target_charge = desired_pass_charge(keeper.pos.dist(target_pos), tune);
+        let p = &mut s.players[(keeper_idx - 1) as usize];
+        p.pass_intent = pass_intent::commit(&p.pass_intent, target, lofted, target_charge);
+    } else {
+        keeper_dropkick_clearance(s, &keeper, fwd);
     }
 }
 
-/// Hands place their lobs via `plan_throw` (safe-side landing + an arc no
-/// jump can reach); a kicked distribution keeps ordinary foot-lob flight.
-fn release_throw(
-    s: &mut MatchState,
-    keeper_idx: i64,
-    idx: i64,
-    f: Option<f64>,
-    kicked: bool,
-    tune: &Tuning,
-) {
-    if kicked {
-        release_pass(s, keeper_idx, idx, f, Some(LOB_CLEAR_H), None, tune);
-    } else if f.is_some() {
-        let (land, pf, clear_h) = plan_throw(s, keeper_idx, idx);
-        release_pass(
-            s,
-            keeper_idx,
-            idx,
-            Some(pf),
-            Some(clear_h),
-            Some(land),
-            tune,
-        );
-    } else {
-        release_pass(s, keeper_idx, idx, None, None, None, tune); // clear ground lane: bowl it
-    }
+/// Everyone swarmed: drop-kick a high clearance upfield (lands around
+/// `DROPKICK_DIST` away, toward the middle of the pitch). Unchanged by
+/// #531: this is a clearance, not a pass, and never called `release_pass`.
+fn keeper_dropkick_clearance(s: &mut MatchState, keeper: &MatchPlayer, fwd: f64) {
+    let tx = (keeper.pos.x + fwd * DROPKICK_DIST).clamp(40.0, s.field.w - 40.0);
+    let target = Vec2::new(tx, s.field.h / 2.0);
+    s.events.push(MatchEvent {
+        kind: MatchEventKind::Shot,
+        x: s.ball.x,
+        y: s.ball.y,
+        player: Some(keeper.id.clone()),
+        save_style: None,
+        style: None,
+        outcome: None,
+        jumping: None,
+        difficulty: None,
+        shot_type: None,
+        keeper_state: None,
+        keeper_depth: None,
+        on_target: None,
+    });
+    s.owner = None;
+    s.ball_z = 0.0;
+    s.ball_spin = 0.0;
+    s.pickup_cd = RELEASE_CD;
+    s.block_grace = BLOCK_GRACE;
+    let (vel, vz) = lob_launch(keeper.pos, target, 0.5, DROPKICK_CLEAR_H);
+    s.ball_vel = vel;
+    s.ball_vz = vz;
 }
 
-/// HUMAN-CONTROLLED keeper distribution: you pick it. Space (hold +
-/// release) is a charged PUNT off the foot — the longer the hold, the
-/// further upfield it sails. K (hold + release) is a charged THROW: the
-/// range picks which teammate along your aim receives it. The hold clock
-/// still runs as the six-second-rule fallback so play can't stall. With the
-/// ball at the FEET (a received back-pass) the throw becomes a normal
-/// outfield-style pass, and there is no six-second fallback — feet are
-/// exempt, and you're in control.
-fn human_keeper_actions(
-    s: &mut MatchState,
-    dt: f64,
-    input: &MatchInput,
-    owner_idx: i64,
-    tune: &Tuning,
-) {
+/// Keeper distribution, driven by an ordinary `MatchInput` (#531; formerly
+/// `human_keeper_actions` — it is no longer human-exclusive, and this is the
+/// SAME function a charging AI keeper's synthesized input runs through, from
+/// `execute_pass_intent_tick`). For a human: Space (hold + release) is a
+/// charged PUNT off the foot — the longer the hold, the further upfield it
+/// sails. K (hold + release) is a charged THROW: the range picks which
+/// teammate along your aim receives it. With the ball at the FEET (a
+/// received back-pass) the throw becomes a normal outfield-style pass.
+///
+/// The trailing six-second-rule fallback below is HUMAN-ONLY: it is the
+/// shot clock that fires when a human never holds anything at all, not a
+/// second AI decision path. An AI keeper's own distribution is decided
+/// entirely by `commit_keeper_pass_intent`, gated on its own (much shorter)
+/// `hold_timer` at the call site in `update_ball` — see that dispatch for
+/// why this function itself must not re-run it.
+fn keeper_actions(s: &mut MatchState, dt: f64, input: &MatchInput, owner_idx: i64, tune: &Tuning) {
     // A full meter releases on its own (predictable); early release fires
     // at the current charge.
     let mut fire_shot = input.shoot;
@@ -4608,13 +4617,40 @@ fn human_keeper_actions(
         owner.pass_charge = 0.0;
         owner.pass_target = None;
     }
+    // The six-second rule (#531 acceptance criterion 1's documented
+    // carve-out): a HUMAN keeper who never held pass or shoot at all still
+    // has to release before `hold_timer` runs out, or play stalls forever.
+    // This used to re-run `keeper_distribute`'s full AI scoring stack on the
+    // human's behalf — handing a stalled human the AI's target choice, not
+    // "your own pass, forced." It now fires the same verb `fire_pass` above
+    // would have fired, at whatever charge and aim already exist (usually
+    // none: the whole point of this clock is a human who never held
+    // anything), through `keeper_throw` — one of `release_pass`'s two
+    // blessed callers, the same one a real charged throw uses. Gated to a
+    // human owner: an AI keeper's distribution is entirely
+    // `commit_keeper_pass_intent`'s, and it never arms this `hold_timer`
+    // value to begin with (it arms its own, much shorter one — see the
+    // call site in `update_ball`), so this guard is a correctness
+    // statement, not just a belt-and-braces check.
     let owner = &s.players[(owner_idx - 1) as usize];
-    if s.owner == Some(owner_idx)
+    if is_human_player(s, owner_idx)
+        && s.owner == Some(owner_idx)
         && !owner.feet_ball
         && owner.hold_timer <= 0.0
         && owner.windup_timer == 0.0
     {
-        keeper_distribute(s, owner_idx, tune);
+        let owner = s.players[(owner_idx - 1) as usize].clone();
+        let aim = if input.r#move.x != 0.0 || input.r#move.y != 0.0 {
+            Some(input.r#move.normalized())
+        } else {
+            Some(owner.facing)
+        };
+        let range = pass_range_min(tune)
+            + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune));
+        keeper_throw(s, owner_idx, range, aim, tune);
+        let owner = &mut s.players[(owner_idx - 1) as usize];
+        owner.pass_charge = 0.0;
+        owner.pass_target = None;
     }
 }
 
@@ -5182,9 +5218,9 @@ fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snap
     None
 }
 
-/// Recompute `pass_target` for a human outfield carrier holding the pass
-/// button. Pure: no RNG draws. Safe to call every frame while `pass_held`
-/// is true.
+/// Recompute `pass_target` for an outfield carrier holding the pass button
+/// — a human's real input or a charging AI's synthesized one (#531). Pure:
+/// no RNG draws. Safe to call every frame while `pass_held` is true.
 fn update_pass_target_outfield(
     s: &mut MatchState,
     owner_idx: i64,
@@ -5209,8 +5245,9 @@ fn update_pass_target_outfield(
     s.players[(owner_idx - 1) as usize].pass_target = target;
 }
 
-/// Recompute `pass_target` for a human keeper holding the pass button.
-/// Pure: no RNG draws. Safe to call every frame while `pass_held` is true.
+/// Recompute `pass_target` for a keeper holding the pass button — a human's
+/// real input or a charging AI keeper's synthesized one (#531). Pure: no RNG
+/// draws. Safe to call every frame while `pass_held` is true.
 fn update_pass_target_keeper(
     s: &mut MatchState,
     keeper_idx: i64,
@@ -5229,10 +5266,34 @@ fn update_pass_target_keeper(
     s.players[(keeper_idx - 1) as usize].pass_target = target;
 }
 
-/// Human outfield controlled shot commit: build charge and, on fire, store
-/// a wind-up payload (parameters captured now, released after
-/// `TUNE.SHOT_WINDUP` seconds).
-fn human_outfield_actions(
+/// Preview the keeper's pending distribution: ball at the feet previews like
+/// an outfielder's pass; in the hands, like a throw. Shared by a human's
+/// real input and a charging AI keeper's synthesized one (#531) — this used
+/// to be inlined at `update_ball`'s human-only dispatch branch.
+fn update_keeper_pass_preview(
+    s: &mut MatchState,
+    owner_idx: i64,
+    input: &MatchInput,
+    tune: &Tuning,
+) {
+    if input.pass_held {
+        if s.players[(owner_idx - 1) as usize].feet_ball {
+            update_pass_target_outfield(s, owner_idx, input, tune);
+        } else {
+            update_pass_target_keeper(s, owner_idx, input, tune);
+        }
+    } else {
+        s.players[(owner_idx - 1) as usize].pass_target = None;
+    }
+}
+
+/// Outfield controlled shot commit: build charge and, on fire, store a
+/// wind-up payload (parameters captured now, released after
+/// `TUNE.SHOT_WINDUP` seconds). Driven by an ordinary `MatchInput` (#531;
+/// formerly `human_outfield_actions` — it is no longer human-exclusive: the
+/// SAME function a charging AI's synthesized input runs through, from
+/// `execute_pass_intent_tick`).
+fn outfield_actions(
     s: &mut MatchState,
     dt: f64,
     input: &MatchInput,
@@ -5334,6 +5395,71 @@ fn human_outfield_actions(
     } else if !(input.shoot_held || input.pass_held) {
         s.players[(owner_idx - 1) as usize].charge = 0.0;
     }
+}
+
+/// Commit a charging pass or cross intent toward `target_player` for an AI
+/// outfield carrier (#531). The verb's own scorer
+/// (`ai_pass_options`/`ai_cross_target`, still unchanged) already picked
+/// `target_player`; this only converts that pick into an aim hint and a
+/// charge threshold — the soft cone, not this commit, decides who actually
+/// receives the ball at release (see the design note on `pass_intent`).
+fn commit_outfield_pass_intent(
+    s: &mut MatchState,
+    owner_idx: i64,
+    target_player: i64,
+    lofted: bool,
+    tune: &Tuning,
+) {
+    let owner_pos = s.players[(owner_idx - 1) as usize].pos;
+    let target_pos = s.players[(target_player - 1) as usize].pos;
+    let target_charge = desired_pass_charge(owner_pos.dist(target_pos), tune);
+    let p = &mut s.players[(owner_idx - 1) as usize];
+    p.pass_intent = pass_intent::commit(&p.pass_intent, target_player, lofted, target_charge);
+}
+
+/// The gameplay AI's pass-intent equipment channel: materializes the
+/// abstract `r#move`/`pass_held`/`pass`/`lob` signals a charging pass intent
+/// owes this tick into an ordinary `MatchInput` (#531) — the direct
+/// analogue of `combat_equipment_input` for the passing seam. The aim is
+/// read LIVE from the intent's target player's current position every tick,
+/// exactly as a human's stick direction is read live, falling back to
+/// `facing` only in the degenerate case where the target coincides with the
+/// owner.
+fn ai_pass_input(
+    s: &MatchState,
+    owner_idx: i64,
+    intent: &pass_intent::PassIntentState,
+    signals: pass_intent::PassIntentSignals,
+) -> MatchInput {
+    let owner = &s.players[(owner_idx - 1) as usize];
+    let aim = intent
+        .target_player
+        .map(|target_idx| {
+            pass_intent::aim_toward(
+                owner.pos,
+                s.players[(target_idx - 1) as usize].pos,
+                owner.facing,
+            )
+        })
+        .unwrap_or(owner.facing);
+    let mut input = slot_input::neutral_match_input();
+    input.r#move = aim;
+    input.pass_held = signals.pass_held;
+    input.pass = signals.pass;
+    input.lob = intent.lofted;
+    input
+}
+
+/// Advance one owed tick of `owner_idx`'s charging pass intent and return
+/// the `MatchInput` it materializes (#531). The caller still routes that
+/// input through the same preview/action functions a human's input takes —
+/// this only produces the input, it never executes anything itself.
+fn execute_pass_intent_tick(s: &mut MatchState, owner_idx: i64) -> MatchInput {
+    let intent = pass_intent::copy_state(&s.players[(owner_idx - 1) as usize].pass_intent);
+    let current_charge = s.players[(owner_idx - 1) as usize].pass_charge;
+    let (signals, next_intent) = pass_intent::materialize(&intent, current_charge);
+    s.players[(owner_idx - 1) as usize].pass_intent = next_intent;
+    ai_pass_input(s, owner_idx, &intent, signals)
 }
 
 /// AI outfield owner decision: build the legitimate scored option set
@@ -5487,31 +5613,33 @@ fn ai_outfield_decision(s: &mut MatchState, owner_idx: i64, tune: &Tuning) {
     }
 
     if selected.kind == "pass" {
-        let lane_fraction = selected.payload.as_ref().and_then(|p| {
-            p.get("lane_fraction").map(|v| match v {
-                brain::BrainPayloadValue::Number(n) => *n,
-                _ => panic!("lane_fraction payload must be numeric"),
-            })
-        });
+        // The verb (pass) and the target (`ai_pass_options`'s pick) are
+        // still this scorer's own call. What used to happen next —
+        // releasing immediately through `release_pass`, skipping charge,
+        // hold and the soft cone entirely — is #531's defect. The target
+        // becomes an aim hint instead: `commit_outfield_pass_intent` charges
+        // toward it, and the cone (`select_pass_target`, reached through
+        // `try_pass` from `outfield_actions`) decides who actually receives
+        // the ball once that charge is spent, exactly as it does for a
+        // human. `lane_fraction` no longer has a caller here — the blocker
+        // fraction it fed is now recomputed live, at release time, by
+        // `try_pass`/`release_pass`'s own dink-over-a-blocker check.
         let target_player = match selected.reference {
             Some(brain::OptionReference::Index(v)) => v as i64,
             _ => panic!("carrier target player must be numeric"),
         };
-        release_pass(s, owner_idx, target_player, lane_fraction, None, None, tune);
+        commit_outfield_pass_intent(s, owner_idx, target_player, false, tune);
     } else if selected.kind == "cross" {
+        // Same seam, lofted: a cross intent charges toward the box target
+        // `ai_cross_target` picked, and `try_pass`'s own lofted branch
+        // recomputes the arc/blocker at release instead of the fixed
+        // `Some(0.5)`/`CROSS_CLEAR_H` this used to hand `release_pass`
+        // directly.
         let target_player = match selected.reference {
             Some(brain::OptionReference::Index(v)) => v as i64,
             _ => panic!("carrier target player must be numeric"),
         };
-        release_pass(
-            s,
-            owner_idx,
-            target_player,
-            Some(0.5),
-            Some(CROSS_CLEAR_H),
-            None,
-            tune,
-        );
+        commit_outfield_pass_intent(s, owner_idx, target_player, true, tune);
     } else if selected.kind == "shoot" {
         // Shoot to the corner away from the defending keeper, with power
         // scaled by the space the striker has been given (see constants).
@@ -5819,16 +5947,25 @@ fn update_ball(
     combat_state: Option<&CombatMatchState>,
     tune: &Tuning,
 ) {
-    // Controller transients belong to the input owner. Losing possession
+    // Controller transients belong to the ball owner. Losing possession
     // cancels that player's charge, preview, and any committed wind-up; a
     // later possession can never inherit stale state from another slot.
+    //
+    // This used to also fire for an AI-owned ball every tick regardless of
+    // possession (`!is_human_player(s, idx)` on its own was always true for
+    // the AI), which is why AI charge could never persist across ticks
+    // (#531): the AI's own decision code ran, set `pass_charge`, and the
+    // very next tick's sweep here zeroed it again before anything read it.
+    // Gating on possession alone — exactly the human rule — is what lets an
+    // AI-driven charge survive from one tick to the next.
     for index in 0..s.players.len() {
         let idx = (index + 1) as i64;
-        if Some(idx) != s.owner || !is_human_player(s, idx) {
+        if Some(idx) != s.owner {
             let p = &mut s.players[index];
             p.charge = 0.0;
             p.pass_charge = 0.0;
             p.pass_target = None;
+            p.pass_intent = pass_intent::reset(&p.pass_intent);
         }
         if s.slot_mode && Some(idx) != s.owner && s.players[index].windup_shot.is_some() {
             let p = &mut s.players[index];
@@ -5963,6 +6100,7 @@ fn update_ball(
                 owner_mut.charge = 0.0;
                 owner_mut.pass_charge = 0.0;
                 owner_mut.pass_target = None;
+                owner_mut.pass_intent = pass_intent::reset(&owner_mut.pass_intent);
                 // The fixed-slot contract requires same-tick wind-up
                 // cancellation. Legacy match AI keeps its tripwire-pinned
                 // heavy-touch behavior at the explicit offline boundary.
@@ -5983,23 +6121,33 @@ fn update_ball(
                 // Preview: while pass_held, show which teammate would
                 // receive. Ball at the feet passes like an outfielder; in
                 // the hands it throws.
-                if input.pass_held {
-                    if owner.feet_ball {
-                        update_pass_target_outfield(s, owner_idx, &input, tune);
-                    } else {
-                        update_pass_target_keeper(s, owner_idx, &input, tune);
-                    }
-                } else {
-                    s.players[(owner_idx - 1) as usize].pass_target = None;
-                }
-                human_keeper_actions(s, dt, &input, owner_idx, tune);
+                update_keeper_pass_preview(s, owner_idx, &input, tune);
+                keeper_actions(s, dt, &input, owner_idx, tune);
             } else {
-                s.players[(owner_idx - 1) as usize].pass_target = None;
-                if owner.hold_timer <= 0.0 {
-                    // AI keeper: survey, then distribute to a safe outlet
-                    // (build from the back) instead of hoofing it upfield
-                    // every frame.
-                    keeper_distribute(s, owner_idx, tune);
+                // AI keeper (#531): survey and commit a target once, then
+                // charge toward it and execute through the same
+                // `MatchInput` path a human keeper's throw takes. Two-phase
+                // so deciding and the tick's first materialization fuse
+                // into one tick: if idle, `hold_timer` gates the "survey,
+                // then distribute" delay exactly as it always did (build
+                // from the back instead of hoofing it upfield every frame);
+                // once charging, materialize/execute run every tick
+                // regardless of `hold_timer` (it stays expired for the rest
+                // of a continuous hold, so this is not a re-gate).
+                if s.players[(owner_idx - 1) as usize].pass_intent.stage
+                    == pass_intent::PassIntentStage::Idle
+                {
+                    s.players[(owner_idx - 1) as usize].pass_target = None;
+                    if owner.hold_timer <= 0.0 {
+                        commit_keeper_pass_intent(s, owner_idx, tune);
+                    }
+                }
+                if s.players[(owner_idx - 1) as usize].pass_intent.stage
+                    == pass_intent::PassIntentStage::Charging
+                {
+                    let ai_input = execute_pass_intent_tick(s, owner_idx);
+                    update_keeper_pass_preview(s, owner_idx, &ai_input, tune);
+                    keeper_actions(s, dt, &ai_input, owner_idx, tune);
                 }
             }
         } else if is_human_player(s, owner_idx) {
@@ -6011,16 +6159,30 @@ fn update_ball(
             if owner.windup_timer == 0.0
                 && !combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), owner_idx))
             {
-                human_outfield_actions(s, dt, &input, owner_idx, tune);
+                outfield_actions(s, dt, &input, owner_idx, tune);
             }
         } else if owner.windup_timer == 0.0
             && owner.stun_timer <= 0.0
             && !combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), owner_idx))
         {
-            // AI owner: decide what to do (shoot/cross/pass/carry). Guarded:
-            // while winding up, the shot is already committed; no
-            // re-decisions.
-            ai_outfield_decision(s, owner_idx, tune);
+            // AI owner (#531): decide what to do (shoot/cross/pass/carry)
+            // only while idle on a pass/cross intent, then, unconditionally,
+            // if charging, materialize and execute through the same
+            // `MatchInput` path a human's input takes. Shoot and dribble are
+            // unaffected — shoot already commits a wind-up payload
+            // (`windup_timer`/`windup_shot`), and dribble is not a
+            // multi-tick commitment at all.
+            if s.players[(owner_idx - 1) as usize].pass_intent.stage
+                == pass_intent::PassIntentStage::Idle
+            {
+                ai_outfield_decision(s, owner_idx, tune);
+            }
+            if s.players[(owner_idx - 1) as usize].pass_intent.stage
+                == pass_intent::PassIntentStage::Charging
+            {
+                let ai_input = execute_pass_intent_tick(s, owner_idx);
+                outfield_actions(s, dt, &ai_input, owner_idx, tune);
+            }
         }
 
         // Keep a possessed ball on the pitch. See `update_ball`'s doc

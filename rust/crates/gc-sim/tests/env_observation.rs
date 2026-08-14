@@ -136,6 +136,7 @@ fn player(id: &str, team: StateTeam, is_keeper: bool, pos: Vec2) -> MatchPlayer 
         charge: 0.0,
         pass_charge: 0.0,
         pass_target: None,
+        pass_intent: gc_sim::pass_intent::new_state(),
         windup_timer: 0.0,
         windup_shot: None,
         jockey_timer: 0.0,

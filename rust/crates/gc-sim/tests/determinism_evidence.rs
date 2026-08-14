@@ -73,7 +73,7 @@ fn fixture_tape_identity() -> InputTapeIdentity {
 fn determinism_evidence_pins_the_authoritative_fixture_to_the_current_snapshot_schema() {
     let fixture = omp1_determinism::fixture();
     assert_eq!(fixture.identity.snapshot_version, match_snapshot::VERSION);
-    assert_eq!(match_snapshot::VERSION, 11);
+    assert_eq!(match_snapshot::VERSION, 12);
 }
 
 #[test]
