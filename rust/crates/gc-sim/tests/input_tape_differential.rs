@@ -52,7 +52,7 @@
 //! `boundary_hash[1..5]` — hashes of STEPPED state, i.e. the trajectory —
 //! is the one thing here that no format assertion can stand in for. It is
 //! compared to the reference in its own case,
-//! `the_stepped_boundaries_still_hash_match_the_reference_lua_run`, which is
+//! `the_stepped_boundaries_reproduce_their_recorded_baseline`, which is
 //! marked and documented as deliberately trajectory-coupled: #520 class A,
 //! not class B. Everything else in this file is decoupled and stays that
 //! way, so a gameplay change reddens exactly one named case here and its
@@ -66,6 +66,60 @@
 //! never claimed otherwise — the overclaim was this test's. It is asserted
 //! below for what it does prove: that every recorded frame is consumable by
 //! the simulation.
+//!
+//! ## `identity.snapshot_version` and `boundary_hash[0]`, retired under
+//! ## #536 — schema-coupled, not trajectory-coupled
+//!
+//! Two of the format claims above stopped being checkable against Lua, for
+//! a reason distinct from #520's: `identity.snapshot_version` is literally
+//! `match_snapshot::VERSION`, and `boundary_hash[0]` hashes the kickoff
+//! snapshot — a zero-tick capture, so like the rest of this file it was
+//! never trajectory-coupled. But #536 found that a `match_snapshot::VERSION`
+//! bump reddens both anyway: the version integer changes by definition, and
+//! it is encoded first, so the hash of anything containing it moves too.
+//! "Not trajectory-coupled" was mistaken for "immune to a schema change"
+//! here, the same gap `match_snapshot_differential.rs` and
+//! `gc-netcode/tests/match_driver.rs` hit for the same reason — see
+//! `tools/lua_reference/README.md`'s new third category and either of those
+//! files' module docs for the fuller account.
+//!
+//! **Owner decision, 2026-08-14 (#536, this file's fixture found during
+//! phase 2 of #531 and added to that issue's scope after its original
+//! audit): retire per the documented procedure.** Superseded by `0c94cee`
+//! (phase 1 of #531), which bumped `match_snapshot::VERSION` 11 → 12 and
+//! added the `pass_intent` field to every serialized `MatchPlayer`. Last
+//! commit at which both fields held: `2ce0ca0` (the direct parent of
+//! `0c94cee`) — verified green there in a scratch worktree, not assumed.
+//!
+//! `tests/fixtures/input_tape_lua_reference.txt` is kept, unmodified, as the
+//! historical record of `VERSION = 11`'s Lua capture. The three cases that
+//! used to read it now read `fixtures/input_tape_baseline.txt` instead,
+//! which differs from the Lua file in exactly those two fields —
+//! `identity.snapshot_version=12` and a recomputed `boundary_hash[0]` — and
+//! is otherwise byte-identical, `boundary_hash[1..5]` included: those five
+//! are unaffected by the schema bump (nothing in `from_frozen_recording`
+//! checks them against a live hash, only their canonical form — see
+//! `the_frozen_reference_recording_is_accepted_and_structurally_valid`
+//! below), so the values already recorded in
+//! [`the_stepped_boundaries_reproduce_their_recorded_baseline`]'s
+//! `STEPPED_BASELINE` were carried over rather than re-derived, keeping the
+//! whole baseline file internally consistent with one build.
+//!
+//! **The replacement is weaker.** The retired comparisons were
+//! cross-implementation evidence that `match_snapshot`'s serialization order
+//! and `match_snapshot::hash`'s digest algorithm agreed with an
+//! independently written Lua encoder. The baseline file was recorded from
+//! this same build's `match_snapshot::capture`/`encode_canonical`, so a pass
+//! now proves only that this build agrees with a snapshot of itself — it
+//! detects change, not a wire bug already present when the value was
+//! captured. No independent, oracle-free alternative exists for either field
+//! (rule 5 of the retirement procedure): the schema version and the kickoff
+//! hash both name the exact things under test, and there is no second
+//! implementation left to disagree with. Re-recording, if a future
+//! deliberate schema change requires it, needs only reading the two
+//! assertions' own failure output — a single integer and a single hash — so
+//! no `#[ignore]`d recorder test is warranted the way a multi-line
+//! trajectory baseline elsewhere in this crate needs one.
 
 use gc_data::teams;
 use gc_sim::fixed_clock;
@@ -76,7 +130,9 @@ use gc_sim::match_snapshot;
 use gc_sim::tuning::Tuning;
 use indexmap::IndexMap;
 
-const FIXTURE: &str = include_str!("fixtures/input_tape_lua_reference.txt");
+/// Self-recorded baseline, NOT the retired Lua vector — see this file's
+/// module doc ("retired under #536").
+const FIXTURE: &str = include_str!("fixtures/input_tape_baseline.txt");
 
 fn reference() -> IndexMap<&'static str, &'static str> {
     FIXTURE
@@ -202,6 +258,13 @@ fn canonical_hash(hash: &str) -> bool {
 /// The identity words and the five frame wires: the parts of the recording
 /// that are pure encoding, compared byte for byte with the Lua reference in
 /// both directions.
+///
+/// One exception: `identity.snapshot_version` is `match_snapshot::VERSION`
+/// itself, retired under #536 — the value below now comes from the
+/// self-recorded baseline, not real Lua. See this file's module doc
+/// ("retired under #536"). Every other assertion in this function, frame
+/// wires included, is unaffected and still genuine cross-implementation
+/// evidence.
 #[test]
 fn input_frame_wires_and_tape_identity_match_the_reference_lua_byte_for_byte() {
     let reference = reference();
@@ -218,7 +281,8 @@ fn input_frame_wires_and_tape_identity_match_the_reference_lua_byte_for_byte() {
     );
     assert_eq!(
         identity.snapshot_version.to_string(),
-        expect(&reference, "identity.snapshot_version")
+        expect(&reference, "identity.snapshot_version"),
+        "self-recorded baseline, not Lua — see this function's doc comment"
     );
     assert_eq!(identity.tuning, expect(&reference, "identity.tuning"));
     assert_eq!(
@@ -246,11 +310,19 @@ fn input_frame_wires_and_tape_identity_match_the_reference_lua_byte_for_byte() {
 /// The frozen reference recording, read as DATA by the Rust reader.
 ///
 /// `from_frozen_recording` is handed the reference's own six boundary
-/// hashes and must accept them. That checks, against real Lua output: every
-/// hash's canonical form, the one-more-hash-than-frames length contract,
-/// and — the load-bearing one — `boundary_hash[0]` against the hash this
-/// build derives from the kickoff snapshot, which pins `match_snapshot`'s
-/// serialization order and digest algorithm without stepping a tick.
+/// hashes and must accept them. That checks every hash's canonical form,
+/// the one-more-hash-than-frames length contract, and — the load-bearing
+/// one — `boundary_hash[0]` against the hash this build derives from the
+/// kickoff snapshot, which pins `match_snapshot`'s serialization order and
+/// digest algorithm without stepping a tick.
+///
+/// `boundary_hash[0]` is retired under #536 (see this file's module doc):
+/// the reference this function reads is the self-recorded baseline, not
+/// real Lua, so "accepts the reference" below no longer means "agrees with
+/// Lua" the way it did before the schema bump. `boundary_hash[1..5]` were
+/// never checked against a live value here in the first place — only their
+/// canonical form and the length contract — so they carry no such claim to
+/// lose.
 #[test]
 fn the_frozen_reference_recording_is_accepted_and_structurally_valid() {
     let reference = reference();
@@ -266,7 +338,7 @@ fn the_frozen_reference_recording_is_accepted_and_structurally_valid() {
         &frozen,
         &recording.tune,
     )
-    .expect("the frozen Lua recording is a well-formed tape for this build");
+    .expect("the frozen reference recording is a well-formed tape for this build");
 
     assert_eq!(tape.version.to_string(), expect(&reference, "tape.version"));
     assert_eq!(
@@ -325,12 +397,15 @@ fn the_frozen_reference_recording_is_accepted_and_structurally_valid() {
 /// `input_tape::new`'s own output, checked for the shape the format
 /// promises rather than for the trajectory it recorded.
 ///
-/// `boundary_hash[0]` is compared to the Lua reference here — it is the
-/// pre-step boundary, so it is content, not trajectory. The four stepped
-/// boundaries after it are checked structurally only (count, canonical
-/// form, distinctness); their comparison against the reference lives in
-/// `the_stepped_boundaries_still_hash_match_the_reference_lua_run` below,
-/// which is deliberately trajectory-coupled and says so.
+/// `boundary_hash[0]` is compared to the reference here — it is the
+/// pre-step boundary, so it is content, not trajectory. That comparison is
+/// retired under #536 (see this file's module doc): the reference is now a
+/// self-recorded baseline, not real Lua. The four stepped boundaries after
+/// it are checked structurally only (count, canonical form, distinctness);
+/// their comparison against the reference lives in
+/// `the_stepped_boundaries_reproduce_their_recorded_baseline` below, which
+/// is deliberately trajectory-coupled, was retired earlier under #520, and
+/// says so.
 ///
 /// WHAT `input_tape::validate` DOES AND DOES NOT PROVE. It is asserted
 /// below, and it is worth being exact about why, because an earlier draft of
@@ -370,8 +445,9 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
     assert_eq!(
         tape.boundary_hashes[0],
         expect(&reference, "boundary_hash[0]"),
-        "the pre-step boundary hash diverges from the reference Lua run \
-         (a match_snapshot serialization or digest regression)"
+        "the pre-step boundary hash diverges from its self-recorded baseline \
+         (a match_snapshot serialization or digest regression) — retired \
+         under #536, see this file's module doc"
     );
     for (index, hash) in tape.boundary_hashes.iter().enumerate() {
         assert!(

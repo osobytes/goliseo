@@ -21,7 +21,12 @@
 //! rather than wire facts — see that case's own doc and #520. That reference
 //! trace cannot be regenerated — see `tools/lua_reference/README.md` for how
 //! it was captured — so a failure here is a finding about this driver's
-//! behavior, not a stale fixture to refresh.
+//! behavior, not a stale fixture to refresh. **One exception:** the
+//! boundary-zero digest comparison itself was retired under #536 and now
+//! reads a self-recorded baseline, not the frozen trace — see that case's
+//! doc comment ("The tick-zero digest, retired under #536") for why and what
+//! was lost. Every other comparison the case makes still reads the frozen
+//! trace and is still exactly as load-bearing as before.
 //!
 //! `mod online_match_driver` and the cases after it cover the driver with
 //! this file's own `harness`/`advance`/`run`/`assert_agreement`/
@@ -1089,7 +1094,12 @@ struct ExpectedHash {
     step: i64,
     peer: String,
     tick: i64,
-    digest: String,
+    // No `digest` field: the only comparison that used to read it (the
+    // tick-zero boundary digest) was retired under #536 to
+    // `BOUNDARY_ZERO_BASELINE_HASH` above, and nothing else in this file
+    // reads a checkpoint digest off the fixture. The fixture's `hash` rows
+    // still carry a fifth column — `parse_fixture` below just stops keeping
+    // it. See `match_driver_differential_matches_the_lua_reference`'s doc.
 }
 
 fn parse_fixture(text: &str) -> (Vec<ExpectedStep>, Vec<ExpectedHash>) {
@@ -1102,11 +1112,15 @@ fn parse_fixture(text: &str) -> (Vec<ExpectedStep>, Vec<ExpectedHash>) {
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields[0] == "hash" {
+            assert_eq!(
+                fields.len(),
+                5,
+                "fixture hash row must keep its 5-column shape, digest column included: {line}"
+            );
             hashes.push(ExpectedHash {
                 step: fields[1].parse().expect("fixture hash step is an integer"),
                 peer: fields[2].to_string(),
                 tick: fields[3].parse().expect("fixture hash tick is an integer"),
-                digest: fields[4].to_string(),
             });
         } else {
             steps.push(ExpectedStep {
@@ -1140,6 +1154,26 @@ fn canonical_digest(digest: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+
+/// `match_snapshot::hash` of the boundary-zero (kickoff) checkpoint this
+/// file's `fixture.session("1v1")` scenario seeds every peer with, recorded
+/// from THIS build.
+///
+/// Self-recorded, NOT the retired Lua digest —
+/// `match_driver_differential_matches_the_lua_reference`'s own doc comment
+/// ("The tick-zero digest, retired under #536") has the full account of why
+/// and what was lost. `fixtures/match_driver_lua_reference.txt` still holds
+/// the original Lua-captured value (`hash 10 host 0 4bec679c4f6b7769` /
+/// `hash 10 guest 0 4bec679c4f6b7769`), kept unmodified as the historical
+/// record; nothing reads it anymore.
+///
+/// Re-recorded by reading this assertion's own failure output — a single
+/// value, so no separate `#[ignore]`d recorder is warranted the way a
+/// multi-line baseline elsewhere in this workspace needs one. Re-record only
+/// when a deliberate, reviewed change to `match_snapshot`'s canonical wire
+/// schema or `match_driver_fixture::initial_snapshot`'s kickoff scenario
+/// moves this value — never to clear a check that surprised you.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "fe17f286a4078703";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and
@@ -1180,13 +1214,52 @@ fn canonical_digest(digest: &str) -> bool {
 ///   happened to be exactly what the guest had predicted — a fact about the
 ///   simulation, not about the wire;
 /// - every checkpoint TICK, so the publication cadence stays pinned;
-/// - the tick-ZERO checkpoint digest against the reference. Boundary zero is
-///   the kickoff snapshot, so it pins `match_snapshot::hash`'s algorithm and
-///   serialization order against real Lua without depending on a stepped
-///   tick;
+/// - the tick-ZERO checkpoint digest against [`BOUNDARY_ZERO_BASELINE_HASH`]
+///   (see that constant's doc — **retired under #536, no longer Lua**);
 /// - and for every later checkpoint: host and guest agree with EACH OTHER
 ///   (the desync-detection claim the digests are carried for), the digest is
 ///   canonical, and consecutive checkpoints differ.
+///
+/// ## The tick-zero digest, retired under #536 — schema-coupled, not
+/// ## trajectory-coupled
+///
+/// Boundary zero is the kickoff snapshot every peer was seeded with, taken
+/// before any tick steps — so, like the rest of this case, it was never
+/// trajectory-coupled the way a stepped digest would be. But it still pins
+/// `match_snapshot::hash`'s canonical wire *schema*, and #536 found that a
+/// `match_snapshot::VERSION` bump reddens a zero-tick digest exactly as
+/// readily as a stepped one: "not trajectory-coupled" was mistaken for
+/// "immune to a schema change" here, the same gap `match_snapshot_differential.rs`
+/// hit for the same reason — see that file's module doc for the fuller
+/// account and `tools/lua_reference/README.md`'s new third category.
+///
+/// **Owner decision, 2026-08-14 (#536): retire per the documented
+/// procedure.** Superseded by `0c94cee` (phase 1 of #531), which bumped
+/// `match_snapshot::VERSION` 11 → 12 and added the `pass_intent` field to
+/// every serialized `MatchPlayer`. Last commit at which this case's
+/// boundary-zero comparison held: `2ce0ca0` (the direct parent of
+/// `0c94cee`) — verified green there in a scratch worktree, not assumed.
+///
+/// `tests/fixtures/match_driver_lua_reference.txt` is kept, unmodified and
+/// exactly as load-bearing as before for every OTHER claim this case makes
+/// (status, confirmation arithmetic, the correction/rollback protocol,
+/// checkpoint cadence, mutual host/guest agreement) — none of those read the
+/// digest column at all, so none of them are affected by this retirement.
+/// Only the single boundary-zero digest comparison moved, from the
+/// fixture's `hash 10 host 0 …` / `hash 10 guest 0 …` rows to
+/// [`BOUNDARY_ZERO_BASELINE_HASH`] below.
+///
+/// **The replacement is weaker.** The retired comparison was
+/// cross-implementation evidence that `match_snapshot::hash`'s algorithm and
+/// serialization order agreed with an independently written Lua encoder.
+/// [`BOUNDARY_ZERO_BASELINE_HASH`] was recorded from this same build's
+/// `match_driver_fixture::initial_snapshot`, so a pass now proves only that
+/// this build agrees with a snapshot of itself — it detects change, not a
+/// wire bug already present when the value was captured. No independent,
+/// oracle-free alternative exists for a single hash's correctness (rule 5 of
+/// the retirement procedure), for the same reason `match_snapshot_differential.rs`
+/// has none: hashing IS the subject, and there is no second implementation
+/// left to disagree with.
 #[test]
 fn match_driver_differential_matches_the_lua_reference() {
     const FIXTURE: &str = include_str!("fixtures/match_driver_lua_reference.txt");
@@ -1371,10 +1444,11 @@ fn match_driver_differential_matches_the_lua_reference() {
                 if newest.tick == 0 {
                     // Boundary zero is the kickoff snapshot every peer was
                     // seeded with, so this digest is content, not
-                    // trajectory: it pins `match_snapshot::hash` against
-                    // real Lua.
+                    // trajectory — but it is schema-coupled, and the Lua
+                    // comparison it used to make (`expected.digest`) is
+                    // retired under #536. See this test's own doc comment.
                     assert_eq!(
-                        newest.hash, expected.digest,
+                        newest.hash, BOUNDARY_ZERO_BASELINE_HASH,
                         "step {step} {label} boundary-zero checkpoint hash"
                     );
                     checkpoints_compared += 1;
