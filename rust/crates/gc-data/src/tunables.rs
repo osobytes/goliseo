@@ -1520,6 +1520,17 @@ pub static METRICS: &[MetricDef] = &[
     // shipped defaults, widened to the range a designer would still call
     // playable, and neither has had a hands-on pilot. Say so before quoting
     // either as a target.
+    //
+    // THEY FOLD INTO THE FUN SCORE AS AN INTERIM STATE, SUPERSEDED BY #528.
+    // Both sit well inside their own self-fit bands at defaults, so both
+    // score desirability ~1.0 per match and lift the geometric mean of every
+    // build regardless of balance quality -- measured at +4.10% relative on a
+    // fixture where both arm and +0.46% on the all-AI control where only one
+    // does (`docs/design/fun_metrics.md`'s 2026-08-13 passing entry). #528
+    // puts newly-registered metrics on probation for exactly that reason:
+    // reported beside the score, excluded from the mean until piloted. If you
+    // are reading this and they are still folded, that is the known
+    // time-boxed condition, not an oversight.
     MetricDef {
         id: "pass_aim_error",
         // Chord, not radians (`gc_sim::passing`). 0.52 is 30 degrees off

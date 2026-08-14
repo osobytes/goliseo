@@ -560,11 +560,43 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   `pass_aim_error` measures 0.383 inside its [0.15, 0.75] band and
   `pass_lead_time` 0.408 inside its [0.1, 0.6], so both score desirability
   ≈ 1.0 per match and raise the geometric mean of every future build
-  regardless of whether that build passes any better. Whether a
-  newly-registered metric should fold into the score immediately or sit in a
-  probation set until its band has been piloted is #487's explicitly
-  undecided question; #488 settled it by default and this entry would be the
-  second to do so. It is recorded here as a number rather than resolved.
+  regardless of whether that build passes any better.
+
+  ### These two metrics fold into `fun` as an INTERIM state, superseded by #528
+
+  Whether a newly-registered metric folds into the score immediately or waits
+  was #487's explicitly undecided question. #488 settled it by default; this
+  entry would have been the second to do so. **It is now decided: #528 puts
+  newly-registered metrics on probation** — reported alongside the score but
+  excluded from the geometric mean until they have a hands-on pilot and bands
+  that are not self-fit. The +4.10% and +0.46% figures above are the evidence
+  that decision was made on.
+
+  So the v9 row's `fun` **is folded over eleven metrics and should not be**,
+  and that is a known, measured, time-boxed condition rather than an
+  oversight. #491 deliberately does not build the probation mechanism: it is a
+  registry change plus a promotion procedure plus its own go-red test, and
+  burying a governance mechanism inside a passing-feature PR is the mistake
+  #506/#515 exist to avoid.
+
+  **What #528 will move when it lands**, so nobody has to rediscover it. The
+  folded `fun` value reaches exactly two re-recorded artifacts and no others:
+
+  - `gc_data::outfield_ai_baseline`'s `RECORD.stats.fun`
+    (mean `0.2647910531282728`, sd `0.3568961197946737`, min `0.0`, max
+    `0.8918478433191761`) — and therefore its `signature`
+    `ac397926cf724b7b`, since `TRACKED` includes `"fun"` and the signature
+    folds every tracked key's statistics, and therefore `baseline_version`,
+    which the recorder bumps.
+  - The `fun` row of the table above.
+
+  It reaches **none** of the trajectory fixtures
+  (`session_legacy_ordinary_baseline.txt`, `match_step_ai_ai_baseline.txt`,
+  `session_ai_driven_baseline.txt`), none of `omp1_determinism.json`, none of
+  the six mirrored digest sites, and none of
+  `keeper_shadow_classifier`'s counts — those are positions, hashes and event
+  tallies, with no metric fold anywhere in them. So #528's re-record is one
+  baseline and one drift-log row, not another full sweep.
 
   **The selection change contributes NOTHING to this table, and that is worth
   stating rather than leaving implicit.** This control is all-AI

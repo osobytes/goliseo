@@ -181,6 +181,11 @@ pub fn assemble() -> MetricRegistry {
             // Both are `None` when the match contained no release of the
             // relevant kind, which the fold skips rather than scoring as a
             // perfect zero.
+            //
+            // Registered into the FOLD as an interim state, superseded by
+            // #528's probation decision -- see their `MetricDef`s in
+            // `gc_data::tunables` for the measured inflation and why this is
+            // a known condition rather than an oversight.
             Metric {
                 def: def("pass_aim_error"),
                 extract: |m| m.pass_aim_error,
