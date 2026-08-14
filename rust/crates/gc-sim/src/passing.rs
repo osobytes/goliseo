@@ -40,8 +40,8 @@
 //! `|aim - dir|`, which needs one subtraction and one `sqrt` and nothing
 //! else. `gc_core::vec2` and `gc_sim::locomotion` already take this trade for
 //! the same reason; what is new here is only that the knob's unit follows it.
-//! Chord is monotone in the angle over `0..=pi`, which is the whole
-//! requirement for a soft cone, and it agrees with the angle closely where
+//! Chord is monotone in the angle over `0..=pi`, so it ranks two candidates'
+//! *angles* exactly as radians would, and it tracks the angle closely where
 //! aim actually matters:
 //!
 //! | angle off aim | chord | radians | chord / radians |
@@ -52,11 +52,38 @@
 //! | 90 deg | 1.414 | 1.571 | 90.0% |
 //! | 180 deg | 2.000 | 3.142 | 63.7% |
 //!
-//! The squash is at the *back*, where the term is already dominant and a
+//! ### Monotonicity is NOT equivalence, and the difference is real
+//!
+//! It would be wrong to read the table as "chord is radians with rounding".
+//! The score is a *sum* — `distance + weight × angular` — and chord is a
+//! **concave reparametrisation** of the angle, so a monotone substitution
+//! inside a sum does not preserve the argmin. Two candidates trading a
+//! distance gap against an angle gap can rank differently under the two
+//! forms, near the crossover.
+//!
+//! Worked, from `the_angular_weight_decides_between_near_off_axis_and_far_on_axis`
+//! in `tests/passing.rs`: a near candidate 200 px away at 90 degrees off,
+//! against a far one 300 px away dead on the line. The 100 px distance gap is
+//! bought off at `weight = 100 / 1.414 ≈ 70.7` px/chord, and at
+//! `100 / 1.571 ≈ 63.7` px/rad. Between those two the two formulations pick
+//! **different receivers**.
+//!
+//! That is bounded and it is tunable, which is why it is a trade rather than
+//! a defect: the gap between the two crossovers is `chord/radians` at the
+//! angle in play, at worst the 63.7% at the back of the table, and
+//! `PASS_ANGULAR_WEIGHT` is a registered knob whose whole job is to move that
+//! crossover. It is a feel parameter being calibrated in chord units instead
+//! of radian units, not an approximation drifting away from a correct answer.
+//! Nothing downstream depends on the crossover sitting at a particular
+//! *number*; the determinism requirement above does depend on the term being
+//! computable without `acos`.
+//!
+//! The squash is also at the *back*, where the term is already dominant and a
 //! teammate is already losing. `PASS_ANGULAR_WEIGHT`'s unit is therefore
 //! authored as `px/chord`, not `px/rad`, and its declared range is the
 //! issue's metric prior converted at this project's pitch scale (960 px over
-//! a full-size pitch is about 9 px per metre).
+//! a full-size pitch is about 9 px per metre) and then widened — a range
+//! quoted in radian units would not transfer.
 //!
 //! ## The charge range is a distance TARGET, not a distance
 //!

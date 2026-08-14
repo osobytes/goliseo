@@ -194,6 +194,13 @@ fn the_arrival_model_is_sensitive_to_the_bodys_current_velocity() {
     );
 }
 
+/// The sweep grid behind #491's arrival-model decision, run in-tree so the
+/// claim is reproducible from the repository rather than from a scratch file
+/// somebody deleted.
+const SWEEP_DEGREES: [f64; 3] = [180.0, 135.0, 90.0];
+const SWEEP_DISTANCES: [f64; 5] = [60.0, 100.0, 140.0, 180.0, 220.0];
+const SWEEP_WINDOWS: [f64; 5] = [0.4, 0.6, 0.8, 1.0, 1.2];
+
 /// **The measurement that replaced the issue's step 4, against the shipped
 /// flat-cap model itself.**
 ///
@@ -203,11 +210,19 @@ fn the_arrival_model_is_sensitive_to_the_bodys_current_velocity() {
 /// so this compares the two models directly rather than against a hand-rolled
 /// restatement of one of them.
 ///
-/// Ten of the twenty-five (angle, distance, window) cases swept while writing
-/// this test have the flat model saying **yes** and the body, stepped through
-/// the real locomotion primitive, **not arriving**. Four are pinned here, one
-/// per window length, including a purely lateral redirect at 90 degrees —
-/// the over-promise is not a reversal-only curiosity.
+/// The whole 3 x 5 x 5 grid runs here and the disagreement set is pinned
+/// exactly, rather than four hand-picked rows standing in for a sweep run
+/// once and thrown away. Ten of the 75 (angle, distance, window) combinations
+/// have the flat model saying **yes** and the body, stepped through the real
+/// locomotion primitive, **not arriving** — including purely lateral
+/// 90-degree redirects, so the over-promise is not a reversal-only curiosity.
+///
+/// It also pins the asymmetry, which is the part that makes this a defect
+/// rather than a difference: the disagreement runs in **one direction only**.
+/// There is no combination where the flat model refuses a point the body
+/// actually reaches. A model that erred both ways would be imprecise; one
+/// that errs only toward "yes" systematically promises leads that cannot be
+/// met.
 ///
 /// This is the whole justification for #491's arrival-model decision,
 /// standing as a test so it cannot quietly stop being true. It is not a claim
@@ -224,37 +239,67 @@ fn the_flat_cap_model_over_promises_where_the_locomotion_model_refuses() {
     let receiver = runner(&state, start, Vec2::new(speed, 0.0));
     let body = body_of(&receiver, &tune);
 
-    // (degrees off the current run, px away, ball travel window in seconds)
-    let cases = [
-        (180.0_f64, 60.0, 0.4),
-        (180.0, 140.0, 1.0),
-        (135.0, 100.0, 0.6),
-        (90.0, 180.0, 1.2),
-    ];
-    for (degrees, distance, t_ball) in cases {
-        let radians = degrees.to_radians();
-        let target = start.add(Vec2::new(radians.cos(), radians.sin()).scale(distance));
-        let flat = predictor.reachable_before_arrival(&receiver, target, t_ball);
-        assert!(
-            flat.reachable,
-            "the flat-cap model must ADMIT {degrees} deg / {distance} px / {t_ball} s, or \
-             the comparison is vacuous: it arrives at {:.3} s",
-            flat.arrival
-        );
-        assert_eq!(
-            locomotion::time_to_reach(&body, target, CAPTURE, t_ball, DT, &tune),
-            None,
-            "the body does not reach {degrees} deg / {distance} px inside {t_ball} s, but \
-             the flat cap promised it at {:.3} s",
-            flat.arrival
-        );
+    let mut over_promised: Vec<(i64, i64, i64)> = Vec::new();
+    let mut under_promised: Vec<(i64, i64, i64)> = Vec::new();
+    let mut combinations = 0usize;
+    for degrees in SWEEP_DEGREES {
+        for distance in SWEEP_DISTANCES {
+            for t_ball in SWEEP_WINDOWS {
+                combinations += 1;
+                let radians = degrees.to_radians();
+                let target = start.add(Vec2::new(radians.cos(), radians.sin()).scale(distance));
+                let flat = predictor.reachable_before_arrival(&receiver, target, t_ball);
+                let real = locomotion::time_to_reach(&body, target, CAPTURE, t_ball, DT, &tune);
+                // Integer keys so the pinned table below is exact rather than
+                // a float comparison: milliseconds for the window, whole px
+                // and whole degrees for the geometry.
+                let key = (
+                    degrees as i64,
+                    distance as i64,
+                    (t_ball * 1000.0).round() as i64,
+                );
+                if flat.reachable && real.is_none() {
+                    over_promised.push(key);
+                }
+                if !flat.reachable && real.is_some() {
+                    under_promised.push(key);
+                }
+            }
+        }
     }
 
+    assert_eq!(
+        combinations,
+        SWEEP_DEGREES.len() * SWEEP_DISTANCES.len() * SWEEP_WINDOWS.len()
+    );
+    assert_eq!(
+        over_promised,
+        vec![
+            (180, 60, 400),
+            (180, 100, 600),
+            (180, 140, 1000),
+            (180, 180, 1200),
+            (135, 60, 400),
+            (135, 100, 600),
+            (135, 140, 1000),
+            (135, 180, 1200),
+            (90, 100, 600),
+            (90, 180, 1200),
+        ],
+        "the flat-cap model's over-promise set moved; it is the evidence for #491's \
+         arrival-model decision, so investigate before re-pinning"
+    );
+    assert!(
+        under_promised.is_empty(),
+        "the flat-cap model refused a point the body actually reaches, which would make it \
+         imprecise rather than systematically optimistic: {under_promised:?}"
+    );
+
     // And the locomotion model is not simply refusing everything: the same
-    // body reaches every one of those points given enough time.
-    for (degrees, distance, _) in cases {
-        let radians = degrees.to_radians();
-        let target = start.add(Vec2::new(radians.cos(), radians.sin()).scale(distance));
+    // body reaches every over-promised point given enough time.
+    for (degrees, distance, _) in &over_promised {
+        let radians = (*degrees as f64).to_radians();
+        let target = start.add(Vec2::new(radians.cos(), radians.sin()).scale(*distance as f64));
         assert!(
             locomotion::time_to_reach(&body, target, CAPTURE, 6.0, DT, &tune).is_some(),
             "{degrees} deg / {distance} px is unreachable at ANY horizon, which would make \

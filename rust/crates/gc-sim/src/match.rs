@@ -4744,7 +4744,7 @@ pub fn shadow_observations_take() -> Vec<SaveShadowObservation> {
 /// # Why these two numbers exist at all
 ///
 /// #491 registers eleven passing knobs, and a 48-seed census measured every
-/// one of them against every one of the ten metrics that existed before this
+/// one of them against every one of the NINE metrics that existed before this
 /// struct: all DECORATION. That is #488's finding repeating itself for a
 /// different subsystem — the pre-existing metrics are whole-match OUTCOMES,
 /// and a selection or leading change reaches an outcome only through many

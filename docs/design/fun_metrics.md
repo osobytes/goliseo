@@ -529,11 +529,42 @@ tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
   | `ai_jukes` | 32.716667 | 31.933333 | −0.783333 |
 
   **`fun` is again not comparable across these two rows**, for exactly the
-  reason the v2 → v3 entry below gives: this change registers an eleventh and
-  twelfth metric (`pass_aim_error`, `pass_lead_time`), and `fun` is a
-  geometric mean over however many extract a value. The −0.0051 understates
-  the like-for-like movement; hold the metric set fixed before comparing
-  against v9.
+  reason the v2 → v3 entry below gives: this change registers a **tenth and
+  eleventh** metric (`pass_aim_error`, `pass_lead_time`), and `fun` is a
+  geometric mean over however many extract a value.
+
+  The same-build number that entry gives, given here on the same terms.
+  Scored on **one identical build** over these same 60 seeds, holding
+  everything but the registered metric set fixed:
+
+  | fixture | metrics folded | `fun` | inflation |
+  | --- | --- | --- | --- |
+  | this all-AI control | 9 (v8's set) | 0.263588 | — |
+  | this all-AI control | 10 | 0.264791 | **+0.001203 (+0.46%)** |
+  | bot-driven harness default | 9 (v8's set) | 0.344160 | — |
+  | bot-driven harness default | 11 | 0.358275 | **+0.014115 (+4.10%)** |
+
+  So the like-for-like v8 → v9 movement is **0.269890 → 0.263588 = −0.006302**,
+  and the −0.005099 in the table above understates it by the +0.001203 the
+  extra metric adds for free.
+
+  **Only ONE of the two new metrics arms on this control, and that is not a
+  detail.** `pass_aim_error` is present in **0 of 60** matches here and in
+  60 of 60 on the bot-driven fixture, because an all-AI match contains no
+  aimed release at all. That is the same fact the next paragraph argues from,
+  measured rather than asserted — and it is why this row inflates by 0.46%
+  while a build that exercises both metrics inflates by 4.10%, close to the
+  ~4.9% #488 measured for adding one.
+
+  Both inflations are **structural, not earned**: at the shipped defaults
+  `pass_aim_error` measures 0.383 inside its [0.15, 0.75] band and
+  `pass_lead_time` 0.408 inside its [0.1, 0.6], so both score desirability
+  ≈ 1.0 per match and raise the geometric mean of every future build
+  regardless of whether that build passes any better. Whether a
+  newly-registered metric should fold into the score immediately or sit in a
+  probation set until its band has been piloted is #487's explicitly
+  undecided question; #488 settled it by default and this entry would be the
+  second to do so. It is recorded here as a number rather than resolved.
 
   **The selection change contributes NOTHING to this table, and that is worth
   stating rather than leaving implicit.** This control is all-AI

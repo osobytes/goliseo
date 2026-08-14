@@ -105,6 +105,35 @@ pub const MAX_CANDIDATES: usize = 6;
 /// `tests/pass_release_budget.rs` — but the ceiling is what bounds the frame,
 /// so it is stated rather than assumed.
 ///
+/// # `predict.budget_exhaustions` CANNOT FIRE for this predictor
+///
+/// State it plainly, because a counter that cannot rise reads as a counter
+/// that is fine. The budget above is derived as
+/// `MAX_CANDIDATES × full_horizon_ticks`, and [`solve`] issues at most
+/// `LeadKnobs::steps` queries, each of which stops at
+/// [`BallPredictionConfig::max_horizon`]. Since `steps` is clamped to
+/// `MAX_CANDIDATES` in [`LeadKnobs::of`], the maximum spend **ties exactly**
+/// with the budget. So no in-range value of `PASS_LEAD_STEPS` — and no
+/// combination of the other knobs, which cannot lengthen a trajectory past
+/// the horizon — can exhaust it. `budget_exhaustions` is therefore
+/// structurally zero on this instance rather than measured to be zero, and
+/// `tests/pass_release_budget.rs`'s matrix assertion that it stays at 0 is
+/// evidence about the SPEND (296 of 720 in the worst observed burst), not
+/// about the counter being watched.
+///
+/// **This is the same shape as #513**, which records `STEP_BUDGET_DEFAULT`
+/// tying with one full-horizon rebuild for the shared predictor. Two
+/// consequences for whoever comes next:
+///
+/// - Raising `MAX_CANDIDATES` raises the budget with it, so the tie is
+///   preserved and the counter stays silent. Anyone tuning
+///   `PASS_LEAD_STEPS` upward needs a different signal — `scratch_steps`,
+///   which is real — because this one will never warn them.
+/// - The go-red demonstration in `tests/pass_release_budget.rs` therefore has
+///   to inject an artificially starved predictor from outside. That is
+///   adequate for proving the assertion can fail, and it is deliberately not
+///   presented as proof that the release path can starve itself.
+///
 /// Everything else stays at [`BallPredictionConfig::default`], including the
 /// horizon and the fixed tick.
 #[must_use]

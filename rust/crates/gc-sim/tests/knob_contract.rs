@@ -533,7 +533,7 @@ fn the_shipped_defaults_land_inside_the_proposed_band() {
 // THE CENSUS, recorded here because it is the reason the two metrics below
 // exist and a reviewer should not have to take it on trust.
 //
-// #491's eleven passing knobs were measured against every one of the TEN
+// #491's eleven passing knobs were measured against every one of the NINE
 // metrics that existed before it, over 48 seeds of 30-second matches, each
 // knob displaced across its full declared range. Every pairing reported
 // DECORATION. The three closest, all at 48 seeds:
