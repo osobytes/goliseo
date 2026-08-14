@@ -1143,6 +1143,90 @@ describe("pitch.ts converts frame.control.controlled/pass_target from one-based 
   });
 });
 
+// #491's no-latching requirement, at the actual drawing layer rather than
+// the payload shape: `pitchDrawCommands` is a pure function of the ONE
+// `RenderFrame` it is handed (this file's own top comment: "Tests for
+// pitch.ts's pure path"), so nothing here can carry a marker position
+// between two independent calls -- there is no per-call cache for
+// `control.pass_target` the way `staticSceneCommands` deliberately caches
+// arena geometry (that cache is keyed on field/camera/theme, never on
+// `pass_target`, so it cannot be the mechanism either). These tests make
+// that a runtime assertion, not just a reading of the source: a hand-off
+// tween or an animation state machine that held the last shown target
+// across frames -- exactly the failure #491 names -- would make the
+// "must NOT still be at the old ring position" assertion below fail.
+describe("pitch.ts's pass-target marker has no memory across independent draws", () => {
+  function threePlayerFrame(passTarget: number | undefined): RenderFrame {
+    return frame({
+      roster: {
+        radius: [12, 12, 12],
+        teams: ["home", "home", "away"],
+        is_keeper: [false, false, false],
+        species_shape: ["round", "round", "round"],
+        species_color: [
+          [1, 1, 1],
+          [1, 1, 1],
+          [1, 1, 1],
+        ],
+        ids: ["home-1", "home-2", "away-1"],
+        presentation_ids: ["medieval_rook_emberguard", "scifi_axi", "toy_tock"],
+        loadout_ids: ["loadout_emberguard_shield", undefined, undefined],
+      },
+      players: {
+        ...emptyPlayers(3),
+        x: [100, 700, 400],
+        y: [100, 400, 250],
+      },
+      // `exactOptionalPropertyTypes` forbids an explicit `pass_target:
+      // undefined` -- the key must be absent, not present-with-undefined,
+      // matching frame_buffer.ts's own decode ("`pass_target !== 0 ? {
+      // pass_target: passTarget } : {}`").
+      control: {
+        ...(passTarget !== undefined ? { pass_target: passTarget } : {}),
+        charge: 0,
+        controlled: 0,
+      },
+    });
+  }
+
+  const isPassRing = (c: DrawCommand) => c.kind === "circle" && c.mode === "line";
+
+  it("moves the ring to the new winner on the very next call, and back again -- never the previous call's position", () => {
+    const atHome1 = pitchDrawCommands(threePlayerFrame(1), viewport, opts);
+    const ringAtHome1 = atHome1.find(isPassRing);
+    expect(ringAtHome1).toBeDefined();
+
+    const atHome2 = pitchDrawCommands(threePlayerFrame(2), viewport, opts);
+    const ringAtHome2 = atHome2.find(isPassRing);
+    expect(ringAtHome2).toBeDefined();
+    // home-1 (100, 100) and home-2 (700, 400) project to clearly distinct
+    // screen points at this viewport -- a real move, not sub-pixel noise.
+    expect(
+      ringAtHome2?.kind === "circle" && ringAtHome1?.kind === "circle"
+        ? Math.hypot(ringAtHome2.x - ringAtHome1.x, ringAtHome2.y - ringAtHome1.y)
+        : 0,
+    ).toBeGreaterThan(50);
+
+    // A rollback correction can also erase the winner outright.
+    const cleared = pitchDrawCommands(threePlayerFrame(undefined), viewport, opts);
+    expect(cleared.find(isPassRing)).toBeUndefined();
+
+    // Back to home-1: must land exactly where the FIRST call put it, not
+    // wherever the SECOND (home-2) or cleared call left something behind.
+    const backToHome1 = pitchDrawCommands(threePlayerFrame(1), viewport, opts);
+    const ringBackToHome1 = backToHome1.find(isPassRing);
+    expect(ringBackToHome1).toBeDefined();
+    expect(ringBackToHome1?.kind === "circle" ? ringBackToHome1.x : undefined).toBeCloseTo(
+      ringAtHome1?.kind === "circle" ? ringAtHome1.x : NaN,
+      6,
+    );
+    expect(ringBackToHome1?.kind === "circle" ? ringBackToHome1.y : undefined).toBeCloseTo(
+      ringAtHome1?.kind === "circle" ? ringAtHome1.y : NaN,
+      6,
+    );
+  });
+});
+
 // ============================================================================
 // VIEWPORT INVARIANCE (#414)
 //
