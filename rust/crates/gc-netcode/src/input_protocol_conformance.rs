@@ -40,7 +40,7 @@ pub struct Golden {
 
 /// The pinned golden vectors.
 pub const GOLDEN: Golden = Golden {
-    snapshot_version: 11,
+    snapshot_version: 12,
     combat_version: 13,
     // The embedded manifest id moved with #268's `max_goals` 5 -> 99 (no goal
     // limit). The packet payloads either side of it are byte-identical, and
