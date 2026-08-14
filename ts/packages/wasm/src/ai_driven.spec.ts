@@ -35,8 +35,8 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "6c5eb7b4fd5e4d55";
-const NATIVE_SEQUENCE_DIGEST = "d6909bcfa5e5f455";
+const NATIVE_FINAL_HASH = "64b8ad7d35ab1c39";
+const NATIVE_SEQUENCE_DIGEST = "6c6d9581eac53f8c";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -110,7 +110,7 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   //      is no longer a claim this repository makes. The constants are now
   //      the native Rust build's, re-recorded in the same commit.
   //   2. MEASURED ON THIS BUILD, wasm and native agree exactly --
-  //      final 6c5eb7b4fd5e4d55, sequence d6909bcfa5e5f455, both targets. So
+  //      final 64b8ad7d35ab1c39, sequence 6c6d9581eac53f8c, both targets. So
   //      these are plain `it` now, because they pass. Re-measured after
   //      merging #501, which moves this scenario: both targets moved together
   //      and still agree, which is the property these two lines gate.

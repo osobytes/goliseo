@@ -337,6 +337,9 @@ fn tuning_knobs_are_the_registrys_tier_one_set_and_the_panel_contract_is_unchang
             "Dribble",
             "Aerial",
             "Attacking",
+            // Passing is its own tab (#491): eleven knobs describing the
+            // soft cone, the distance-to-speed curve and the lead solver.
+            "Passing",
             "Defending",
             "Keeper",
             "AI",

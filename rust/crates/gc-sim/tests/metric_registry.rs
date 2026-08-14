@@ -155,6 +155,12 @@ fn metric_registry_folds_in_the_authored_order() {
             "longest_drought_s",
             "decided_late",
             "time_to_reverse",
+            // #491's two, appended after `time_to_reverse` and in the order
+            // `gc_data::tunables::METRICS` authors them. Fold order decides
+            // the fun score's last bits, so this list is a pin, not a
+            // description.
+            "pass_aim_error",
+            "pass_lead_time",
         ]
     );
 }
@@ -176,6 +182,8 @@ fn metric_registry_is_the_only_band_table_left() {
         reg.band("decided_late"),
         Some([0.05, 0.4, 1.0, f64::INFINITY])
     );
+    assert_eq!(reg.band("pass_aim_error"), Some([0.0, 0.15, 0.75, 1.4]));
+    assert_eq!(reg.band("pass_lead_time"), Some([0.0, 0.1, 0.6, 1.2]));
     assert_eq!(reg.band("not_a_metric"), None);
 
     // `lever_metrics` used to keep these eight widths by hand.

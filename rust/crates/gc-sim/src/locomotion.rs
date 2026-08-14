@@ -197,6 +197,134 @@ pub fn arrival_speed(distance: f64, decel: f64) -> f64 {
     (2.0 * decel * distance).sqrt()
 }
 
+/// One body's inputs to [`time_to_reach`], gathered once.
+///
+/// Deliberately not `&MatchPlayer`: this crate's locomotion primitive is
+/// testable without constructing a match (see [`Kinematics`]), and the
+/// arrival model inherits that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReachBody {
+    /// Where the body is now.
+    pub pos: Vec2,
+    /// Its current velocity and facing.
+    pub k: Kinematics,
+    /// Its authored base move speed, px/s.
+    pub base_speed: f64,
+    /// Its normalized curve inputs (see [`stats`]).
+    pub stats: Stats,
+    /// Whether the sprint burst is currently engaged.
+    pub sprinting: bool,
+}
+
+/// How long a body running flat out at `target` takes to get there, or
+/// `None` if it cannot inside `max_time`.
+///
+/// # Why this is a forward simulation and not `distance / top_speed`
+///
+/// It is the same question `gc_sim::ball_prediction`'s
+/// `reachable_before_arrival` answers, and that one still answers it with a
+/// constant-speed model: straight line, top speed from a standing start, no
+/// acceleration profile. Before #488 that was merely optimistic. After it,
+/// it is **wrong in a way that produces a specific, misattributed bug**: a
+/// body has momentum, so it cannot reach top speed instantly, cannot turn
+/// without an arc, and pays a full brake-to-zero for a reversal. Anything
+/// that leads a pass off a flat speed cap therefore leads it to points the
+/// receiver provably cannot reach, and the failure surfaces as bad receiver
+/// AI rather than as a bad solver.
+///
+/// So this steps the real primitive — [`resolve`], [`profile`] and [`step`],
+/// the identical three functions `r#match::apply_locomotion` drives every
+/// tick for every player — against a straight-line command at the target.
+/// The five direction profiles are derived once per call rather than per
+/// tick: a context change swaps *which* profile applies, never what any of
+/// them contains, so caching them costs nothing in fidelity.
+///
+/// # What it deliberately ignores, stated rather than implied
+///
+/// This is a **kinematic upper bound on willingness**, not a prediction:
+///
+/// - **Other bodies.** No collisions, no shielding, no being tackled. The
+///   lane is empty.
+/// - **The receiver's own decision layer.** It commands a flat-out straight
+///   run; the real receiver is running its normal off-ball target selection
+///   and may decline (`docs/`-level design: a led pass is an invitation, not
+///   a mind-control beam). A led pass can therefore still fail, honestly.
+/// - **Field bounds.** The body is not clamped to the pitch, because the
+///   caller is expected to have clamped the *target* to it — leading a pass
+///   off the touchline is a bug in the lead point, not in the run.
+/// - **Sprint drain.** `sprinting` is held at its current value for the
+///   whole horizon; the meter is not integrated.
+/// - **Stun, wind-up, combat and arrival easing**, all of which the live
+///   caller folds into `Command::vel` before the primitive sees it.
+///
+/// Pure and deterministic: no RNG, no clock, and `dt` is the caller's fixed
+/// tick, so a resimulation reproduces the answer exactly.
+#[must_use]
+pub fn time_to_reach(
+    body: &ReachBody,
+    target: Vec2,
+    capture: f64,
+    max_time: f64,
+    dt: f64,
+    tune: &Tuning,
+) -> Option<f64> {
+    if body.pos.dist(target) <= capture {
+        return Some(0.0);
+    }
+    if dt <= 0.0 || max_time <= 0.0 {
+        return None;
+    }
+    let profiles: Vec<Profile> = LocoContext::ALL
+        .iter()
+        .map(|ctx| {
+            profile(
+                Resolution {
+                    ctx: *ctx,
+                    carry: CarryMode::Empty,
+                },
+                body.base_speed,
+                body.stats,
+                tune,
+            )
+        })
+        .collect();
+    let steps = (max_time / dt).ceil() as i64;
+    let mut k = body.k;
+    let mut pos = body.pos;
+    for i in 0..steps {
+        let offset = target.sub(pos);
+        let dir = offset.normalized();
+        let desired = dir.scale(body.base_speed);
+        // Throttle 1.0: this is the flat-out best case, which is what an
+        // admissibility bound is asking for.
+        let res = resolve(1.0, false, body.sprinting, dir, k.facing, tune);
+        let index = LocoContext::ALL
+            .iter()
+            .position(|c| *c == res.ctx)
+            .expect("every LocoContext is in ALL");
+        k = step(
+            k,
+            &Command {
+                vel: desired,
+                carrying: false,
+                sprinting: body.sprinting,
+                facing: FacingIntent::Movement,
+            },
+            &profiles[index],
+            dt,
+            tune,
+        );
+        pos = pos.add(k.run_vel.scale(dt));
+        if pos.dist(target) <= capture {
+            // `(i + 1) * dt`, not an accumulator: a running sum of `dt`
+            // drifts, and this value is compared against a ball travel time
+            // that was itself derived from an exact tick count.
+            return Some((i + 1) as f64 * dt);
+        }
+    }
+    None
+}
+
 fn context_knobs(ctx: LocoContext) -> &'static locomotion::ContextKnobs {
     let index = LocoContext::ALL
         .iter()

@@ -57,6 +57,7 @@ use crate::match_snapshot::{
 use crate::offball_runs;
 use crate::outfield_decision::{self, OutfieldDecisionContext};
 use crate::outfield_press::{self, OutfieldPressState};
+use crate::pass_lead;
 use crate::passing;
 use crate::placement;
 use crate::possession_transition::{self, TransitionTeam, TransitionWindows};
@@ -91,10 +92,6 @@ const KEEPER_CLAIM_DIST: f64 = 40.0;
 const KEEPER_LEAD: f64 = 0.01;
 const KEEPER_1V1_SUPPORT: f64 = 120.0;
 const POSSESS_MAX_SPEED: f64 = 350.0;
-const PASS_SPEED: f64 = 420.0;
-const PASS_ARRIVE_PACE: f64 = 120.0;
-const PASS_SPEED_MAX: f64 = 700.0;
-const PASS_LEAD: f64 = 0.6;
 const CROSS_CLEAR_H: f64 = 50.0;
 /// Range of an uncharged pass.
 ///
@@ -1263,14 +1260,6 @@ fn release_shot(
     s.block_grace = BLOCK_GRACE;
 }
 
-/// Pace a ground pass so it actually arrives: friction sheds `FRICTION` of
-/// the ball's speed per second, so a pass launched at v covers roughly
-/// v/FRICTION before dying. Aim to reach the receiver with a touch of pace
-/// left.
-fn pass_speed_for(d: f64) -> f64 {
-    (PASS_ARRIVE_PACE + FRICTION * d).clamp(PASS_SPEED, PASS_SPEED_MAX)
-}
-
 /// Opposing outfielders as interception threats against a pass by `team`.
 /// Keepers are excluded: they hold their box instead of chasing lanes.
 fn pass_threats(s: &MatchState, team: Team) -> Vec<ai::Threat> {
@@ -1289,8 +1278,8 @@ fn pass_threats(s: &MatchState, team: Team) -> Vec<ai::Threat> {
 /// Earliest lane fraction where a chaser would cut out a driven ground pass
 /// from->to (paced by `pass_speed_for`), or `None` when the pass outruns
 /// everyone.
-fn pass_risk(from: Vec2, to: Vec2, threats: &[ai::Threat]) -> Option<f64> {
-    let speed = pass_speed_for(from.dist(to));
+fn pass_risk(from: Vec2, to: Vec2, threats: &[ai::Threat], tune: &Tuning) -> Option<f64> {
+    let speed = passing::speed_for(from.dist(to), tune);
     ai::pass_intercept(
         from,
         to,
@@ -1303,9 +1292,10 @@ fn pass_risk(from: Vec2, to: Vec2, threats: &[ai::Threat]) -> Option<f64> {
 }
 
 /// Release a pass from `owner_idx` to teammate `target_idx`: fires the
-/// event, paces the ball by distance (or lobs it over `blocker_f`), and
-/// sets the receiver running onto it so passes are met instead of left to
-/// roll dead.
+/// event, paces the ball by the registered distance-to-speed curve (or lobs
+/// it over `blocker_f`), leads a running receiver via
+/// [`crate::pass_lead::solve`], and sets the receiver running onto it so
+/// passes are met instead of left to roll dead.
 #[allow(clippy::too_many_arguments)]
 fn release_pass(
     s: &mut MatchState,
@@ -1314,12 +1304,44 @@ fn release_pass(
     mut blocker_f: Option<f64>,
     clear_h: Option<f64>,
     land_pos: Option<Vec2>,
+    tune: &Tuning,
 ) {
     let owner_pos = s.players[(owner_idx - 1) as usize].pos;
     let owner_id = s.players[(owner_idx - 1) as usize].id.clone();
     let target_pos = s.players[(target_idx - 1) as usize].pos;
-    let target_vel = s.players[(target_idx - 1) as usize].vel;
     let target_is_keeper = s.players[(target_idx - 1) as usize].is_keeper;
+
+    // THE LEAD SOLVE, and it happens here — first, against the pre-release
+    // world, before this function has touched a single field. The solver
+    // borrows `s` immutably; running it after the ball has been reassigned
+    // would be solving against a world that no longer exists.
+    //
+    // A fresh predictor per release rather than a match-long one, on
+    // `attempt_save`'s precedent (#486): the service is pure and its cache is
+    // fingerprint-keyed, so a local instance answers identically, and its
+    // per-tick budget is then a per-RELEASE budget that no other consumer can
+    // have spent. That makes the burst independent of query ORDER, which is
+    // what keeps a resimulated release bit-identical to the original even if
+    // some other consumer's query count differs between the two timelines.
+    //
+    // Not solved for a lob (the arc is `lob_launch`'s, not a ground roll's),
+    // for a planned keeper throw (`land_pos` is already placed), or into a
+    // keeper's gloves.
+    let lead = if land_pos.is_none() && blocker_f.is_none() && !target_is_keeper {
+        let owner_verb = s.players[(owner_idx - 1) as usize].owned_verb;
+        let mut predictor = pass_lead::release_predictor();
+        pass_lead::solve(
+            s,
+            &mut predictor,
+            owner_pos,
+            &s.players[(target_idx - 1) as usize],
+            POSSESS_DIST,
+            species::link_pass_speed(owner_verb),
+            tune,
+        )
+    } else {
+        None
+    };
 
     // A defender right on the release point eats a driven ball — and even a
     // lob is still low in its first strides (the lane check ignores segment
@@ -1382,12 +1404,17 @@ fn release_pass(
         s.ball_vel = vel;
         s.ball_vz = vz;
     } else {
-        let d = owner_pos.dist(target_pos);
+        // Aim at the solved lead point when one was admissible, and at the
+        // receiver's feet otherwise — the issue's unled fallback, which is a
+        // real pass rather than a failure.
+        let aim_pt = lead.map_or(target_pos, |solution| solution.point);
+        pass_shadow_record(|tally| {
+            tally.ground_releases += 1;
+            tally.lead_time_sum += lead.map_or(0.0, |solution| solution.lead_time);
+        });
+        let d = owner_pos.dist(aim_pt);
         let owner_verb = s.players[(owner_idx - 1) as usize].owned_verb;
-        let pass_speed = pass_speed_for(d) * species::link_pass_speed(owner_verb);
-        // Lead a MOVING receiver into their run (a fraction of the flight
-        // time) so the ball meets their stride instead of their heels.
-        let aim_pt = target_pos.add(target_vel.scale(d / pass_speed * PASS_LEAD));
+        let pass_speed = passing::speed_for(d, tune) * species::link_pass_speed(owner_verb);
         s.ball_vel = aim_pt.sub(owner_pos).normalized().scale(pass_speed);
         s.ball_vz = 0.0;
     }
@@ -1428,6 +1455,7 @@ pub fn select_pass_target(
     lofted: bool,
     aim: Option<Vec2>,
     range: Option<f64>,
+    tune: &Tuning,
 ) -> Option<i64> {
     let owner = &s.players[(owner_idx - 1) as usize];
     let owner_pos = owner.pos;
@@ -1472,6 +1500,31 @@ pub fn select_pass_target(
             }
         }
     }
+    // Past the deliberate back-pass, the own keeper is NOT a soft-cone
+    // candidate, and that is a consequence of deleting the hard cone rather
+    // than a policy change. The old 60-degree gate made "the keeper is a
+    // candidate like anyone else" safe: a keeper outside the cone was
+    // invisible. With a soft blend nobody is ever invisible, so an unaimed or
+    // wide pass would pick the keeper on raw proximity alone — the panic
+    // back-pass `a_blind_pass_under_no_aim_never_dumps_the_ball_at_the_keeper`
+    // has guarded against since long before #491. The keeper stays reachable
+    // by the ONE route that is unambiguously deliberate: aiming square at it,
+    // handled above.
+    let mut cand: Vec<i64> = cand;
+    let mut positions: Vec<Vec2> = positions;
+    {
+        let mut kept_cand = Vec::with_capacity(cand.len());
+        let mut kept_pos = Vec::with_capacity(positions.len());
+        for (k, idx) in cand.iter().enumerate() {
+            if !s.players[(*idx - 1) as usize].is_keeper {
+                kept_cand.push(*idx);
+                kept_pos.push(positions[k]);
+            }
+        }
+        cand = kept_cand;
+        positions = kept_pos;
+    }
+    let knobs = passing::SelectionKnobs::of(tune);
     let mut rel: Option<usize>;
     let pick_cand: Vec<i64>;
     let pick_pos: Vec<Vec2>;
@@ -1480,17 +1533,17 @@ pub fn select_pass_target(
         let mut safe_cand: Vec<i64> = Vec::new();
         let mut safe_pos: Vec<Vec2> = Vec::new();
         for (k, idx) in cand.iter().enumerate() {
-            if pass_risk(owner_pos, positions[k], &threats).is_none() {
+            if pass_risk(owner_pos, positions[k], &threats, tune).is_none() {
                 safe_cand.push(*idx);
                 safe_pos.push(positions[k]);
             }
         }
-        rel = passing::target(owner_pos, aim, &safe_pos, range);
+        rel = passing::select_receiver(owner_pos, aim, &safe_pos, range, &knobs);
         if rel.is_some() {
             pick_cand = safe_cand;
             pick_pos = safe_pos;
         } else {
-            rel = passing::target(owner_pos, aim, &positions, range);
+            rel = passing::select_receiver(owner_pos, aim, &positions, range, &knobs);
             if let Some(r) = rel {
                 pick_cand = cand.clone();
                 pick_pos = positions.clone();
@@ -1501,7 +1554,7 @@ pub fn select_pass_target(
             return select_pass_target_fallback(s, owner_team, owner_pos, cand, positions, lofted);
         }
     } else {
-        rel = passing::target(owner_pos, aim, &positions, range);
+        rel = passing::select_receiver(owner_pos, aim, &positions, range, &knobs);
         if let Some(r) = rel {
             pick_cand = cand.clone();
             pick_pos = positions.clone();
@@ -1694,10 +1747,20 @@ fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>,
     } else {
         None
     };
-    let target_idx = select_pass_target(s, owner_idx, lofted, Some(aim), range);
+    let target_idx = select_pass_target(s, owner_idx, lofted, Some(aim), range, tune);
     let Some(target_idx) = target_idx else {
         return;
     };
+    // The soft cone's own accuracy, recorded where the aim actually exists.
+    // `select_pass_target` is pure and called every PREVIEW frame too, so
+    // recording inside it would count frames instead of releases.
+    pass_shadow_record(|tally| {
+        tally.aimed_releases += 1;
+        tally.aim_error_sum += passing::angular_term(
+            aim.normalized(),
+            s.players[(target_idx - 1) as usize].pos.sub(owner_pos),
+        );
+    });
     // Determine loft: cross gets CROSS_CLEAR_H; regular lob gets
     // lane-blocker fraction.
     let mut opp_positions: Vec<Vec2> = Vec::new();
@@ -1727,7 +1790,7 @@ fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>,
             ai::lane_blocker(owner_pos, target_pos, &opp_positions, POSSESS_DIST).unwrap_or(0.5),
         );
     }
-    release_pass(s, owner_idx, target_idx, f, clear_h, None);
+    release_pass(s, owner_idx, target_idx, f, clear_h, None, tune);
 }
 
 /// Plan a keeper HAND throw to `target_idx`. Hands see the whole pitch: a
@@ -1782,7 +1845,7 @@ fn plan_throw(s: &MatchState, keeper_idx: i64, target_idx: i64) -> (Vec2, f64, f
 /// Human keeper throw: aimed like a pass (facing cone), the charged range
 /// picking WHICH teammate; the flight comes from `plan_throw`
 /// (uninterferable).
-fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec2>) {
+fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec2>, tune: &Tuning) {
     let keeper_facing = s.players[(keeper_idx - 1) as usize].facing;
     let aim = aim.unwrap_or(keeper_facing);
     let target_idx = select_throw_target(s, keeper_idx, range, Some(aim));
@@ -1797,6 +1860,7 @@ fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec
         Some(f),
         Some(clear_h),
         Some(land),
+        tune,
     );
     s.players[(keeper_idx - 1) as usize].throw_timer = KEEPER_THROW_POSE;
 }
@@ -1808,7 +1872,11 @@ fn ai_pass_eligible(distance: f64, openness: f64) -> bool {
     (AI_PASS_MIN_DIST..=AI_PASS_MAX_DIST).contains(&distance) && openness >= AI_PASS_MIN_OPEN
 }
 
-fn ai_pass_options(s: &MatchState, owner_idx: i64) -> Vec<outfield_decision::OutfieldPassOption> {
+fn ai_pass_options(
+    s: &MatchState,
+    owner_idx: i64,
+    tune: &Tuning,
+) -> Vec<outfield_decision::OutfieldPassOption> {
     let owner = &s.players[(owner_idx - 1) as usize];
     let owner_pos = owner.pos;
     let owner_team = owner.team;
@@ -1832,7 +1900,7 @@ fn ai_pass_options(s: &MatchState, owner_idx: i64) -> Vec<outfield_decision::Out
             if ai_pass_eligible(d, open) {
                 let blocked = ai::lane_blocker(owner_pos, p.pos, &opp_positions, POSSESS_DIST);
                 let risk = if blocked.is_none() {
-                    pass_risk(owner_pos, p.pos, &threats)
+                    pass_risk(owner_pos, p.pos, &threats, tune)
                 } else {
                     None
                 };
@@ -4339,7 +4407,7 @@ fn run_eligible(
 ///   3. Everyone swarmed: drop the ball and drop-kick it long upfield — a
 ///      high clearance over every head, not a flat drilled ball at the
 ///      opponent goal.
-fn keeper_distribute(s: &mut MatchState, keeper_idx: i64) {
+fn keeper_distribute(s: &mut MatchState, keeper_idx: i64, tune: &Tuning) {
     let keeper = s.players[(keeper_idx - 1) as usize].clone();
     // Ball at the feet (received back-pass): distribution is KICKED — a
     // normal foot pass (no throw pose, ordinary lob height), released
@@ -4372,7 +4440,7 @@ fn keeper_distribute(s: &mut MatchState, keeper_idx: i64) {
                 // a cuttable lane is floated over the interception point
                 // instead.
                 let f = ai::lane_blocker(keeper.pos, p.pos, &opp, POSSESS_DIST)
-                    .or_else(|| pass_risk(keeper.pos, p.pos, &threats));
+                    .or_else(|| pass_risk(keeper.pos, p.pos, &threats, tune));
                 // Prefer a clear ground lane, then a short safe range, then
                 // openness and a little upfield progress. The clear-lane
                 // bonus dominates so a reliable ground pass always beats a
@@ -4398,11 +4466,11 @@ fn keeper_distribute(s: &mut MatchState, keeper_idx: i64) {
         s.players[(keeper_idx - 1) as usize].throw_timer = KEEPER_THROW_POSE; // release/throw pose (visual)
     }
     if let Some(best) = best {
-        release_throw(s, keeper_idx, best, best_f, kicked);
+        release_throw(s, keeper_idx, best, best_f, kicked, tune);
     } else if let Some(open_best) = open_best {
         let open_best_pos = s.players[(open_best - 1) as usize].pos;
         let f = ai::lane_blocker(keeper.pos, open_best_pos, &opp, POSSESS_DIST).unwrap_or(0.5);
-        release_throw(s, keeper_idx, open_best, Some(f), kicked);
+        release_throw(s, keeper_idx, open_best, Some(f), kicked, tune);
     } else {
         // Everyone swarmed: drop-kick a high clearance upfield (lands
         // around DROPKICK_DIST away, toward the middle of the pitch).
@@ -4436,14 +4504,29 @@ fn keeper_distribute(s: &mut MatchState, keeper_idx: i64) {
 
 /// Hands place their lobs via `plan_throw` (safe-side landing + an arc no
 /// jump can reach); a kicked distribution keeps ordinary foot-lob flight.
-fn release_throw(s: &mut MatchState, keeper_idx: i64, idx: i64, f: Option<f64>, kicked: bool) {
+fn release_throw(
+    s: &mut MatchState,
+    keeper_idx: i64,
+    idx: i64,
+    f: Option<f64>,
+    kicked: bool,
+    tune: &Tuning,
+) {
     if kicked {
-        release_pass(s, keeper_idx, idx, f, Some(LOB_CLEAR_H), None);
+        release_pass(s, keeper_idx, idx, f, Some(LOB_CLEAR_H), None, tune);
     } else if f.is_some() {
         let (land, pf, clear_h) = plan_throw(s, keeper_idx, idx);
-        release_pass(s, keeper_idx, idx, Some(pf), Some(clear_h), Some(land));
+        release_pass(
+            s,
+            keeper_idx,
+            idx,
+            Some(pf),
+            Some(clear_h),
+            Some(land),
+            tune,
+        );
     } else {
-        release_pass(s, keeper_idx, idx, None, None, None); // clear ground lane: bowl it
+        release_pass(s, keeper_idx, idx, None, None, None, tune); // clear ground lane: bowl it
     }
 }
 
@@ -4519,7 +4602,7 @@ fn human_keeper_actions(
         } else {
             let range = pass_range_min(tune)
                 + owner.pass_charge * (tune.value("PASS_RANGE_MAX") - pass_range_min(tune));
-            keeper_throw(s, owner_idx, range, Some(aim));
+            keeper_throw(s, owner_idx, range, Some(aim), tune);
         }
         let owner = &mut s.players[(owner_idx - 1) as usize];
         owner.pass_charge = 0.0;
@@ -4531,7 +4614,7 @@ fn human_keeper_actions(
         && owner.hold_timer <= 0.0
         && owner.windup_timer == 0.0
     {
-        keeper_distribute(s, owner_idx);
+        keeper_distribute(s, owner_idx, tune);
     }
 }
 
@@ -4646,6 +4729,80 @@ pub fn shadow_observations_begin() {
 /// [`shadow_observations_begin`], leaving recording off.
 pub fn shadow_observations_take() -> Vec<SaveShadowObservation> {
     SAVE_SHADOW.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+}
+
+/// What one pass release did, for the two registered passing metrics.
+///
+/// A **diagnostic tally**, on exactly the seam
+/// [`SaveShadowObservation`]/`SAVE_SHADOW` established (#490, `4c6d1eb`):
+/// thread-local, `None` by default, so a normal step spends nothing and
+/// behaves identically. It is deliberately NOT a `MatchState` field and
+/// deliberately NOT a `MatchEvent` field — either would enter the snapshot,
+/// the state hash and the wire layout, and a measurement must not be able to
+/// change what it measures.
+///
+/// # Why these two numbers exist at all
+///
+/// #491 registers eleven passing knobs, and a 48-seed census measured every
+/// one of them against every one of the NINE metrics that existed before this
+/// struct: all DECORATION. That is #488's finding repeating itself for a
+/// different subsystem — the pre-existing metrics are whole-match OUTCOMES,
+/// and a selection or leading change reaches an outcome only through many
+/// layers of AI decision-making. Two structural facts make the dilution
+/// worse here than it was for locomotion:
+///
+/// - **Soft-cone selection runs for ONE player.** `select_pass_target` is
+///   reached only from the human/bot-driven input path; the match AI picks
+///   its own receiver through `outfield_decision` and never consults the
+///   cone. So `PASS_ANGULAR_WEIGHT` moves at most a tenth of the passes in
+///   an AI-vs-AI batch.
+/// - **A led pass and an unled pass mostly complete anyway.** Leading changes
+///   *where* the ball meets the receiver, not usually *whether*.
+///
+/// AGENTS.md §9 is unambiguous that a knob which cannot move a metric fails
+/// review, and #488's answer to the identical problem was to register the
+/// metric that resolves (`time_to_reverse`). These are that, for passing:
+/// each measures the thing its knobs actually do, at dozens of events per
+/// match instead of one match outcome.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PassShadowTally {
+    /// Releases that went through aimed, soft-cone selection.
+    pub aimed_releases: i64,
+    /// Sum of those releases' aim error, in chord (see `gc_sim::passing`).
+    pub aim_error_sum: f64,
+    /// Driven ground passes released (the ones the lead solver runs for).
+    pub ground_releases: i64,
+    /// Sum of those releases' lead times in seconds, counting an unled pass
+    /// as exactly zero — an unled pass IS a lead of nothing, and treating it
+    /// as absent would make the mean say "how long are the leads we chose to
+    /// play" instead of "how far into the run do passes go".
+    pub lead_time_sum: f64,
+}
+
+thread_local! {
+    /// `None` (the default) means nobody subscribed, and every recording
+    /// site below short-circuits.
+    static PASS_SHADOW: std::cell::RefCell<Option<PassShadowTally>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Start tallying pass releases on this thread. Diagnostic only.
+pub fn pass_shadow_begin() {
+    PASS_SHADOW.with(|cell| *cell.borrow_mut() = Some(PassShadowTally::default()));
+}
+
+/// Stop tallying and return what was captured, leaving recording off.
+pub fn pass_shadow_take() -> PassShadowTally {
+    PASS_SHADOW.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+}
+
+fn pass_shadow_record<F: FnOnce(&mut PassShadowTally)>(f: F) {
+    PASS_SHADOW.with(|cell| {
+        if let Some(tally) = cell.borrow_mut().as_mut() {
+            f(tally);
+        }
+    });
 }
 
 /// The keeper of the threatened goal COMMITS against an on-target shot: it
@@ -5048,7 +5205,7 @@ fn update_pass_target_outfield(
     } else {
         None
     };
-    let target = select_pass_target(s, owner_idx, input.lob, aim, range);
+    let target = select_pass_target(s, owner_idx, input.lob, aim, range, tune);
     s.players[(owner_idx - 1) as usize].pass_target = target;
 }
 
@@ -5246,7 +5403,7 @@ fn ai_outfield_decision(s: &mut MatchState, owner_idx: i64, tune: &Tuning) {
         box_targets = 0;
     }
     let passes = if owner.settle_timer <= 0.0 {
-        ai_pass_options(s, owner_idx)
+        ai_pass_options(s, owner_idx, tune)
     } else {
         Vec::new()
     };
@@ -5340,7 +5497,7 @@ fn ai_outfield_decision(s: &mut MatchState, owner_idx: i64, tune: &Tuning) {
             Some(brain::OptionReference::Index(v)) => v as i64,
             _ => panic!("carrier target player must be numeric"),
         };
-        release_pass(s, owner_idx, target_player, lane_fraction, None, None);
+        release_pass(s, owner_idx, target_player, lane_fraction, None, None, tune);
     } else if selected.kind == "cross" {
         let target_player = match selected.reference {
             Some(brain::OptionReference::Index(v)) => v as i64,
@@ -5353,6 +5510,7 @@ fn ai_outfield_decision(s: &mut MatchState, owner_idx: i64, tune: &Tuning) {
             Some(0.5),
             Some(CROSS_CLEAR_H),
             None,
+            tune,
         );
     } else if selected.kind == "shoot" {
         // Shoot to the corner away from the defending keeper, with power
@@ -5841,7 +5999,7 @@ fn update_ball(
                     // AI keeper: survey, then distribute to a safe outlet
                     // (build from the back) instead of hoofing it upfield
                     // every frame.
-                    keeper_distribute(s, owner_idx);
+                    keeper_distribute(s, owner_idx, tune);
                 }
             }
         } else if is_human_player(s, owner_idx) {

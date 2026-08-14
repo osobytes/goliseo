@@ -525,3 +525,198 @@ fn the_shipped_defaults_land_inside_the_proposed_band() {
         def.band[2]
     );
 }
+
+// ---------------------------------------------------------------------
+// #491 — passing: soft-scored selection and the lead solver
+// ---------------------------------------------------------------------
+
+// THE CENSUS, recorded here because it is the reason the two metrics below
+// exist and a reviewer should not have to take it on trust.
+//
+// #491's eleven passing knobs were measured against every one of the NINE
+// metrics that existed before it, over 48 seeds of 30-second matches, each
+// knob displaced across its full declared range. Every pairing reported
+// DECORATION. The three closest, all at 48 seeds:
+//
+// | knob | metric | delta | threshold |
+// | --- | --- | --- | --- |
+// | `PASS_ELIGIBLE_MAX` down | `pass_completion` | -0.0286 | 0.0289 |
+// | `PASS_ANGULAR_WEIGHT` up | `pass_completion` | -0.0022 | 0.0289 |
+// | `PASS_LEAD_TOLERANCE` up | `pass_completion` | +0.0073 | 0.0297 |
+//
+// This is #488's finding repeating for a different subsystem, with two extra
+// structural reasons specific to passing, both argued on
+// `gc_sim::r#match::PassShadowTally`: soft-cone selection runs for ONE player
+// in an AI-vs-AI batch (the match AI picks its own receiver and never
+// consults the cone), and a led pass and an unled pass mostly complete
+// anyway — leading changes WHERE the ball meets the receiver, not usually
+// WHETHER. So `pass_aim_error` and `pass_lead_time` were registered, exactly
+// as #488 registered `time_to_reverse`, and the three cases below are their
+// contracts.
+//
+// Worth stating plainly: this means #491's headline claim is HALF met. Pass
+// completion is now movable in the sense that the subsystem finally has
+// levers with measurable effects — but not movable *as a completion number*
+// at any seed count a per-PR gate can afford. The PR body says so.
+
+/// The soft cone's own knob against the soft cone's own measurement.
+///
+/// **Down, not up, and that asymmetry is the finding.** At the shipped 140
+/// px/chord the selection is already close to aim-optimal for the geometry a
+/// bot-driven slot actually produces, so raising the weight to 276.5 moves
+/// `pass_aim_error` by -0.0012 — it has almost nothing left to win. Lowering
+/// it to 10 moves it by +0.108, four seed-set standard errors. The knob is
+/// wired; its lever is one-sided at this default, which is information about
+/// where 140 sits rather than about whether it is read.
+#[test]
+fn ignoring_the_aim_sends_the_pass_further_from_where_it_was_pointed() {
+    let seeds = seeds(48);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_ANGULAR_WEIGHT",
+        metric: "pass_aim_error",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        // The claim: weighting the aim LESS puts the ball further from where
+        // the player pointed. Stated through the helper, not re-checked by
+        // hand afterwards.
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the soft cone's weight is decoration: {}",
+        outcome.report
+    );
+}
+
+/// #491's second required pairing, with the metric corrected by measurement.
+///
+/// The issue says "lowering `pass.lead_tolerance` toward 0 must lower
+/// completion for moving receivers". The direction survives; the metric does
+/// not. Against `pass_completion` this pairing measures +0.0073 on a 0.0297
+/// threshold — DECORATION, for the reason the census above gives. Against the
+/// quantity the knob actually governs it measures -0.335 on a 0.0873
+/// threshold: demanding that the receiver arrive with slack admits only
+/// shorter leads, so passes are played nearer the receiver's feet.
+#[test]
+fn demanding_slack_from_the_receiver_shortens_the_lead() {
+    let seeds = seeds(24);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_LEAD_TOLERANCE",
+        metric: "pass_lead_time",
+        seeds: &seeds,
+        // Full range. The knob is a ratio against a travel time, and a third
+        // of its range is a third of a ratio -- the honest lever is the whole
+        // declared span, which is 0.4 to 2.0 precisely so a sweep can reach
+        // both "never lead" and "promise the unreachable".
+        duration: DURATION,
+        perturbation: Some(1.0),
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.delta < 0.0,
+        "tightening the tolerance must SHORTEN the lead, not merely move it: {}",
+        outcome.report
+    );
+}
+
+/// The same metric from a second, independent knob — so what is exercised is
+/// the SOLVER rather than one hand-wired path.
+///
+/// `PASS_LEAD_MIN_SPEED` reaches `pass_lead_time` only if the solver really
+/// does refuse to lead a receiver below the floor and really does fall back
+/// to their feet. A build that special-cased the tolerance and left the
+/// speed floor unread would pass the case above and fail this one.
+#[test]
+fn a_high_speed_floor_stops_passes_being_played_into_runs() {
+    let seeds = seeds(24);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_LEAD_MIN_SPEED",
+        metric: "pass_lead_time",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the lead speed floor is decoration: {}",
+        outcome.report
+    );
+}
+
+/// The measurement that justifies registering two metrics rather than
+/// arguing the knobs are fine, standing as a test so it cannot rot.
+///
+/// Both resolve an order of magnitude better than the outcome metrics the
+/// census measured the same knobs against — not because they are quieter,
+/// but because each is a mean over dozens of pass releases per match where
+/// `pass_completion` is a ratio over the same handful of events filtered
+/// through every AI decision in between. Measured over 48 seeds of
+/// full-length matches, relative standard error (`se / mean`):
+///
+/// | metric | mean | sd | se/mean |
+/// | --- | --- | --- | --- |
+/// | `pass_lead_time` | 0.408 | 0.076 | **2.7%** |
+/// | `pass_aim_error` | 0.383 | 0.121 | **4.6%** |
+/// | `pass_completion` | 0.619 | 0.079 | 1.8% |
+///
+/// Note honestly that `pass_completion` resolves BEST of the three. Its
+/// problem was never dispersion — it was that nothing moved it. Resolution
+/// alone was not the argument, and this test asserts the property that was:
+/// both new metrics arm on every match rather than sometimes.
+#[test]
+fn the_passing_metrics_arm_on_every_match() {
+    let seeds = seeds(16);
+    for id in ["pass_aim_error", "pass_lead_time"] {
+        let floor = knob_contract::noise_floor(id, &seeds, DURATION);
+        assert_eq!(
+            floor.n,
+            seeds.len(),
+            "{id} was absent from some match in the seed set, so every contract above is \
+             measured on a shifting denominator"
+        );
+        assert!(floor.mean > 0.0, "{id} measured a flat zero everywhere");
+        assert!(
+            floor.sd > 0.0,
+            "{id} has no seed-to-seed spread at all, which means it is not measuring the \
+             match -- a threshold built from it would pass anything"
+        );
+    }
+}
+
+/// The bands in `gc_data::tunables::METRICS` are #491's PRIORS, and this is
+/// the measurement that either backs them or does not.
+///
+/// Both were set from a 48-seed run at the shipped defaults and widened to
+/// what a designer would still call playable. **Neither has had a hands-on
+/// pilot**, and `PASS_ANGULAR_WEIGHT` in particular is feel-critical — the
+/// issue says so and it is right: a harness cannot tell "aim feels ignored"
+/// from "the cone has hardened into a gate", it can only tell you the chord
+/// moved. So this pins that the shipped defaults land inside the proposed
+/// bands, which is a much weaker claim than the bands being correct.
+#[test]
+fn the_shipped_passing_defaults_land_inside_their_proposed_bands() {
+    let seeds = seeds(16);
+    for id in ["pass_aim_error", "pass_lead_time"] {
+        let floor = knob_contract::noise_floor(id, &seeds, DURATION);
+        let def = gc_data::tunables::METRICS
+            .iter()
+            .find(|d| d.id == id)
+            .expect("the metric is registered");
+        assert!(
+            floor.mean > def.band[1] && floor.mean < def.band[2],
+            "{id} measures {:.3} at the shipped defaults, outside the proposed band \
+             {:?}..{:?}",
+            floor.mean,
+            def.band[1],
+            def.band[2]
+        );
+    }
+}

@@ -488,6 +488,152 @@ commands each entry cites are the deleted Lua CLI (see the banner at the top),
 and no entry has been re-measured on `gc-sim`. Every number below is the Lua
 tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
 
+- **2026-08-13 — passing: soft-scored receiver selection, a registered
+  distance-to-speed curve, and a lead solver measured against the real
+  locomotion profile (#491, sim half).** `baseline_version` **8 → 9**,
+  signature `614ed81d38e82116` → `ac397926cf724b7b`, `tuning_hash`
+  `84908592d5981f4a` → `4a1d2ea76cd7481c` (eleven new tier-1 knobs),
+  `fixture_hash` `d6463f56f154f710` → `eda80b6ca32829a2`. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  The hard 60-degree acceptance cone in `gc_sim::passing` is replaced by a
+  soft blend of distance and a chord-weighted angular term with no acceptance
+  test at all; ground-pass launch speed now comes from three registered
+  breakpoints instead of three `const`s; and a driven ground pass to a moving
+  receiver is aimed at a solved lead point when one is admissible.
+
+  | metric | frozen (v8) | re-frozen (v9) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.269890 | 0.264791 | −0.005099 |
+  | `goals_total` | 1.500000 | 1.683333 | +0.183333 |
+  | `goals_home` | 0.716667 | 0.616667 | −0.100000 |
+  | `goals_away` | 0.783333 | 1.066667 | +0.283333 |
+  | `shots` | 34.083333 | 33.016667 | −1.066667 |
+  | `shots_per_goal` | 22.988333 | 22.572327 | −0.416006 |
+  | `save_rate` | 0.927511 | 0.911370 | −0.016140 |
+  | `passes` | 34.366667 | 33.700000 | −0.666667 |
+  | `pass_completion` | 0.558467 | 0.553037 | −0.005430 |
+  | `turnovers_per_min` | 8.740769 | 8.784997 | +0.044228 |
+  | `possession_balance` | 0.547505 | 0.560170 | +0.012665 |
+  | `longest_drought_s` | 11.449444 | 11.537500 | +0.088056 |
+  | `decided_late` | 0.694121 | 0.642449 | −0.051672 |
+  | `lead_changes` | 0.033333 | 0.066667 | +0.033333 |
+  | `margin` | 1.000000 | 1.183333 | +0.183333 |
+  | `duration` | 118.884167 | 116.805000 | −2.079167 |
+  | `ai_dribble_carry_s` | 25.846944 | 25.724444 | −0.122500 |
+  | `ai_dribble_close_share` | 0.833517 | 0.845731 | +0.012214 |
+  | `ai_dribble_sprint_share` | 0.147692 | 0.147908 | +0.000216 |
+  | `ai_dribble_juke_share` | 0.085907 | 0.081623 | −0.004283 |
+  | `ai_dribble_touches_per_min` | 107.620664 | 105.131959 | −2.488705 |
+  | `ai_dribble_heavy_losses_per_min` | 0.510557 | 0.636747 | +0.126189 |
+  | `ai_jukes` | 32.716667 | 31.933333 | −0.783333 |
+
+  **`fun` is again not comparable across these two rows**, for exactly the
+  reason the v2 → v3 entry below gives: this change registers a **tenth and
+  eleventh** metric (`pass_aim_error`, `pass_lead_time`), and `fun` is a
+  geometric mean over however many extract a value.
+
+  The same-build number that entry gives, given here on the same terms.
+  Scored on **one identical build** over these same 60 seeds, holding
+  everything but the registered metric set fixed:
+
+  | fixture | metrics folded | `fun` | inflation |
+  | --- | --- | --- | --- |
+  | this all-AI control | 9 (v8's set) | 0.263588 | — |
+  | this all-AI control | 10 | 0.264791 | **+0.001203 (+0.46%)** |
+  | bot-driven harness default | 9 (v8's set) | 0.344160 | — |
+  | bot-driven harness default | 11 | 0.358275 | **+0.014115 (+4.10%)** |
+
+  So the like-for-like v8 → v9 movement is **0.269890 → 0.263588 = −0.006302**,
+  and the −0.005099 in the table above understates it by the +0.001203 the
+  extra metric adds for free.
+
+  **Only ONE of the two new metrics arms on this control, and that is not a
+  detail.** `pass_aim_error` is present in **0 of 60** matches here and in
+  60 of 60 on the bot-driven fixture, because an all-AI match contains no
+  aimed release at all. That is the same fact the next paragraph argues from,
+  measured rather than asserted — and it is why this row inflates by 0.46%
+  while a build that exercises both metrics inflates by 4.10%, close to the
+  ~4.9% #488 measured for adding one.
+
+  Both inflations are **structural, not earned**: at the shipped defaults
+  `pass_aim_error` measures 0.383 inside its [0.15, 0.75] band and
+  `pass_lead_time` 0.408 inside its [0.1, 0.6], so both score desirability
+  ≈ 1.0 per match and raise the geometric mean of every future build
+  regardless of whether that build passes any better.
+
+  ### These two metrics fold into `fun` as an INTERIM state, superseded by #528
+
+  Whether a newly-registered metric folds into the score immediately or waits
+  was #487's explicitly undecided question. #488 settled it by default; this
+  entry would have been the second to do so. **It is now decided: #528 puts
+  newly-registered metrics on probation** — reported alongside the score but
+  excluded from the geometric mean until they have a hands-on pilot and bands
+  that are not self-fit. The +4.10% and +0.46% figures above are the evidence
+  that decision was made on.
+
+  So the v9 row's `fun` **is folded over eleven metrics and should not be**,
+  and that is a known, measured, time-boxed condition rather than an
+  oversight. #491 deliberately does not build the probation mechanism: it is a
+  registry change plus a promotion procedure plus its own go-red test, and
+  burying a governance mechanism inside a passing-feature PR is the mistake
+  #506/#515 exist to avoid.
+
+  **What #528 will move when it lands**, so nobody has to rediscover it. The
+  folded `fun` value reaches exactly two re-recorded artifacts and no others:
+
+  - `gc_data::outfield_ai_baseline`'s `RECORD.stats.fun`
+    (mean `0.2647910531282728`, sd `0.3568961197946737`, min `0.0`, max
+    `0.8918478433191761`) — and therefore its `signature`
+    `ac397926cf724b7b`, since `TRACKED` includes `"fun"` and the signature
+    folds every tracked key's statistics, and therefore `baseline_version`,
+    which the recorder bumps.
+  - The `fun` row of the table above.
+
+  It reaches **none** of the trajectory fixtures
+  (`session_legacy_ordinary_baseline.txt`, `match_step_ai_ai_baseline.txt`,
+  `session_ai_driven_baseline.txt`), none of `omp1_determinism.json`, none of
+  the six mirrored digest sites, and none of
+  `keeper_shadow_classifier`'s counts — those are positions, hashes and event
+  tallies, with no metric fold anywhere in them. So #528's re-record is one
+  baseline and one drift-log row, not another full sweep.
+
+  **The selection change contributes NOTHING to this table, and that is worth
+  stating rather than leaving implicit.** This control is all-AI
+  (`HeadlessBot::None`), and `r#match::select_pass_target` — the soft cone — is
+  reached only from the human/bot-driven input path. The match AI picks its
+  own receiver through `outfield_decision` and never consults the cone. Every
+  row above is the lead solver and the speed curve; the numbers were measured
+  identically before and after the selection half was finished, which is how
+  this was confirmed rather than assumed.
+
+  **`pass_completion` did not move, in either direction, and #491's premise
+  about it no longer holds.** The issue opens with "pass completion is 0.52
+  against a band floor of 0.55". Measured at `c0fc6cf` — before any of this
+  work — over 48 full-length matches it is **0.6200 ± 0.0098**, already inside
+  the 0.55–0.85 band; #488, #489 and #490 all landed after the issue was
+  written. After this change it is **0.6189 ± 0.0114**: unchanged, well inside
+  one standard error. The load-bearing half of the issue's claim is the other
+  one — that no tunable moves it — and that is confirmed and only partly
+  fixed. All four pre-existing pass knobs measure DECORATION against
+  `pass_completion`, and so do all eleven new ones. What changed is that the
+  subsystem now has knobs with measurable effects on the quantities they
+  govern; see `gc-sim/tests/knob_contract.rs`'s census block for the numbers
+  and `gc_sim::r#match::PassShadowTally` for why two new metrics were
+  registered rather than the knobs being argued fine.
+
+  **`save_rate` moved further from #487's 0.45–0.75 band, not closer**
+  (0.9275 → 0.9114 — toward it, but from far outside). `goals_total` 1.50 →
+  1.68 moves toward the 2.0–4.5 band. Neither is a balance pass; balance
+  tuning is out of scope for this change and both are reported rather than
+  tuned away.
+
+  `gc-sim/tests/keeper_shadow_classifier.rs` was re-pinned in the same commit
+  and against these same 60 seeds: candidates 10507 → 9208, `disagree_height`
+  27 → 10, `disagree_deferred` 210 → 171, `new_only` still structurally 0.
+  Fewer shots reach a keeper because a led pass keeps possession sequences
+  alive longer between loose balls.
+
 - **2026-08-13 — the locomotion primitive: momentum, turn arcs, decoupled
   facing, and carry composed with direction (#488, PR #516).** `baseline_version`
   **2 → 3**, signature `9bf9c999d7b077f8` → `614ed81d38e82116`. The first entry
