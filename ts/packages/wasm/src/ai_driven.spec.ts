@@ -35,8 +35,8 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "64b8ad7d35ab1c39";
-const NATIVE_SEQUENCE_DIGEST = "6c6d9581eac53f8c";
+const NATIVE_FINAL_HASH = "d146d1cc4f359ca7";
+const NATIVE_SEQUENCE_DIGEST = "abe72518de86a606";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -128,6 +128,21 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // What these two now gate is still worth having, and is stronger than an
   // `it.fails`: any future divergence between the two targets on this
   // scenario turns them red instead of quietly satisfying an expected-fail.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #531 PHASE 2 RE-MEASUREMENT, 2026-08-14. Re-recorded because phase 2
+  // moved the gameplay AI's pass/throw decisions onto the same `MatchInput`
+  // charge-and-release seam a human uses (#531), which shifts every RNG draw
+  // downstream of the first AI pass and therefore this scenario's whole
+  // trajectory from that tick on -- see `gc-sim/tests/ai_driven_evidence.rs`.
+  // Expected this run to plausibly re-expose #405's tick-96 divergence, since
+  // #517 says WHICH transcendental calls happen moves with the trajectory.
+  // MEASURED ON THIS BUILD: wasm and native still agree exactly -- final
+  // d146d1cc4f359ca7, sequence abe72518de86a606, both targets, both native
+  // `cargo test -p gc-sim --test ai_driven_evidence` and a direct
+  // `runAiDrivenEvidence()` call against the freshly built wasm module. So
+  // these stay plain `it`, not reverted to `it.fails`; #405 remains open and
+  // latent, not fixed, for the same reason the note above gives.
   // ---------------------------------------------------------------------
   it("ends the match in exactly the state the native build ends it in", () => {
     expect(runAiDrivenEvidence().final_hash).toBe(NATIVE_FINAL_HASH);

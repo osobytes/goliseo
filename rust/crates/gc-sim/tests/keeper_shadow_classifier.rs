@@ -140,7 +140,21 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     let seeds = baseline::seeds();
     let (total, had_disagree, had_deferred) = classify(&seeds);
 
-    // Re-pinned by #491's passing rework, in the SAME commit as
+    // Re-pinned by #531 phase 2 (the gameplay AI's pass/throw seam), in the
+    // SAME commit as `gc_data::outfield_ai_baseline`'s v9 -> v10 re-freeze,
+    // for the reason the paragraph below already gives.
+    //
+    // candidates 9208 -> 9285: the AI now charges a pass/throw over several
+    // ticks instead of releasing on the spot, so it is dispossessed via
+    // tackle mid-charge more often than it used to be dispossessed
+    // instantly -- more of those broken sequences end with the ball
+    // reaching a keeper than before, a small rise rather than the large
+    // fall #491's own solver-aim change produced. `disagree_height` 10 -> 18
+    // and `disagree_deferred` 171 -> 172 move with it; `new_only` stays
+    // structurally 0, which is the assertion that would have been a finding
+    // rather than a re-pin.
+    //
+    // Previously re-pinned by #491's passing rework, in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v8 -> v9 re-freeze, for the reason
     // the paragraph below already gives.
     //
@@ -164,11 +178,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9208);
-    assert_eq!(total.agree_true, 2737);
-    assert_eq!(total.agree_false, 6290);
-    assert_eq!(total.disagree_deferred, 171);
-    assert_eq!(total.disagree_height, 10);
+    assert_eq!(total.candidates, 9285);
+    assert_eq!(total.agree_true, 2751);
+    assert_eq!(total.agree_false, 6344);
+    assert_eq!(total.disagree_deferred, 172);
+    assert_eq!(total.disagree_height, 18);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -217,7 +231,15 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // paragraph exists to explain, so deferred episodes remain the dominant
     // driver. The shift from 10/22/29 to 6/21/24 tracks the fall in
     // candidates and disturbs nothing about the conclusion.
+    // Re-pinned by #531 phase 2 alongside the counts above. The
+    // reconciliation still holds in the same direction: `disagree_height`
+    // alone touches 6/60 matches (10%), and folding in `disagree_deferred`
+    // reaches 25/60 (42%) -- still on the right side of the 17/60
+    // byte-divergent split this paragraph exists to explain, so deferred
+    // episodes remain the dominant driver. The shift from 6/21/24 to
+    // 6/23/25 tracks the rise in candidates and disturbs nothing about the
+    // conclusion.
     assert_eq!(matches_with_disagree, 6);
-    assert_eq!(matches_with_deferred, 21);
-    assert_eq!(matches_with_either, 24);
+    assert_eq!(matches_with_deferred, 23);
+    assert_eq!(matches_with_either, 25);
 }

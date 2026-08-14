@@ -450,11 +450,11 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 /// Re-recorded by reading the assertion's own failure output — four values,
 /// so no recorder is warranted. Any deliberate simulation change moves these.
 const STEPPED_BASELINE: [&str; 5] = [
-    "13e1c0eeb985864b",
-    "c0f58d2202d1e598",
-    "ab8518cd19f3c9a1",
-    "b9635d726e622a1a",
-    "0a592d7c1995f509",
+    "9f5dd695338919e9",
+    "474a5850242db29e",
+    "ae17aa737048eee1",
+    "3f53165c89ceb7e8",
+    "f8009e86bc0b024d",
 ];
 
 #[test]
