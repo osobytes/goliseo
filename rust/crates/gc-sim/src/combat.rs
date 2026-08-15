@@ -560,9 +560,8 @@ fn melee_geometry(
     if distance <= EPSILON {
         return (true, projection);
     }
-    let half_arc = (family.front_arc_degrees / 2.0).to_radians();
     (
-        dot(offset.scale(1.0 / distance), facing) + EPSILON >= half_arc.cos(),
+        dot(offset.scale(1.0 / distance), facing) + EPSILON >= family.front_arc_cos,
         projection,
     )
 }
@@ -574,9 +573,8 @@ fn target_guarding(target: &MatchPlayer, source_pos: Vec2) -> bool {
         return true;
     }
     let facing = unit_or(target.facing, team_facing_fallback(target.team));
-    let guard_arc =
-        (action_families::get(ActionFamilyId::Guard).front_arc_degrees / 2.0).to_radians();
-    dot(offset.scale(1.0 / distance), facing) + EPSILON >= guard_arc.cos()
+    let guard_arc_cos = action_families::get(ActionFamilyId::Guard).front_arc_cos;
+    dot(offset.scale(1.0 / distance), facing) + EPSILON >= guard_arc_cos
 }
 
 fn select_melee_target(

@@ -181,9 +181,11 @@ fn make_player(
         charge: 0.0,
         pass_charge: 0.0,
         pass_target: None,
+        pass_intent: gc_sim::pass_intent::new_state(),
         windup_timer: 0.0,
         windup_shot: None,
         jockey_timer: 0.0,
+        action: gc_sim::action_slot::new_state(),
     }
 }
 

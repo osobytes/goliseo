@@ -147,6 +147,14 @@ pub struct HeadlessDebug {
     /// Every canonical slot's source kind, when the match ran in slot
     /// mode.
     pub slot_sources: Option<[slot_input::MatchSlotSourceKind; 8]>,
+    /// The raw pass-shadow tally for this match, copied before
+    /// [`sim_match::pass_shadow_take`] folds it into `metrics.pass_aim_error`
+    /// / `metrics.pass_lead_time`. `run_match`'s public wrapper drops this
+    /// along with the rest of `HeadlessDebug` — a real caller has no use for
+    /// it — but a test measuring what fraction of releases reach the lead
+    /// solver's gate (`gc_sim::pass_lead::solve`) needs the raw counts, not
+    /// the ratio a single match's mean would give.
+    pub pass_shadow: sim_match::PassShadowTally,
 }
 
 fn default_home() -> &'static TeamData {
@@ -420,6 +428,7 @@ pub fn run_match_debug(opts: &HeadlessOpts<'_>) -> (MatchResult, MatchState, Hea
     let debug = HeadlessDebug {
         bot_constructed,
         slot_sources: slot_sources_debug,
+        pass_shadow: tally,
     };
     (result, s, debug)
 }

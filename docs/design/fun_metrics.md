@@ -1,13 +1,20 @@
 # Design: Fun metrics & simulation-based balance search
 
-> **Every number in this document was measured before the port, and none of
-> them has been re-measured since.** The mechanism described here is live —
-> `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
-> `gc_sim::tripwire` and `gc_data::fun_baseline` are the Rust modules that
-> carry it — but the tables, sweeps, candidates and drift-log entries below
-> were all produced between **2026-07-05 and 2026-08-10** by the Lua tree on
-> LÖVE that commit `2c0d449` (#467) deleted, through a `love . --sim` /
-> `--sweep` / `--search` / `--eval` / `--tripwire` CLI that no longer exists.
+> **This banner is narrower than it used to be, and that correction is
+> itself worth recording.** It used to claim every number in this document
+> predates the port and none had been re-measured since — no longer true,
+> and had not been true since #488 (2026-08-13) landed the first `gc-sim`-
+> measured baseline-drift-log entry; nobody narrowed the claim when that
+> happened, which is the same doc/reality drift the "Baseline drift log"
+> heading below carried until this same pass fixed it. What remains
+> genuinely stale, unchanged since the pre-port Lua tree on LÖVE that commit
+> `2c0d449` (#467) deleted: the **Phase 2 sensitivity table** and the
+> **Phase 3 candidates / Round 2** sections below, all produced on
+> **2026-07-05** by a `love . --sweep` / `--search` / `--eval` CLI that no
+> longer exists. The **"Baseline signature (defaults)" sections**
+> and the **"Baseline drift log"** are current as of their own dated
+> headings — read each section's own date, not this banner, for what it
+> covers.
 >
 > Two consequences, both of which have been read backwards at least once:
 >
@@ -204,6 +211,127 @@ What the baseline says (under this bot — relative claims only):
   all sit in or near band. The game's problem is not stagnation, it's payoff.
 - `lead_changes` ≈ 0 follows directly from goal scarcity; it will only become
   meaningful once goals_total lives in its band.
+
+## Baseline signature (defaults) — post-#531 phase 2, pre-#489, 2026-08-14
+
+**Read this label before the table.** This is the **post-#531-phase-2,
+pre-#489 reference** — measured after the gameplay AI's passing moved onto
+the same charge-and-release seam a human uses (#531/#535, `bf849e0`) and
+after #517's native/wasm transcendental divergence was closed (`b53a5c0`,
+the last of which — #544 — landed the same day this was measured), but
+**before** #489 (committed actions), which is being implemented concurrently
+in a separate worktree and will give every action a duration, moving
+completion, turnovers and whiff rates again. This entry exists to isolate
+the passing seam's effect from that still-to-come change — read it as "the
+state of balance right after #531, not as current" the moment #489 lands,
+and do not average it with whatever #489 measures next.
+
+This supersedes nothing above: the 2026-07-09 table is the pre-port Lua
+baseline, kept as history per this document's own rule. This is the first
+`gc-sim`-measured **bot-driven** (`HeadlessBot::Home`) balance signature this
+document carries — as distinct from the all-AI `outfield_ai_baseline`
+control below, which is a different fixture with a different job (§59) and
+is unaffected by this measurement.
+
+**"Same passing rules," not "same rules."** #531's own adjudication is
+explicit that the AI-input seam unifies *passing* mechanics only. Real
+producer asymmetries survive it, all disclosed in #535's PR body and none
+fixed here:
+
+- `apply_ai_outfield_execution_error` draws an RNG angular error on every AI
+  outfield release; a human's own release never does.
+- AI-only whiff stumble on a missed standing tackle; AI standing-tackle reach
+  is 26 px against a human's 34 px plus a jockey bonus.
+- Keeper hold clocks differ by producer: AI `KEEPER_HOLD` = 0.9 s vs the
+  human stall clock `KEEPER_HOLD_HUMAN` = 5.0 s.
+- A stunned AI carrier's pass charge freezes; a stunned human's keeps
+  accumulating through a path with no stun check at all.
+
+Numbers below therefore describe a match where both sides pass under
+identical rules, not a match where both sides are AI-equivalent producers in
+every respect.
+
+**Harness**: `gc_sim::headless::run_batch`, `HeadlessBot::Home` (the harness
+default — the controlled slot is `gc_sim::bot`'s human-proxy driver;
+everyone else is the match AI, both sides), 48 seeds (`20001..20049`, the
+same base-20001 convention `gc-sim/tests/knob_contract.rs`'s `seeds()` uses),
+full 120 s matches, all knobs at their shipped defaults. Reproduced by
+`gc-sim/tests/headless.rs`'s
+`post_531_balance_reference_reports_the_bot_driven_default_harness`
+(`cargo test -p gc-sim --test headless -- --ignored --nocapture
+post_531_balance_reference_reports_the_bot_driven_default_harness`).
+
+```
+fun-proxy metrics over 48 matches (mean +/- sd [min .. max])
+metric                     mean        sd       min       max   desir  band
+fun                       0.561     0.409     0.000     0.989       -
+goals_total               2.542     1.304     0.000     6.000    0.85  [2 .. 5]
+shots_per_goal           18.487     9.700     6.333    48.000    0.45  [2.5 .. 6] (n=44)
+save_rate                 0.839     0.089     0.647     1.000    0.54  [0.45 .. 0.75]
+pass_completion           0.600     0.070     0.418     0.779    0.97  [0.55 .. 0.85]
+turnovers_per_min         4.322     1.089     2.000     7.499    0.96  [1 .. 5]
+possession_balance        0.406     0.052     0.307     0.541    0.99  [0.35 .. 0.65]
+longest_drought_s        10.856     3.077     6.900    21.633    1.00  [0 .. 35]
+decided_late              0.447     0.335     0.024     1.000    0.65  [0.4 .. 1]
+lead_changes              0.062     0.245     0.000     1.000       -
+margin                    2.042     1.352     0.000     6.000       -
+shots                    42.479     7.205    28.000    60.000       -
+passes                   64.812     9.997    48.000   104.000       -
+duration                120.017     0.000   120.017   120.017       -
+```
+
+(dribble/keeper/chip diagnostic rows omitted here; the full 51-row report is
+in the test's own output.) Standard errors on the two metrics #531 phase 3
+asks to settle, computed the same way every knob contract in this repository
+computes one (`knob_contract::noise_floor`):
+
+| metric | n | mean | sd | se |
+| --- | --- | --- | --- | --- |
+| `pass_completion` | 48 | 0.6001 | 0.0702 | 0.0101 |
+| `turnovers_per_min` | 48 | 4.3223 | 1.0889 | 0.1572 |
+| `fun` | 48 | 0.5608 | 0.4093 | 0.0591 |
+
+### Re-opening #491's question: is pass completion actually in band?
+
+**Yes.** `pass_completion` = **0.6001 ± 0.0101**, comfortably inside the
+0.55–0.85 band (roughly 5 standard errors clear of the 0.55 floor) even with
+every producer paying the same charge time, hold duration and interception
+exposure. This is the honest number #531's issue predicted might fall below
+0.52 — it did not. `turnovers_per_min` = 4.32 ± 0.16, inside its 1–5 band but
+nearer the top, consistent with more contested holds during a charge.
+
+**Before/after, not comparable — they measure different rule sets, published
+anyway because the question was "did completion survive," not "did the
+number hold still":**
+
+| | mean | se | rule set |
+| --- | --- | --- | --- |
+| `c0fc6cf` (post-#488 locomotion, post-#490 keeper prediction, pre-#491) | 0.6200 | 0.0098 | AI bypasses charge/hold/cone entirely |
+| `2ce0ca0`, PR #527 (post-#491 soft-cone selection, pre-#531) | 0.6189 | 0.0114 | AI still bypasses charge/hold/cone |
+| this entry, `b53a5c0` (post-#531 phase 2, post-#517) | 0.6001 | 0.0101 | every producer charges, holds and is interceptable |
+
+(`#489` has not landed as of any of these three measurements — it is
+concurrent work in a separate worktree as this entry is written, not a
+commit any of these rows sit relative to.)
+
+The drop (−0.0188 against the immediately preceding measurement) is real and
+in the direction #531 predicted — the AI now pays costs it did not before —
+but it lands well short of pushing completion out of band. Read together
+with the `outfield_ai_baseline` drift-log entry below (the all-AI harness,
+where completion moved 0.553 → 0.525 for the same reason), the seam
+consistently costs the AI a few points of completion without threatening the
+band from either harness.
+
+**`fun` = 0.561 ± 0.059 is a fresh reference, not a comparable delta.** The
+only prior "bot-driven harness default" `fun` figures on record (0.344 / 9
+metrics, 0.358 / 11 metrics, both in PR #527's body) were measured on a
+different seed set before this document's convention settled on base-20001
+seeds, and across several intervening balance-moving changes (#488's body
+weight, #490's keeper prediction, #491's passing rework, #531's AI seam,
+#517's transcendental fixes) that this single number cannot attribute
+between. Treat 0.561 as this entry's own baseline for whatever measures
+against it next, not as evidence any one of those changes moved the score by
+a stated amount.
 
 ## Phase 2: sensitivity sweep — pre-port, measured 2026-07-05
 
@@ -480,13 +608,321 @@ comparison, its technique and tactic comparisons, its constant sweeps, and its
 visual review all remain open. This section freezes the control those
 experiments — and #149's calibration — measure against.
 
-## Baseline drift log — every entry is pre-port (2026-07-08 to 2026-08-10)
+## #531 phase 4 — the post-seam `PASS_*` knob re-census, 2026-08-14
+
+**Scope correction, already settled on the issue before this ran — not
+rediscovered here.** #531's body scopes phase 4 as a re-census of all eleven
+`cat: "Passing"` knobs expecting the seam to rescue them generally. The
+issue's own adjudication comment narrows that: only **3 of 11**
+(`PASS_ANGULAR_WEIGHT`, `PASS_ELIGIBLE_MIN`, `PASS_ELIGIBLE_MAX`,
+`passing.rs:102-106`) had their REACHABILITY changed by the seam — they are
+consumed solely by `passing::select_receiver`, reached only through the soft
+cone. The other **8** already executed on AI-driven releases before the seam
+landed, through the shared `release_pass` (`passing::speed_for`,
+`pass_lead::solve`); three of them (`PASS_ARRIVE_PACE`, `PASS_SPEED_MIN`,
+`PASS_SPEED_MAX`) execute a *second* time inside the AI's own scoring via
+`pass_risk`. A continued DECORATION verdict for the 8 needs a
+dilution/measurement explanation, not a reachability one.
+
+### What fraction of releases reach the lead-solve gate
+
+`pass_lead::solve` runs only when `land_pos.is_none() && blocker_f.is_none()
+&& !target_is_keeper` (`match.rs::release_pass`). #535's PR body flagged this
+as worth measuring but "not cheap within this PR's time budget" and deferred
+it here. `PassShadowTally` was already positioned for it, missing only a
+denominator: this work adds `total_releases` (every producer's every
+`release_pass` call) alongside the existing `ground_releases` (releases that
+resolve on the ground path — the ones the solver's result, if any, is
+actually applied to).
+
+Measured on the same bot-driven default harness and seed set as the balance
+reference above (`post_531_ground_release_fraction_reports_the_lead_solve_gate`,
+`cargo test -p gc-sim --test headless -- --ignored --nocapture
+post_531_ground_release_fraction_reports_the_lead_solve_gate`):
+
+```
+ground_releases=1361 total_releases=3111 fraction=0.4375 (n=48 seeds, bot-driven default harness, full length)
+```
+
+**43.75% of every release, across every producer and every one of the four
+call sites, resolves as a ground release.** This is an upper bound on "cleared
+the gate," not an exact count of it: a release whose lead the solver
+computed can still be discarded into a lob afterward by the dink check that
+runs later in `release_pass`, so a small share of `total_releases -
+ground_releases` may have cleared the gate anyway. It is not a niche path —
+a plurality of releases pass through it — which matters for reading the
+dilution story below: the 8 already-reachable knobs are not diluted down to
+irrelevance, they are diluted against a `pass_completion` ratio measured
+over the other ~56% of releases too (lobs, planned throws, keeper-to-keeper
+distribution) where they have no lever at all.
+
+### The census against `pass_completion`, reproducing #491's original methodology exactly
+
+48 seeds, 30-second matches, each knob displaced across its full declared
+range in both directions — the same seed set, duration and perturbation
+`gc-sim/tests/knob_contract.rs`'s original census used, so this table is
+directly comparable to the one recorded there. Reproduced by
+`the_post_531_pass_census_reports_against_completion` (`cargo test -p gc-sim
+--test knob_contract -- --ignored --nocapture
+the_post_531_pass_census_reports_against_completion`):
+
+| knob | dir | delta | delta_se | noise_se | threshold | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| `PASS_ANGULAR_WEIGHT` | up | +0.0214 | 0.0118 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_ANGULAR_WEIGHT` | down | −0.0085 | 0.0179 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_ELIGIBLE_MIN` | up | +0.0147 | 0.0204 | 0.0198 | 0.0408 | DECORATION |
+| `PASS_ELIGIBLE_MIN` | down | 0.0000 | 0.0000 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_ELIGIBLE_MAX` | up | 0.0000 | 0.0000 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_ELIGIBLE_MAX` | down | **−0.0609** | 0.0183 | 0.0198 | 0.0395 | **WIRED** |
+| `PASS_ARRIVE_PACE` | up | +0.0148 | 0.0256 | 0.0198 | 0.0512 | DECORATION |
+| `PASS_ARRIVE_PACE` | down | +0.0067 | 0.0171 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_SPEED_MIN` | up | +0.0179 | 0.0267 | 0.0198 | 0.0533 | DECORATION |
+| `PASS_SPEED_MIN` | down | **+0.0819** | 0.0310 | 0.0198 | 0.0621 | **WIRED** |
+| `PASS_SPEED_MAX` | up | +0.0023 | 0.0090 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_SPEED_MAX` | down | −0.0201 | 0.0152 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_LEAD_TOLERANCE` | up | −0.0177 | 0.0191 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_LEAD_TOLERANCE` | down | +0.0343 | 0.0259 | 0.0198 | 0.0518 | DECORATION |
+| `PASS_LEAD_MIN_SPEED` | up | +0.0109 | 0.0273 | 0.0198 | 0.0546 | DECORATION |
+| `PASS_LEAD_MIN_SPEED` | down | +0.0061 | 0.0126 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_LEAD_TIME_MIN` | up | +0.0081 | 0.0190 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_LEAD_TIME_MIN` | down | +0.0018 | 0.0187 | 0.0198 | 0.0395 | DECORATION |
+| `PASS_LEAD_TIME_MAX` | up | +0.0029 | 0.0285 | 0.0198 | 0.0571 | DECORATION |
+| `PASS_LEAD_TIME_MAX` | down | +0.0074 | 0.0267 | 0.0198 | 0.0534 | DECORATION |
+| `PASS_LEAD_STEPS` | up | −0.0070 | 0.0209 | 0.0198 | 0.0418 | DECORATION |
+| `PASS_LEAD_STEPS` | down | +0.0060 | 0.0298 | 0.0198 | 0.0595 | DECORATION |
+
+**Two of eleven are now WIRED against `pass_completion` where all eleven
+were DECORATION in the original census — one for each of the two reasons
+this section opened with:**
+
+- **`PASS_ELIGIBLE_MAX` down (reachability).** One of the 3 selection knobs.
+  In the original census this was already the single CLOSEST pairing
+  measured — delta −0.0286 against a 0.0289 threshold, a hair's width from
+  WIRED even before the seam. Now: −0.0609 against 0.0395, roughly 2.1×
+  stronger. That is the shape a reachability-driven promotion should have:
+  the cone ran for one player in ten before (the bot-driven harness's own
+  human-proxy slot); it runs for every producer now, so a tighter ceiling
+  denies more of the match's actual releases, not just the proxy's own.
+- **`PASS_SPEED_MIN` down (dilution, NOT reachability).** One of the 8 —
+  `passing::speed_for` already ran for AI releases through the shared
+  `release_pass` before the seam. Not close enough to appear in the original
+  census's "three closest" table at all. `speed_for` is `(PASS_ARRIVE_PACE +
+  FRICTION * distance).clamp(PASS_SPEED_MIN, PASS_SPEED_MAX)`; at the
+  shipped `PASS_ARRIVE_PACE` (120 px/s) the raw curve sits below the 420 px/s
+  floor for most passes in this harness, so most releases already travel at
+  the floor rather than the curve — lowering it slows most of the match's
+  passes, not just short ones, and the receiver has more time to control the
+  ball before it runs past them. Its promotion is exactly the dilution story
+  this section predicted for the 8: the lever was always there, and less of
+  the batch is now immune to it.
+
+Both are confirmed at double the census's seed count (n=96) before being
+shipped as real §9 contracts, on #537's own lesson that a knob sitting close
+to its threshold at a modest seed count can read either way by luck:
+
+| knob (direction) | n=48 delta | n=48 threshold | n=96 delta | n=96 threshold |
+| --- | --- | --- | --- | --- |
+| `PASS_ELIGIBLE_MAX` down | −0.0609 | 0.0395 | −0.0459 | 0.0278 |
+| `PASS_SPEED_MIN` down | +0.0819 | 0.0621 | +0.0668 | 0.0431 |
+
+Both clear their threshold comfortably at n=96 too (1.5–1.65× margin), so
+both are now shipped as committed contracts:
+`a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer`
+and `a_lower_pass_speed_floor_raises_completion_once_dilution_drops`
+(`gc-sim/tests/knob_contract.rs`).
+
+**The other 9 remain DECORATION, and for two different, both legitimate,
+reasons — the deliverable this section owes:**
+
+- `PASS_ANGULAR_WEIGHT` and `PASS_ELIGIBLE_MIN` (the remaining 2 of the 3
+  selection knobs) stay DECORATION against `pass_completion` specifically,
+  even though both are WIRED contracts against `pass_aim_error` (the metric
+  #491 registered because they move it and `pass_completion` does not).
+  `pass_completion` is a blunt ratio over every release in a match; these
+  knobs bias *which* eligible teammate is picked and *how far off-aim* the
+  choice is, which moves aim error by a wide margin without reliably
+  flipping whether the pass is caught at all. Reachability increasing does
+  not make a knob move a metric it was never going to move — it only
+  removes the confound of the knob being invisible to begin with.
+- The remaining 7 of the 8 already-reachable knobs (`PASS_ARRIVE_PACE`,
+  `PASS_SPEED_MAX`, `PASS_LEAD_TOLERANCE`, `PASS_LEAD_MIN_SPEED`,
+  `PASS_LEAD_TIME_MIN`, `PASS_LEAD_TIME_MAX`, `PASS_LEAD_STEPS`) stay
+  DECORATION against completion for the dilution reason stated above: the
+  gate-fraction measurement shows 43.75% of releases are ground releases at
+  all, and the lead-solve knobs among these seven only ever act on the
+  subset of *those* where a lead was actually admissible (a moving,
+  above-floor-speed receiver). Against a completion ratio pooled over every
+  release including lobs, planned throws and keeper-to-keeper distribution,
+  their genuine effect (evidenced by `PASS_LEAD_TOLERANCE` and
+  `PASS_LEAD_MIN_SPEED`'s existing WIRED contracts against `pass_lead_time`
+  — the metric #491 registered for exactly this reason) is real but too
+  diluted for a 48-seed `pass_completion` census to resolve. This is a
+  measurement-resolution finding, not evidence the knobs are inert — see
+  `pass_lead_time`'s own contracts for the counter-evidence.
+
+None of the 9 is a candidate for deletion: each either has its own working
+contract against a metric it actually resolves against (`PASS_ANGULAR_WEIGHT`,
+`PASS_LEAD_TOLERANCE`, `PASS_LEAD_MIN_SPEED`), or has a stated, structural
+reason (dilution, gate fraction) its effect is real but currently unresolved
+against `pass_completion` at an affordable seed count. A knob is only a
+deletion candidate when its DECORATION verdict has no explanation at all —
+none of these 9 are in that state.
+
+### Whole-registry audit (#537's ask)
+
+#537 established that a seam change perturbs knob-contract verdicts across
+the whole registry, not just the passing tab — `LOCO_BACKPEDAL_DECEL_MULT`
+flipped to DECORATION at n=48 on this same PR's own transcendental-adjacent
+predecessor, and `LOCO_RUN_ACCEL_MULT` needed the same fix (24 → 48 seeds)
+during #543. Both fixes are already landed on `main` at the commit this work
+started from (`b53a5c0`) — `braking_harder_shortens_a_reversal` at n=144,
+`accelerating_harder_shortens_a_reversal` at n=48. Re-running the entire
+`gc-sim/tests/knob_contract.rs` suite (every committed contract in the
+registry, not only the `PASS_*` additions above) on that commit — before any
+change in this work — confirms both hold and nothing else has drifted:
+
+```
+running 17 tests
+test result: ok. 16 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 63.08s
+```
+
+**Nothing in the registry is currently underpowered.** Per #537's own
+instruction, if a repowering had been needed the fix would have been more
+seeds only, never a threshold, a direction check or `NOISE_SIGMAS` — that
+did not arise here because nothing needed it.
+
+## Baseline drift log
+
+**This heading's own date range and "every entry is pre-port" claim are
+stale** — both predate the first `gc-sim`-measured entry (#488, 2026-08-13)
+and were never updated when it landed; left uncorrected until now, which is
+exactly the kind of doc/reality drift AGENTS.md §11 asks to be reported
+rather than propagated. Entries from **2026-07-08** through **2026-08-10**
+are the deleted Lua tree's, cited via the commands the banner at the top
+names; entries from **2026-08-11** onward are measured on `gc-sim` directly,
+via `gc_sim::outfield_ai_baseline`'s recorder protocol, and say so
+individually.
 
 The ritual still stands: a sim change that moves the fun signature owes a
-100-match validation and an entry here before the baseline is refreshed. The
-commands each entry cites are the deleted Lua CLI (see the banner at the top),
-and no entry has been re-measured on `gc-sim`. Every number below is the Lua
-tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
+100-match validation and an entry here before the baseline is refreshed.
+
+- **2026-08-14 — nine `gc-sim`/`gc-data` transcendental call sites converted
+  to `gc_core::deterministic_math::cos_sin` or a precomputed constant, so
+  native and the compiled wasm module compute the same simulation state
+  (#517's mechanical sweep).** `baseline_version` **10 → 11**, signature
+  `95850e11e242ea9b` → `fcb849367c7c26e4`; `identity.tuning_hash`,
+  `identity.content_hash`, `identity.fixture_hash` and `snapshot_version`
+  unchanged — no knob defaults or content moved, only mechanics. Re-frozen
+  via `record_outfield_ai_baseline`, per that module's own re-freeze
+  protocol.
+
+  This is not a gameplay change: `f64::cos`/`f64::sin` (not correctly
+  rounded, and a different libm on `wasm32-unknown-unknown` than native)
+  moved to `gc_core::deterministic_math::cos_sin` at `match.rs`'s dribble
+  touch and AI-outfield execution-error sites, `aerial.rs`'s contact-angle
+  rotation, and `bot.rs`'s aim noise; `match.rs`'s four-literal-angle support
+  triangle and `gc-data`'s `ActionFamilyData::front_arc_cos` (read by
+  `combat.rs`/`combat_feasibility.rs`) moved to precomputed constants. Each
+  site's own output shifts by an amount on the order of `cos_sin`'s ~1e-13
+  relative accuracy against libm, but the simulation is a long-running
+  nonlinear system (7,200 ticks, collisions, AI decisions) — once one
+  dribble touch or support run lands a player a fraction of a pixel
+  differently, the rest of that possession sequence runs on genuinely
+  different state, not just genuinely different bits. `gc-sim`'s
+  `KNOWN_DIVERGENCES` allowlist in `scripts/check_wasm_native_corpus.mjs`
+  went from two tracked native/wasm divergences (attributed to two of these
+  nine sites) to zero, which is the point of the change; this baseline's
+  drift is that same mechanism's cost on the native side, since the frozen
+  fixture pins exact hashes and does not distinguish "moved for a bug" from
+  "moved because a call that used to disagree with wasm now agrees with it."
+
+  | metric | frozen (v10) | re-frozen (v11) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.267473 | 0.256633 | −0.010841 |
+  | `goals_total` | 1.883333 | 1.783333 | −0.100000 |
+  | `goals_home` | 0.650000 | 0.750000 | +0.100000 |
+  | `goals_away` | 1.233333 | 1.033333 | −0.200000 |
+  | `shots` | 29.000000 | 30.166667 | +1.166667 |
+  | `shots_per_goal` | 16.433642 | 19.657738 | +3.224096 |
+  | `save_rate` | 0.889098 | 0.899940 | +0.010842 |
+  | `passes` | 32.683333 | 31.633333 | −1.050000 |
+  | `pass_completion` | 0.524982 | 0.536465 | +0.011483 |
+  | `turnovers_per_min` | 9.778232 | 9.263996 | −0.514236 |
+  | `possession_balance` | 0.518344 | 0.525805 | +0.007461 |
+  | `longest_drought_s` | 13.325278 | 13.563889 | +0.238611 |
+  | `decided_late` | 0.667803 | 0.627862 | −0.039941 |
+  | `lead_changes` | 0.016667 | 0.033333 | +0.016667 |
+  | `margin` | 1.050000 | 1.116667 | +0.066667 |
+  | `duration` | 117.205000 | 117.481667 | +0.276667 |
+  | `ai_dribble_carry_s` | 28.371944 | 28.540556 | +0.168611 |
+  | `ai_dribble_close_share` | 0.843196 | 0.851183 | +0.007987 |
+  | `ai_dribble_sprint_share` | 0.140410 | 0.133638 | −0.006773 |
+  | `ai_dribble_juke_share` | 0.075924 | 0.075090 | −0.000834 |
+  | `ai_dribble_touches_per_min` | 99.758856 | 97.251863 | −2.506993 |
+  | `ai_dribble_heavy_losses_per_min` | 0.437461 | 0.458042 | +0.020580 |
+  | `ai_jukes` | 30.933333 | 30.900000 | −0.033333 |
+
+  `gc_sim::keeper_shadow_classifier`'s frozen 60-seed counts moved in the
+  same commit, for the same reason: `candidates` 9285 → 9438,
+  `disagree_height` 18 → 40, `disagree_deferred` 172 → 159, `new_only`
+  unchanged at 0 (the structural argument for it does not depend on which
+  libm computed the angle that got a carrier to a given position).
+
+- **2026-08-14 — the gameplay AI's pass/throw decisions moved onto the same
+  `MatchInput` charge-and-release seam a human uses, instead of calling
+  `release_pass` directly (#531 phase 2, re-recording phase 1's #535
+  blast radius).** `baseline_version` **9 → 10**, signature
+  `ac397926cf724b7b` → `95850e11e242ea9b`, `snapshot_version` **11 → 12**
+  (`pass_intent` added to `MatchPlayer`; `tuning_hash` and `content_hash`
+  unchanged — no knob defaults or content moved), `fixture_hash`
+  `eda80b6ca32829a2` → `110e1af740715032`. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  This is a genuine trajectory change, not a schema artifact: an AI pass or
+  throw now costs the same charge time and hold-duration interception
+  exposure a human always paid, and the soft cone
+  (`select_pass_target`/`select_throw_target`) resolves the receiver instead
+  of the AI's own scorer. See #531/#535 for the seam's design and the full
+  enumerated blast radius.
+
+  | metric | frozen (v9) | re-frozen (v10) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.264791 | 0.267473 | +0.002682 |
+  | `goals_total` | 1.683333 | 1.883333 | +0.200000 |
+  | `goals_home` | 0.616667 | 0.650000 | +0.033333 |
+  | `goals_away` | 1.066667 | 1.233333 | +0.166667 |
+  | `shots` | 33.016667 | 29.000000 | −4.016667 |
+  | `shots_per_goal` | 22.572327 | 16.433642 | −6.138685 |
+  | `save_rate` | 0.911370 | 0.889098 | −0.022272 |
+  | `passes` | 33.700000 | 32.683333 | −1.016667 |
+  | `pass_completion` | 0.553037 | 0.524982 | −0.028055 |
+  | `turnovers_per_min` | 8.784997 | 9.778232 | +0.993235 |
+  | `possession_balance` | 0.560170 | 0.518344 | −0.041826 |
+  | `longest_drought_s` | 11.537500 | 13.325278 | +1.787778 |
+  | `decided_late` | 0.642449 | 0.667803 | +0.025354 |
+  | `lead_changes` | 0.066667 | 0.016667 | −0.050000 |
+  | `margin` | 1.183333 | 1.050000 | −0.133333 |
+  | `duration` | 116.805000 | 117.205000 | +0.400000 |
+  | `ai_dribble_carry_s` | 25.724444 | 28.371944 | +2.647500 |
+  | `ai_dribble_close_share` | 0.845731 | 0.843196 | −0.002535 |
+  | `ai_dribble_sprint_share` | 0.147908 | 0.140410 | −0.007498 |
+  | `ai_dribble_juke_share` | 0.081623 | 0.075924 | −0.005700 |
+  | `ai_dribble_touches_per_min` | 105.131959 | 99.758856 | −5.373103 |
+  | `ai_dribble_heavy_losses_per_min` | 0.636747 | 0.437461 | −0.199285 |
+  | `ai_jukes` | 31.933333 | 30.933333 | −1.000000 |
+
+  `fun` is comparable across these two rows — no metric was registered or
+  retired between v9 and v10, only the producer's mechanics changed — but it
+  should not be read as a verdict on balance. `pass_completion` drops from
+  0.553 to 0.525, moving toward, not yet past, the 0.52 floor #531's issue
+  body predicted; `ai_dribble_carry_s` and `longest_drought_s` both rise,
+  consistent with an AI that now has to hold the ball through a charge
+  instead of releasing on the spot. **This entry is the drift record the
+  recorder's own re-freeze protocol requires, not the phase-3 balance
+  re-measurement #531 tracks separately** — phase 3 re-runs the harness from
+  scratch and publishes the new numbers as the reference rather than as a
+  delta against the AI-exempt baseline above, which measured a different
+  producer's rules.
 
 - **2026-08-13 — passing: soft-scored receiver selection, a registered
   distance-to-speed curve, and a lead solver measured against the real

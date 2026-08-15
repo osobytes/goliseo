@@ -30,25 +30,40 @@ pub struct Golden {
 /// goal limit), so `manifest_id` moves and every wire that embeds it moves
 /// with it. The digests below that do not carry a manifest id are
 /// unchanged, which is the evidence nothing else moved.
+///
+/// Repinned again by #489, same mechanism as the #268 note above and as
+/// `coordinator_conformance::Golden` (retired in the same PR, see that
+/// constant's doc comment for the root cause): `match_snapshot::COMBAT_VERSION`
+/// bumps 13 -> 14, `manifest_id` and `transcript_id` move, and every wire
+/// digest for a kind whose required fields include `manifest_id`
+/// (`ManifestProposal`, `ManifestAccept`, `SlotAssignment`, `Ready`,
+/// `Countdown`, `Start`, `PairPreference`, `PairPreferenceResult`) moves with
+/// it. `Handshake`, `PeerAssignment`, `MatchPhase`, `HashReport`,
+/// `ResultAck`, `Abort` and `Disconnect` do not carry a manifest id and are
+/// confirmed unchanged below — the same evidence-of-nothing-else-moved shape
+/// as #268. Recorded by printing every value from a throwaway probe calling
+/// `protocol::manifest_id`/`transcript_id`/`encode` directly against
+/// `fixture::manifest(None)`/`fixture::messages()`, the same fixture this
+/// golden already pins.
 pub const GOLDEN: Golden = Golden {
     vocabulary_id: "e13e3647001a0a7e",
-    manifest_id: "eb59f113614c35b2",
-    transcript_id: "653cba3b32c62ce9",
+    manifest_id: "572bbff19cdfc603",
+    transcript_id: "a83439d3fe39fa52",
     complete_kind: MessageKind::ManifestAccept,
-    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:eb59f113614c35b2s4:kinds15:\
+    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:572bbff19cdfc603s4:kinds15:\
 manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:\
 hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests: &[
         (MessageKind::Handshake, "2722abf054051350"),
-        (MessageKind::ManifestProposal, "171c298f6eeb77e1"),
-        (MessageKind::ManifestAccept, "363c57d949586608"),
+        (MessageKind::ManifestProposal, "a16e66840b834469"),
+        (MessageKind::ManifestAccept, "61cf18d63e6076e9"),
         (MessageKind::PeerAssignment, "fa48b31571dfe543"),
-        (MessageKind::SlotAssignment, "db929e7cd34eab60"),
-        (MessageKind::Ready, "a89d1e1747464a51"),
-        (MessageKind::PairPreference, "44cbe6dc14b4af77"),
-        (MessageKind::PairPreferenceResult, "e9bc40f5818037f4"),
-        (MessageKind::Countdown, "c26f26e05519c2c8"),
-        (MessageKind::Start, "3fdf9b6a442b6755"),
+        (MessageKind::SlotAssignment, "956e42e74b995ad9"),
+        (MessageKind::Ready, "ab1187cad581ee86"),
+        (MessageKind::PairPreference, "6ca49f34edf71a88"),
+        (MessageKind::PairPreferenceResult, "c0de33146372fa77"),
+        (MessageKind::Countdown, "12b32574af080ab9"),
+        (MessageKind::Start, "c1d8945760e1deae"),
         (MessageKind::MatchPhase, "1671940891b78f1f"),
         (MessageKind::HashReport, "4405d9323b1e5b0f"),
         (MessageKind::ResultAck, "5f466e6740c6d4cf"),

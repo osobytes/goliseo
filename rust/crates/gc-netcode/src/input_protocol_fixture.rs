@@ -16,7 +16,18 @@
 //!
 //! [`maximal`] never depended on `protocol` at all: it hardcodes its
 //! identity as literal strings.
-
+//!
+//! **This constant must NOT be confused with `tests/input_protocol.rs`'s own,
+//! separately-named `MANIFEST_ID`** (deliberately not shared with this one):
+//! that file's constant backs `host_fixture`-driven cases that DO cross-check
+//! against a live `protocol::manifest_id(protocol_fixture::manifest(None))`
+//! (through `match_driver_fixture::DriverRules::canonical_host_batch`), which
+//! reads `match_snapshot::COMBAT_VERSION` off the manifest and so moves with
+//! it. #489 bumped `COMBAT_VERSION` 13 -> 14 and moved that file's constant;
+//! this one is frozen alongside `GOLDEN` and does not move with it, found the
+//! hard way when moving both together broke `omp3_pins_literal_native_and_
+//! lovejs_conformance_vectors` (this constant feeds packets checked against
+//! `GOLDEN`'s wire bytes verbatim, not against a live hash).
 use crate::input_protocol::{self, AuthorityRow, Packet, PacketOptions};
 use gc_sim::input_frame::{self, InputSampleOptions};
 

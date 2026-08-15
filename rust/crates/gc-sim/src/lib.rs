@@ -4,6 +4,7 @@
 //! modules in parallel never contend on this file.
 #![deny(missing_docs)]
 
+pub mod action_slot;
 pub mod aerial;
 pub mod ai;
 pub mod ai_driven_evidence;
@@ -47,6 +48,7 @@ pub mod outfield_ai_baseline;
 pub mod outfield_ai_policy;
 pub mod outfield_decision;
 pub mod outfield_press;
+pub mod pass_intent;
 pub mod pass_lead;
 pub mod passing;
 pub mod placement;
@@ -77,3 +79,4 @@ pub mod sweep;
 pub mod tripwire;
 pub mod tunable_registry;
 pub mod tuning;
+pub mod wasm_native_corpus;

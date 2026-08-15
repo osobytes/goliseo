@@ -347,15 +347,52 @@ fn noise_floor_pilot_reports_per_metric_variance_at_defaults() {
 /// the noise, and the right response is a bigger lever, not more seeds.
 #[test]
 fn braking_harder_shortens_a_reversal() {
-    // 48 seeds, and the knob is the BACKPEDAL context's brake rather than the
-    // shared `MOVE_DECEL` base. Both are the census talking, not tuning:
-    // after the carry-composition fix, `MOVE_DECEL` at full range measures
-    // -0.014 against a 0.019 threshold and `LOCO_RUN_DECEL_MULT` measures
-    // nothing at all. Braking during a reversal happens almost entirely in
-    // the backpedal phase -- `resolve` puts a body moving opposite its facing
-    // there -- so the backpedal brake is the knob that governs it, and the
-    // shared base is diluted across every context that is not braking.
-    let seeds = seeds(48);
+    // Seed count raised from 48 to 144 (#537), derived rather than picked by
+    // feel. #537 found the committed n=48 flips this contract to DECORATION
+    // on an ordinary gameplay change that leaves the knob comfortably WIRED
+    // at adequate power -- not a real unwiring, an underpowered contract.
+    //
+    // Derivation: the paired-difference standard deviation is stable across
+    // seed counts on this branch -- delta_se * sqrt(n) gives ~0.0506 at
+    // n=48 and ~0.0500 at n=400 (see the table below), so the threshold
+    // scales as NOISE_SIGMAS * diff_sd / sqrt(n) ~= 0.100 / sqrt(n),
+    // calibrated against the committed n=48 row's own threshold: 0.100 /
+    // sqrt(48) = 0.0144, matching the measured 0.0145 up to rounding.
+    // Against this branch's own effect size (~0.0154, measured at n=400),
+    // that predicts the margin over threshold widens roughly as sqrt(n) and
+    // clears a comfortable multiple well short of n=400. Extrapolating from
+    // a noisy mean is exactly the failure #537 reports, so the projection
+    // was not trusted on its own -- two candidate seed counts were run and
+    // measured directly instead:
+    //
+    // | n                 | delta   | se        | noise floor | threshold | verdict    | runtime   |
+    // | ----------------- | ------- | --------- | ----------- | --------- | ---------- | --------- |
+    // | 48 (was)          | -0.0112 | +/-0.0073 | 0.0051      | 0.0145    | DECORATION | 157.45s   |
+    // | 144 (chosen)      | --      | --        | --          | --        | WIRED      | 398.62s   |
+    // | 200               | --      | --        | --          | --        | WIRED      | 554.73s   |
+    // | 400, this branch  | -0.0154 | +/-0.0025 | 0.0018      | 0.0050    | WIRED      | 1160.92s  |
+    // | 400, base 2ce0ca0 | -0.0206 | +/-0.0026 | 0.0017      | 0.0052    | WIRED      | 1138.76s  |
+    //
+    // (144's and 200's own delta/se/noise-floor were not re-captured after
+    // their verdicts were confirmed WIRED -- re-running either just to
+    // recover the report string costs another 400-550s for no new
+    // information the verdict and runtime do not already give.)
+    //
+    // n=48 is DECORATION here because it is UNDERPOWERED, not because the
+    // knob stopped moving the metric: both n=400 rows -- this branch and
+    // base 2ce0ca0 -- show the same knob comfortably WIRED. 144 is the
+    // smaller of the two seed counts that measured WIRED, trading the
+    // extra headroom n=200 bought (and the ~28% more runtime it costs) for
+    // a margin (~2.4 measured standard errors clear of threshold) that is
+    // comfortable rather than marginal, without paying for more than that.
+    //
+    // This is a local fix, not the systemic one. #537 STAYS OPEN for
+    // separating an UNDERPOWERED verdict from a DECORATION one and
+    // auditing the rest of the registry's contracts for the same exposure.
+    // Nothing about the verdict machinery, MIN_SEEDS, NOISE_SIGMAS or
+    // DEFAULT_PERTURBATION_FRACTION changed here -- only this one
+    // contract's seed count.
+    let seeds = seeds(144);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "LOCO_BACKPEDAL_DECEL_MULT",
         metric: "time_to_reverse",
@@ -381,7 +418,7 @@ fn braking_harder_shortens_a_reversal() {
 /// three times as far as the braking one does.
 #[test]
 fn accelerating_harder_shortens_a_reversal() {
-    let seeds = seeds(24);
+    let seeds = seeds(48);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "LOCO_RUN_ACCEL_MULT",
         metric: "time_to_reverse",
@@ -719,4 +756,316 @@ fn the_shipped_passing_defaults_land_inside_their_proposed_bands() {
             def.band[2]
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// #489 — committed actions: the standing-poke tackle
+// ---------------------------------------------------------------------
+
+/// `ACTION_TACKLE_COMMIT` against `whiff_rate`: the issue's own required
+/// pairing, and it holds. #489's design argument is that resolution checks
+/// the carrier's position ONCE, at the end of the executing phase (see
+/// `gc_sim::r#match::resolve_tackle`'s doc), so a longer commit window gives
+/// an actively-repositioning carrier more time to leave reach before that
+/// single check -- raising the window should raise the miss rate, not just
+/// change it.
+///
+/// Seed count sized from measurement, not a default (the rule this
+/// contract's own module doc and #537 both set): 24/48/96 seeds of 30s
+/// AI-vs-AI matches at the default perturbation fraction all reported
+/// WIRED, with the margin over threshold widening as n grows (delta/se
+/// stabilizing near +0.10, threshold shrinking as 1/sqrt(n)) rather than a
+/// borderline case that only clears at one lucky count:
+///
+/// | n  | delta   | se      | noise floor | threshold | verdict |
+/// | -- | ------- | ------- | ----------- | --------- | ------- |
+/// | 24 | +0.0919 | +/-0.0224 | 0.0250 | 0.0501 | WIRED |
+/// | 48 | +0.0755 | +/-0.0153 | 0.0159 | 0.0319 | WIRED |
+/// | 96 | +0.0817 | +/-0.0126 | 0.0118 | 0.0252 | WIRED |
+///
+/// 96 is used below: comfortably clear at every count tried, so the extra
+/// margin over 48 is headroom against exactly the kind of ordinary,
+/// unrelated gameplay drift that tipped two other contracts below their own
+/// margin this same week (#537).
+#[test]
+fn raising_tackle_commit_raises_whiff_rate() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "ACTION_TACKLE_COMMIT",
+        metric: "whiff_rate",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the committed tackle's resolve-once-at-the-end design is decoration: {}",
+        outcome.report
+    );
+}
+
+// ---------------------------------------------------------------------
+// #531 phase 4 — the post-seam PASS_* census, re-run against the same
+// methodology and the same metric the original #491 census used.
+// ---------------------------------------------------------------------
+
+/// Reproduces #491's original census exactly (48 seeds, 30-second matches,
+/// each of the 11 `cat: "Passing"` knobs displaced across its full declared
+/// range in both directions) against `pass_completion`, so this table is
+/// directly comparable to the one recorded in the census comment above.
+///
+/// Not an assertion, deliberately: #531's own adjudication (issue comment
+/// thread) says only 3 of the 11 knobs — `PASS_ANGULAR_WEIGHT`,
+/// `PASS_ELIGIBLE_MIN`, `PASS_ELIGIBLE_MAX`, the soft-cone selection knobs
+/// consumed solely by `passing::select_receiver` — had their REACHABILITY
+/// changed by the AI-input seam (#535): the human/bot-driven slot this
+/// harness always plays already exercised the cone before the seam landed,
+/// so what changes for these 3 is dilution (far more of a match's passes
+/// now flow through the cone), not a new code path becoming live. The other
+/// 8 already executed on AI paths through the shared `release_pass` before
+/// the seam, so a continued DECORATION verdict for them needs a
+/// dilution/measurement explanation, not a reachability one — re-censusing
+/// them expecting the seam alone to have rescued them was already known to
+/// be a wasted expectation before this ran. `knob_moves_metric` (not
+/// `assert_moves`) is used throughout so a DECORATION verdict is a printed
+/// finding, not a panic.
+///
+/// `cargo test -p gc-sim --test knob_contract -- --ignored --nocapture \
+///  the_post_531_pass_census_reports_against_completion`
+#[test]
+#[ignore = "phase-4 census pilot: minutes, run by hand"]
+fn the_post_531_pass_census_reports_against_completion() {
+    let seeds = seeds(48);
+    let knobs = [
+        "PASS_ANGULAR_WEIGHT",
+        "PASS_ELIGIBLE_MIN",
+        "PASS_ELIGIBLE_MAX",
+        "PASS_ARRIVE_PACE",
+        "PASS_SPEED_MIN",
+        "PASS_SPEED_MAX",
+        "PASS_LEAD_TOLERANCE",
+        "PASS_LEAD_MIN_SPEED",
+        "PASS_LEAD_TIME_MIN",
+        "PASS_LEAD_TIME_MAX",
+        "PASS_LEAD_STEPS",
+    ];
+    println!(
+        "{:<22} {:<5} {:>10} {:>10} {:>10} {:>10}  verdict",
+        "knob", "dir", "delta", "delta_se", "noise_se", "threshold"
+    );
+    for knob in knobs {
+        for direction in [Perturb::Up, Perturb::Down] {
+            let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
+                knob,
+                metric: "pass_completion",
+                seeds: &seeds,
+                duration: DURATION,
+                perturbation: Some(1.0),
+                expect: ExpectedShift::Unstated,
+                direction: Some(direction),
+            });
+            println!(
+                "{:<22} {:<5} {:>10.4} {:>10.4} {:>10.4} {:>10.4}  {}",
+                knob,
+                if direction == Perturb::Up {
+                    "up"
+                } else {
+                    "down"
+                },
+                outcome.delta,
+                outcome.delta_se,
+                outcome.noise.standard_error,
+                outcome.threshold,
+                if outcome.moved { "WIRED" } else { "DECORATION" }
+            );
+        }
+    }
+}
+
+// The census above found two of the eleven promoted from DECORATION to
+// WIRED against `pass_completion` itself — not the metrics #491 registered
+// FOR them, but the outcome metric the original census measured them
+// against and that #531's issue body re-opens the question about. Both are
+// confirmed at double the census's seed count (n=96) before being shipped
+// as real contracts, on #537's own lesson: a knob sitting close to its
+// threshold at a modest seed count can read either way depending on luck,
+// and the fix is more seeds, not a lower bar.
+//
+// | knob (direction)         | n=48 delta | n=48 threshold | n=96 delta | n=96 threshold |
+// | ------------------------ | ---------- | -------------- | ---------- | -------------- |
+// | `PASS_ELIGIBLE_MAX` down | -0.0609    | 0.0395         | -0.0459    | 0.0278         |
+// | `PASS_SPEED_MIN` down    | +0.0819    | 0.0621         | +0.0668    | 0.0431         |
+
+/// Newly WIRED against `pass_completion`, not merely against `pass_aim_error`
+/// — the reachability story fits this one precisely. `PASS_ELIGIBLE_MAX` is
+/// one of the three knobs #531's adjudication says had their REACHABILITY
+/// changed by the seam (consumed solely by `passing::select_receiver`,
+/// reached only through the soft cone). Before the seam, the cone ran for
+/// one player in ten in this bot-driven harness (the human/bot-proxy slot);
+/// now it runs for every producer, so a tighter ceiling on how far a
+/// candidate may sit denies more of a match's actual releases, not just the
+/// proxy's own.
+///
+/// In the old census (comment block above) this was already the CLOSEST
+/// pairing measured — delta -0.0286 against a 0.0289 threshold, a hair's
+/// width from WIRED even before the seam. What moved is magnitude, not
+/// direction: -0.0286 → -0.0609 at n=48, roughly 2.1x stronger, which is
+/// the shape a dilution-driven promotion should have (the underlying effect
+/// was always there; less of the batch was immune to it).
+#[test]
+fn a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_ELIGIBLE_MAX",
+        metric: "pass_completion",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        // A lower ceiling excludes more candidates, so fewer releases find
+        // an eligible receiver at all: completion must fall.
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the receiver ceiling is decoration against completion: {}",
+        outcome.report
+    );
+}
+
+/// `whiff_rate` registers with real seed-to-seed spread on every AI-vs-AI
+/// match, the same property `the_passing_metrics_arm_on_every_match` checks
+/// for #491's two metrics -- a metric that is sometimes absent, or that
+/// never varies, cannot back a contract at all.
+#[test]
+fn whiff_rate_arms_on_every_ai_vs_ai_match() {
+    let seeds = seeds(48);
+    let floor = knob_contract::noise_floor("whiff_rate", &seeds, DURATION);
+    assert_eq!(
+        floor.n,
+        seeds.len(),
+        "whiff_rate was absent from some match in the seed set -- some seed attempted no \
+         standing-poke tackle at all in 30s of AI-vs-AI play"
+    );
+    assert!(
+        floor.mean > 0.0 && floor.mean < 1.0,
+        "measured a degenerate 0 or 1 everywhere"
+    );
+    assert!(
+        floor.sd > 0.0,
+        "no seed-to-seed spread at all, which means it is not measuring the match"
+    );
+}
+
+/// **`ACTION_TACKLE_MISS_RECOVERY` against `turnovers_per_min` -- #489's
+/// OTHER required pairing -- does NOT clear this measurement, at any
+/// seed count or perturbation tried.** Reported here rather than shipped
+/// as a passing contract, per this module's own rule: never lower a
+/// threshold, weaken the direction check, or change `NOISE_SIGMAS` to force
+/// a pass, and say so when a contract cannot clear its threshold.
+///
+/// `ACTION_RECOVERY_CONTROL` -- the movement-scale knob recovery actually
+/// gates through -- is genuinely wired: it was caught unwired during this
+/// same investigation (nothing in `gc_sim::r#match` read it at all; every
+/// recovering player kept moving at full speed) and fixed, and
+/// `tests/action_slot_integration.rs`'s
+/// `action_recovery_control_measurably_scales_a_recovering_players_displacement`
+/// proves the fix directly and deterministically: a recovering player
+/// measurably covers less ground than an identical control over the same
+/// window. What is NOT established is that this reaches `turnovers_per_min`
+/// specifically, at a seed count this gate can afford:
+///
+/// | knob                         | perturbation | duration    | n  | delta   | se      | verdict    |
+/// | ----------------------------- | ------------ | ----------- | -- | ------- | ------- | ---------- |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | default (0.35) | 30s       | 24 | +0.0000 | +/-0.0000 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | default (0.35) | 30s       | 48 | +0.0833 | +/-0.0583 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | 30s       | 24 | -0.4164 | +/-0.7217 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | 30s       | 48 | +0.0416 | +/-0.4961 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | full (120s) | 24 | -0.1875 | +/-0.3621 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | full (120s) | 48 | -0.0833 | +/-0.2647 | DECORATION |
+/// | `ACTION_RECOVERY_CONTROL` (down) | full range | 30s       | 48 | +0.2082 | +/-0.5162 | DECORATION (wrong sign, within noise) |
+///
+/// The sign flips across rows and every delta sits well inside its own
+/// standard error -- not an underpowered-but-real effect the braking
+/// contract's pattern would predict more seeds could resolve (#537), but a
+/// true effect indistinguishable from zero against this specific aggregate.
+/// `turnovers_per_min` is a whole-match SETTLED-possession count
+/// (`gc_sim::possession_transition::ESTABLISH_SECONDS` = 0.7s holds,
+/// `gc_sim::metrics::SETTLE_HOLD`); a single defender's brief post-whiff
+/// slowdown is exactly the kind of many-layers-removed effect #491 already
+/// found every one of its eleven passing knobs could not move on any of the
+/// nine outcome metrics that existed before it, for the same structural
+/// reason argued on `gc_sim::r#match::PassShadowTally`. #491's fix was to
+/// register a metric closer to the mechanism (`pass_aim_error`,
+/// `pass_lead_time`); the equivalent here would be a metric closer to
+/// "did a whiff's recovery window let the attacking side keep the spell
+/// alive" than a whole-match settled-turnover count. That metric does not
+/// exist yet and building one is out of this PR's scope -- flagged in the
+/// PR description as the concrete follow-up, not silently absorbed into a
+/// contract that does not actually hold.
+#[test]
+fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established() {
+    // This test intentionally asserts the STRUCTURAL claim only (the knob
+    // is registered, in range, and distinct from its neighbours) -- see the
+    // doc comment above for why no statistical assert_moves call is made
+    // here. The mechanical claim ("recovery gates movement") is asserted in
+    // tests/action_slot_integration.rs instead, deterministically.
+    let def = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "ACTION_TACKLE_MISS_RECOVERY")
+        .expect("registered");
+    assert!(def.min < def.default && def.default < def.max);
+    let control = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "ACTION_RECOVERY_CONTROL")
+        .expect("registered");
+    assert!((0.0..1.0).contains(&control.default));
+}
+
+/// Newly WIRED against `pass_completion` too, but NOT one of the three
+/// selection knobs — `PASS_SPEED_MIN` is consumed by `passing::speed_for`
+/// inside the shared `release_pass`, so it already executed on AI-driven
+/// releases before the seam landed (#531's adjudication is explicit that
+/// this is one of the eight, not the three). Its promotion is therefore a
+/// DILUTION story, not a reachability one: it is the same lever it always
+/// was, measured against a batch where far more of the match's releases now
+/// run through the seam's consistent charge-and-release timing instead of
+/// an instantaneous AI-only shortcut sitting alongside them as noise.
+///
+/// Not in the old census's "three closest" table at all — this pairing was
+/// not close enough to print there. Measuring it again rather than assuming
+/// the eight are settled is what surfaced it.
+///
+/// `passing::speed_for` is `(PASS_ARRIVE_PACE + FRICTION * distance).clamp(
+/// PASS_SPEED_MIN, PASS_SPEED_MAX)`. At the shipped `PASS_ARRIVE_PACE`
+/// (120 px/s), the raw curve sits below `PASS_SPEED_MIN` (420 px/s) for
+/// every pass shorter than the distance where friction alone closes a
+/// 300 px/s gap — most passes in a bot-driven match — so most releases
+/// travel at the FLOOR, not the curve. Lowering it therefore slows most of
+/// the match's passes, not just the short ones the floor's own doc comment
+/// names.
+#[test]
+fn a_lower_pass_speed_floor_raises_completion_once_dilution_drops() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_SPEED_MIN",
+        metric: "pass_completion",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        // A lower floor lets most of the match's passes travel slower,
+        // giving the receiver more time to reach and control the ball
+        // before it runs past them: completion rises.
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the pass speed floor is decoration against completion: {}",
+        outcome.report
+    );
 }

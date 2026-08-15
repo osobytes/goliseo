@@ -140,7 +140,56 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     let seeds = baseline::seeds();
     let (total, had_disagree, had_deferred) = classify(&seeds);
 
-    // Re-pinned by #491's passing rework, in the SAME commit as
+    // Re-pinned by #489 (committed actions), in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v11 -> v12 re-freeze.
+    //
+    // candidates 9438 -> 9746: the standing-poke tackle now charges and
+    // executes instead of resolving the instant it is in reach
+    // (`gc_sim::action_slot`, `r#match::advance_tackle_actions`), so a
+    // carrier gets more chances to escape a committed defender than it did
+    // against the old instant-resolve check -- more possession sequences
+    // run longer and reach a keeper before the ball is lost. `disagree_height`
+    // 40 -> 25 falls (fewer resolved height disagreements) while
+    // `disagree_deferred` 159 -> 268 rises sharply (more one-tick-later
+    // resolutions, the RNG-stream-shifting signature this file's own module
+    // doc describes) -- `agree_true`/`agree_false` absorb the rest of the
+    // candidate-count rise. `new_only` stays structurally 0, which is the
+    // assertion that would have been a finding rather than a re-pin.
+    //
+    // Re-pinned by #517's mechanical transcendental sweep (the dribble-touch
+    // and AI-outfield-error cos/sin, the aerial-contact cos/sin, the bot
+    // aim-noise cos/sin, and the support-triangle/combat-arc precomputed
+    // constants), in the SAME commit as `gc_data::outfield_ai_baseline`'s
+    // v10 -> v11 re-freeze, for the reason the paragraph below already
+    // gives.
+    //
+    // candidates 9285 -> 9438: nine call sites across `match.rs`,
+    // `aerial.rs`, `bot.rs`, `combat.rs` and `combat_feasibility.rs` moved
+    // from `f64::cos`/`f64::sin` (not correctly rounded, and different
+    // between native and wasm libm) to `gc_core::deterministic_math::cos_sin`
+    // or a precomputed constant, changing every dribble touch, off-ball
+    // support run and AI release angle by ULP-scale amounts that compound
+    // over a 7200-tick match into materially different possession
+    // sequences -- more of them now reach a keeper. `disagree_height`
+    // 18 -> 40 and `disagree_deferred` 172 -> 159 move with it; `new_only`
+    // stays structurally 0, which is the assertion that would have been a
+    // finding rather than a re-pin.
+    //
+    // Previously re-pinned by #531 phase 2 (the gameplay AI's pass/throw seam), in the
+    // SAME commit as `gc_data::outfield_ai_baseline`'s v9 -> v10 re-freeze,
+    // for the reason the paragraph below already gives.
+    //
+    // candidates 9208 -> 9285: the AI now charges a pass/throw over several
+    // ticks instead of releasing on the spot, so it is dispossessed via
+    // tackle mid-charge more often than it used to be dispossessed
+    // instantly -- more of those broken sequences end with the ball
+    // reaching a keeper than before, a small rise rather than the large
+    // fall #491's own solver-aim change produced. `disagree_height` 10 -> 18
+    // and `disagree_deferred` 171 -> 172 move with it; `new_only` stays
+    // structurally 0, which is the assertion that would have been a finding
+    // rather than a re-pin.
+    //
+    // Previously re-pinned by #491's passing rework, in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v8 -> v9 re-freeze, for the reason
     // the paragraph below already gives.
     //
@@ -164,11 +213,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9208);
-    assert_eq!(total.agree_true, 2737);
-    assert_eq!(total.agree_false, 6290);
-    assert_eq!(total.disagree_deferred, 171);
-    assert_eq!(total.disagree_height, 10);
+    assert_eq!(total.candidates, 9746);
+    assert_eq!(total.agree_true, 3364);
+    assert_eq!(total.agree_false, 6089);
+    assert_eq!(total.disagree_deferred, 268);
+    assert_eq!(total.disagree_height, 25);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -217,7 +266,37 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // paragraph exists to explain, so deferred episodes remain the dominant
     // driver. The shift from 10/22/29 to 6/21/24 tracks the fall in
     // candidates and disturbs nothing about the conclusion.
-    assert_eq!(matches_with_disagree, 6);
-    assert_eq!(matches_with_deferred, 21);
-    assert_eq!(matches_with_either, 24);
+    // Re-pinned by #531 phase 2 alongside the counts above. The
+    // reconciliation still holds in the same direction: `disagree_height`
+    // alone touches 6/60 matches (10%), and folding in `disagree_deferred`
+    // reaches 25/60 (42%) -- still on the right side of the 17/60
+    // byte-divergent split this paragraph exists to explain, so deferred
+    // episodes remain the dominant driver. The shift from 6/21/24 to
+    // 6/23/25 tracks the rise in candidates and disturbs nothing about the
+    // conclusion.
+    //
+    // Re-pinned by #517's mechanical transcendental sweep alongside the
+    // counts above. Unlike every prior re-pin here, this change is not a
+    // gameplay AI change to compare against the old-code/new-code control
+    // arm from PR #501 -- it is nine call sites moving from native libm
+    // `cos`/`sin` to `gc_core::deterministic_math::cos_sin` or a precomputed
+    // constant, which is exactly the kind of RNG-stream-shifting,
+    // one-tick-earlier-or-later change this file's own module doc describes
+    // as `disagree_deferred`'s signature. `disagree_height` alone touches
+    // 11/60 matches (18%), and folding in `disagree_deferred` reaches 33/60
+    // (55%). Both counts rose along with `disagree_height`'s near-2.5x jump
+    // above; deferred episodes remain the larger of the two buckets, so the
+    // reconciliation this paragraph exists to explain is unchanged in kind,
+    // even though this re-pin has no historical byte-divergent split to
+    // compare its own fraction against.
+    //
+    // Re-pinned by #489 alongside the counts above: `disagree_height` alone
+    // touches 13/60 matches (22%), and folding in `disagree_deferred` reaches
+    // 37/60 (62%) -- deferred episodes remain the larger and now dominant
+    // bucket by an even wider margin, consistent with `disagree_deferred`
+    // more than doubling above while `disagree_height` fell. No historical
+    // byte-divergent split to compare against here either.
+    assert_eq!(matches_with_disagree, 13);
+    assert_eq!(matches_with_deferred, 31);
+    assert_eq!(matches_with_either, 37);
 }

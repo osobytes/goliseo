@@ -11,6 +11,11 @@ use gc_sim::slot_input::{self, MatchSlotSource, MatchSlotSourceKind};
 use gc_sim::tuning::Tuning;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+// The AI's pass/throw decisions charge over several ticks before releasing
+// instead of releasing the instant they decide (#531). See `tests/match.rs`'s
+// identically-named constant for the sizing rationale.
+const PASS_INTENT_BUDGET_TICKS: i64 = 180;
+
 fn frame_sources() -> [MatchSlotSource; 8] {
     [MatchSlotSource {
         kind: MatchSlotSourceKind::Frame,
@@ -523,9 +528,19 @@ fn fixed_match_input_slots_resolves_simultaneous_pass_and_tackle_releases_withou
     sim_match::step(&mut s, fixed_seconds(), StepInput::Frame(&f), None, &tune);
 
     assert_ne!(s.owner, Some(passer), "the passer's release is consumed");
-    assert!(
-        s.players[(defender - 1) as usize].tackle_timer > 0.0,
+    // #489: a standing poke now commits a CHARGE on this tick, rather than
+    // going straight to the old instant-resolve `tackle_timer` pose --
+    // `tackle_timer` now only mirrors the action slot's own executing-phase
+    // countdown (`r#match::advance_tackle_actions`), which is still zero on
+    // the commit tick itself.
+    assert_eq!(
+        s.players[(defender - 1) as usize].action.verb,
+        Some(gc_data::action_tuning::ActionVerb::Tackle),
         "the defender's release is also consumed"
+    );
+    assert_ne!(
+        s.players[(defender - 1) as usize].action.phase,
+        gc_sim::action_slot::ActionPhase::None,
     );
     let passer_id = s.players[(passer - 1) as usize].id.clone();
     let saw_pass = s.events.iter().any(|event| {
@@ -537,8 +552,19 @@ fn fixed_match_input_slots_resolves_simultaneous_pass_and_tackle_releases_withou
     );
 }
 
+// #489 CHANGED THIS TEST'S OWN CLAIM, DELIBERATELY: a standing poke no
+// longer resolves the instant it is released -- it charges, then executes,
+// then resolves (`gc_sim::action_slot`, `r#match::advance_tackle_actions`).
+// So "the in-range release wins the ball [this tick]" is no longer true by
+// construction: a same-tick tackle release only COMMITS a charge, and a
+// same-tick pass release still fires immediately (a pass is a plain edge
+// action, not a multi-tick charge, for an UNHELD release like this
+// fixture's). The two are no longer in a same-tick race at all -- the pass
+// simply goes first, because it has nothing to wait on. This is renamed and
+// rewritten to assert that, rather than kept passing by working around it.
 #[test]
-fn fixed_match_input_slots_resolves_a_direct_same_tick_tackle_before_the_carriers_pass_release() {
+fn fixed_match_input_slots_a_same_tick_tackle_release_only_commits_a_charge_the_pass_still_fires_immediately()
+ {
     let tune = Tuning::new();
     let mut s = new_match();
     let passer = s.owner.expect("kickoff assigns an owner");
@@ -566,15 +592,24 @@ fn fixed_match_input_slots_resolves_a_direct_same_tick_tackle_before_the_carrier
 
     let saw_tackle = s.events.iter().any(|e| e.kind == MatchEventKind::Tackle);
     let saw_pass = s.events.iter().any(|e| e.kind == MatchEventKind::Pass);
-    assert!(saw_tackle, "the in-range release wins the ball");
     assert!(
-        !saw_pass,
-        "canonical movement/tackle priority cancels the later pass"
+        !saw_tackle,
+        "a same-tick release only commits a charge -- it cannot resolve this same tick"
+    );
+    assert!(
+        saw_pass,
+        "the pass is an ordinary edge action and fires immediately, unaffected by the \
+         defender's charge starting the same tick"
+    );
+    assert_eq!(
+        s.players[(defender - 1) as usize].action.verb,
+        Some(gc_data::action_tuning::ActionVerb::Tackle),
+        "the defender's release still commits a charge"
     );
     assert_eq!(
         s.players[(passer - 1) as usize].pass_charge,
         0.0,
-        "the dispossessed carrier ends the tick clean"
+        "the passer ends the tick clean, having already released"
     );
 }
 
@@ -704,17 +739,32 @@ fn fixed_match_input_slots_keeps_online_input_off_the_keeper_while_deterministic
         s.controlled, selected,
         "keeper possession cannot change slot selection"
     );
-    assert_ne!(
-        s.owner,
-        Some(1),
-        "the keeper AI releases the ball on its own schedule"
-    );
+
+    // The AI keeper charges over several ticks before releasing (#531)
+    // instead of distributing the instant the hold clock expires, so "the
+    // keeper AI releases the ball on its own schedule" no longer holds
+    // within this single tick -- step further neutral frames until it does.
     let keeper_id = s.players[0].id.clone();
-    let distributed = s.events.iter().any(|event| {
-        (event.kind == MatchEventKind::Pass || event.kind == MatchEventKind::Shot)
-            && event.player.as_deref() == Some(keeper_id.as_str())
-    });
+    let mut distributed = false;
+    for tick in 1..=PASS_INTENT_BUDGET_TICKS {
+        let frame = frame(tick, &[]);
+        sim_match::step(
+            &mut s,
+            fixed_seconds(),
+            StepInput::Frame(&frame),
+            None,
+            &tune,
+        );
+        distributed = s.events.iter().any(|event| {
+            (event.kind == MatchEventKind::Pass || event.kind == MatchEventKind::Shot)
+                && event.player.as_deref() == Some(keeper_id.as_str())
+        });
+        if distributed {
+            break;
+        }
+    }
     assert!(distributed, "the keeper AI owns distribution in slot mode");
+    assert_ne!(s.owner, Some(1), "the keeper released the ball");
 }
 
 #[test]

@@ -21,6 +21,56 @@ to be reproduced by both languages even if Lua had never existed. The
 behavioral vectors are the opposite: their entire content is "what Lua did",
 and Lua is gone.
 
+**A third axis, found by #536: "not trajectory-coupled" does not mean
+"immune to a schema change."** The table above has one row for whether a
+vector's evidence is still alive, and the behavioral half of this file has
+one axis — trajectory-coupled vs. not — for whether a *gameplay* change can
+legitimately retire it (§2 below). Neither asks the question that matters for
+a *wire-schema* change: does this vector's captured bytes embed a version
+word, or hash something that does? `match_snapshot_case_a_lua_reference.txt`,
+`match_snapshot_case_b_lua_reference.txt`, `match_driver_lua_reference.txt`'s
+boundary-zero digest, and `input_tape_lua_reference.txt`'s
+`identity.snapshot_version` and `boundary_hash[0]` were all captured from
+**zero-tick** or **pre-step** scenarios — genuinely not trajectory-coupled,
+exactly as documented — and every one of them still went red the first time
+`match_snapshot::VERSION` moved, because the version integer is on the wire
+and the hash of anything containing it moves with it. Filing a vector as
+"behavioral" by filename (`*_lua_reference.txt`) said nothing about this;
+being trajectory-independent was mistaken for being schema-independent, and
+that gap stood undetected because `match_snapshot::VERSION` had not moved
+since Lua was deleted in `2c0d449` — until #531's phase 1 moved it for the
+first time and all four went red in the same PR.
+
+This is **not** a third bucket beside encoding/behavioral — a schema-coupled
+vector is still behavioral (Lua's implementation is still what it recorded,
+and the same retirement procedure in §2 still applies to it), and it is still
+capturable at zero ticks (so §2's trajectory-coupled/not split still applies
+independently). It is an orthogonal question worth asking explicitly before
+trusting "not trajectory-coupled" to mean "will survive a schema bump":
+
+> **Does this vector's captured bytes contain a version word, or hash
+> something that does?** If yes, it is schema-coupled — a change to
+> `match_snapshot::VERSION`, `combat_snapshot::VERSION`, `input_frame::VERSION`
+> or `input_tape::VERSION` will redden it even with zero simulation ticks
+> involved, and that is a legitimate, no-fault-of-the-code reason to retire
+> it under §2's procedure, not evidence the vector was miscategorized as
+> behavioral in the first place.
+
+The four vectors above were the ones known to be schema-coupled when #536
+retired them — see `gc-sim/tests/match_snapshot_differential.rs`,
+`gc-netcode/tests/match_driver.rs`, and `gc-sim/tests/input_tape_differential.rs`
+for the per-file account, and the retirement table in §2 below for the
+paperwork. A single #489 `match_snapshot::COMBAT_VERSION` bump then found
+three more, all in `gc-netcode`, none previously known to be schema-coupled:
+`coordinator_desync_lua_reference.txt`'s `transcript_id` line,
+`desync_package_identity_vector.txt`'s `manifest_id` field, and
+`protocol_lua_reference.txt`'s manifest-carrying values — see those rows in
+§2. That one bump reaching four separate frozen files this way is itself
+evidence worth flagging: every fixture that embeds a manifest, not only the
+ones already known to, is schema-coupled to this constant. A future
+`*_lua_reference.txt` fixture should ask the question
+above before its first schema bump, not after.
+
 ## Why any of this exists
 
 Passing a unit test proves a module satisfies the assertions someone wrote
@@ -151,12 +201,32 @@ red output, you are answering the wrong question in the wrong order.
 | `session_ai_driven_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `session_ai_driven_baseline.txt`, recorded by `record_session_ai_driven_baseline`; read by BOTH `session_ai_driven_differential.rs` and `ai_driven_evidence.rs`, as this table's earlier note warned |
 | `rollback_session_lua_reference.txt` | #520 (repository owner) | #516, as above | `3f8f4a3` (verified green) | `rollback_session_baseline.txt`, recorded by `record_rollback_session_baseline`; plus `rollback_session_resimulation_reaches_what_direct_simulation_reaches`, which needs no record |
 | `input_tape_lua_reference.txt` — **the stepped-boundary assertion only** | #520 (repository owner), extended after #523 | #516, as above | `4c6d1eb` (verified green) | none, and that is the point: the assertion is retired outright. Its four sibling format claims in the same file were *rewritten* by #523 to read the frozen wire instead of a stepped match, and they keep gating |
+| `match_snapshot_case_a_lua_reference.txt`, `match_snapshot_case_b_lua_reference.txt` — **schema-coupled, see the third-axis note near the top of this file** | #536 (repository owner) | `0c94cee`, phase 1 of #531: bumps `match_snapshot::VERSION` 11 → 12 and adds `pass_intent` to every serialized `MatchPlayer` | `2ce0ca0` (verified green) | `match_snapshot_case_a_baseline.txt`/`..._case_b_baseline.txt`, recorded by the `#[ignore]`d `record_match_snapshot_case_a_baseline`/`..._case_b_baseline` in the same test file |
+| `match_driver_lua_reference.txt` — **the boundary-zero digest assertion only, schema-coupled** | #536 (repository owner) | `0c94cee`, as above | `2ce0ca0` (verified green) | `BOUNDARY_ZERO_BASELINE_HASH` in `gc-netcode/tests/match_driver.rs` — a single value, re-recorded by reading the assertion's own failure output; no separate recorder test |
+| `input_tape_lua_reference.txt` — **`identity.snapshot_version` and `boundary_hash[0]` only, schema-coupled** | #536 (repository owner), found during phase 2 of #531 and added to that issue's scope after its original audit | `0c94cee`, as above | `2ce0ca0` (verified green) | `input_tape_baseline.txt` — two fields re-recorded, `boundary_hash[1..5]` carried over unchanged from the already-recorded `STEPPED_BASELINE` in the same file so the fixture stays internally consistent with one build |
+| `coordinator_desync_lua_reference.txt` — **the `transcript_id` line only, schema-coupled** | #489, found by the implementing PR rather than pre-decided — **flagged for explicit reviewer confirmation**, the same class of call #536 made but not yet made by the repository owner for this instance | the committed-actions PR for #489: bumps `match_snapshot::COMBAT_VERSION` 13 → 14 for the new `action` field on every serialized `MatchPlayer`, which `protocol::validate_manifest` embeds in every session manifest, moving every session's `transcript_id` | `b53a5c0` (verified green: this branch's own merge base) | `TRANSCRIPT_ID_BASELINE` in `gc-netcode/tests/coordinator.rs` — a single value, re-recorded by reading the assertion's own failure output; no separate recorder test. `coordinator_conformance.rs`'s Rust-embedded `Golden` (same file class, not a separate fixture — see its own module doc) moved the same four transcript ids for the same reason, in the same commit |
+| `desync_package_identity_vector.txt` — **the `manifest_id` field only, schema-coupled; `snapshot_version` also moved but is a raw version integer, the same sanctioned header exception `gc_data::omp1_determinism`'s `identity.snapshot_version` already documents, not a retirement** | #489, same flag as the row above | the same #489 `COMBAT_VERSION` bump: `protocol::manifest_id` hashes the whole canonical manifest, which carries `snapshot_version` | `b53a5c0` (verified green: this branch's own merge base) | `MANIFEST_ID_BASELINE` in `gc-netcode/tests/desync_package.rs` — a single value, re-recorded the same way. `snapshot_version` itself is asserted directly against the live `match_snapshot::COMBAT_VERSION` constant instead of a baked-in literal, so it never needs touching again |
+| `protocol_lua_reference.txt` — **`MIN_WIRE(_LEN/_HASH)`, `MAXIMAL_MANIFEST_ID`, `MAXIMAL_WIRE(_LEN/_HASH)`, `MANIFEST_ID` and `TRANSCRIPT_ID` only, schema-coupled** | #489, same flag as the two rows above | the same #489 `COMBAT_VERSION` bump, reached this time through `gc-netcode/tests/protocol.rs`'s own differential suite | `b53a5c0` (verified green: this branch's own merge base) | Seven `*_BASELINE_489` constants in `gc-netcode/tests/protocol.rs`, next to the section doc comment explaining the split. `HANDSHAKE_WIRE` and `VOCAB_ID` carry no manifest content and are unaffected, still read from the frozen fixture unmodified |
 
-That is the complete list. The last-green commit for the three original #520
-rows was verified by checking out `3f8f4a3` and running all four affected
-tests there; the fourth row's was verified the same way at `4c6d1eb`, running
-`input_tape_differential` (4 passed). Not assumed from the catalogue — that
-check is what makes a retirement auditable rather than merely documented.
+The last-green commit for the three original #520 rows was verified by
+checking out `3f8f4a3` and running all four affected tests there; the fourth
+row's was verified the same way at `4c6d1eb`, running `input_tape_differential`
+(4 passed); the #536 rows' was verified the same way at `2ce0ca0`, running
+`match_snapshot_differential` (2 passed), `match_driver`'s
+`match_driver_differential_matches_the_lua_reference` (1 passed), and
+`input_tape_differential` (4 passed). Not assumed from the catalogue or from
+the version-history diff alone — that check is what makes a retirement
+auditable rather than merely documented.
+
+**The #536 rows are partial retirements, same shape as the fourth #520 row
+below.** In each of the three files, only the field(s) actually derived from
+`match_snapshot::VERSION` or a hash containing it were retired; every other
+assertion in the same file — frame wires, identity fields other than
+`snapshot_version`, the delivery-protocol assertions in `match_driver`'s
+case, the structural/canonical-form checks on `boundary_hash[1..5]` — still
+reads the original frozen `*_lua_reference.txt` fixture and is unaffected.
+See the third-axis note near the top of this file and each file's own module
+doc for which field moved and why.
 
 **The fourth row is a partial retirement, and the only one so far.** #520
 classified the whole of `input_tape_differential` as class B — format claims,
@@ -240,12 +310,19 @@ file survives at all, therefore keeps gating through every rework in
 ### The remaining behavioral fixtures
 
 **Three more were retired by #520 and have been removed from this list;
-everything still listed passes.** None of what remains is retired, deprecated,
-or exempt. They are catalogued so the next gameplay rework knows which ones it
-might trip and what that would mean — not so it can pre-emptively retire them.
-`match_differential.rs` in particular survived the keeper change because it
-runs `human_controlled: Some(false)`, a different scenario: the divergence was
-scenario-specific, not universal.
+everything still listed passes.** They are catalogued so the next gameplay
+rework knows which ones it might trip and what that would mean — not so it
+can pre-emptively retire them. `match_differential.rs` in particular survived
+the keeper change because it runs `human_controlled: Some(false)`, a
+different scenario: the divergence was scenario-specific, not universal.
+
+Three rows in the "Format and protocol" table below carry a marker,
+**partially retired (#536)**: a single schema-coupled field or assertion in
+each was retired per the table in §2 above, while everything else the same
+row describes still reads the original frozen fixture unmodified and is
+still exactly as load-bearing as it reads here. See the third-axis note near
+the top of this file for why "not trajectory-coupled" did not save them from
+a `match_snapshot::VERSION` bump.
 
 **Gameplay trajectory — a deliberate sim change can legitimately trip these:**
 
@@ -265,9 +342,9 @@ needs the same change in the same PR:**
 | Fixture | Read by | Records |
 | --- | --- | --- |
 | `network_input_frame_lua_reference.txt` | `gc-sim/tests/differential.rs` | `input_frame`'s wire format and `network_conditions`' RNG use |
-| `match_snapshot_case_a_lua_reference.txt`, `..._case_b_...` | `gc-sim/tests/match_snapshot_differential.rs` | serialized snapshot state and its hash |
-| `input_tape_lua_reference.txt` | `gc-sim/tests/input_tape_differential.rs` | the tape's identity words, its five frame wires, and its tick-zero boundary hash. **This fixture is split across both classes** — its four post-step boundary hashes are trajectory, and are compared in that file's separately named `the_stepped_boundaries_still_hash_match_the_reference_lua_run`, which is class A. See "A fixture may be split" below |
-| `protocol_lua_reference.txt`, `fake_relay_lua_reference.txt`, `match_driver_lua_reference.txt`, `coordinator_desync_lua_reference.txt` | `gc-netcode/tests/{protocol,fake_relay,match_driver,coordinator}.rs` | the online protocol's encodings, relay ordering, driver stepping, and desync-package construction. `match_driver`'s consumer compares the delivery protocol — status, confirmation arithmetic, checkpoint cadence, boundary zero — not the correction counts or post-kickoff digests recorded beside them |
+| `match_snapshot_case_a_lua_reference.txt`, `..._case_b_...` — **partially retired (#536)** | `gc-sim/tests/match_snapshot_differential.rs` | serialized snapshot state and its hash. Both fields were schema-coupled to `match_snapshot::VERSION` and are now compared against a self-recorded baseline instead — see that file's module doc |
+| `input_tape_lua_reference.txt` — **partially retired (#536)** | `gc-sim/tests/input_tape_differential.rs` | the tape's identity words, its five frame wires, and its tick-zero boundary hash. **This fixture is split across both classes** — its four post-step boundary hashes are trajectory, and are compared in that file's separately named `the_stepped_boundaries_reproduce_their_recorded_baseline`, which is class A and was itself retired under #520. Of the class-B format claims, `identity.snapshot_version` and `boundary_hash[0]` were additionally schema-coupled and are now compared against a self-recorded baseline; the frame wires and the other identity fields are not and still read real Lua. See "A fixture may be split" below and that file's module doc |
+| `protocol_lua_reference.txt`, `fake_relay_lua_reference.txt`, `match_driver_lua_reference.txt`, `coordinator_desync_lua_reference.txt` — **`match_driver_lua_reference.txt`'s boundary-zero digest partially retired (#536)** | `gc-netcode/tests/{protocol,fake_relay,match_driver,coordinator}.rs` | the online protocol's encodings, relay ordering, driver stepping, and desync-package construction. `match_driver`'s consumer compares the delivery protocol — status, confirmation arithmetic, checkpoint cadence, boundary zero — not the correction counts or post-kickoff digests recorded beside them. The boundary-zero digest was schema-coupled to `match_snapshot::VERSION` and is now compared against a self-recorded constant instead of the fixture's digest column; every other comparison in that row is unaffected |
 | `frame_buffer_lua_reference.txt` (Rust) and `frame_buffer_lua_reference.ts` (TypeScript) | `gc-render/tests/frame_buffer_differential.rs`, `ts/packages/render/src/frame_buffer.spec.ts` | the `RenderFrame` payload's field order, widths and version word — read by two languages, so this is the closest of the behavioral vectors to an encoding vector in kind. Both consumers now read the frozen rows rather than re-simulating them |
 
 ### A format vector's consumer must not step the simulation

@@ -226,7 +226,12 @@ fn preventable_goal_initial() -> match_snapshot::MatchSnapshot {
         carrier.vel = Vec2::new(0.0, 0.0);
         carrier.run_vel = Vec2::new(0.0, 0.0);
         carrier.facing = Vec2::new(1.0, 0.0);
-        carrier.windup_timer = fixed_clock::TICK_SECONDS;
+        // #489: see the identical note in tests/rollback_session.rs's
+        // `preventable_goal_fixture` -- a standing-poke tackle now takes
+        // ~15 ticks to charge and execute instead of resolving instantly,
+        // so the old 1-tick wind-up gave the defender no way to ever beat
+        // the shot. Widened to the same 20 ticks.
+        carrier.windup_timer = 20.0 * fixed_clock::TICK_SECONDS;
         carrier.windup_shot = Some(match_snapshot::WindupShot {
             dir: Vec2::new(1.0, 0.0),
             speed: 900.0,
@@ -505,7 +510,17 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // same commit as `gc-data/src/omp1_determinism.json`. Like the two
     // literals in `gc_data::omp1_determinism`'s own test, #504's documented
     // re-record command does not mention this one either.
-    assert_eq!(rollback_lab::tape_digest(&tape), "e75eb77ac4779bf8");
+    //
+    // Re-recorded again for #517's mechanical transcendental sweep, in the
+    // same commit as `gc-data/src/omp1_determinism.json`'s `boundary_hashes`
+    // re-record -- `fixture_tape` folds those boundary hashes into the
+    // `InputTape` this digest covers, so it moves whenever they do, even
+    // though nothing about the frozen `frame_wires`/`identity` half changed.
+    //
+    // Re-recorded again for #489, same reason: `identity.snapshot_version`
+    // (12 -> 13, `MatchPlayer::action`) and the derived `boundary_hashes`
+    // both moved in `gc-data/src/omp1_determinism.json`.
+    assert_eq!(rollback_lab::tape_digest(&tape), "7f9fea1e03562a5e");
 }
 
 #[test]
@@ -607,11 +622,27 @@ fn recovers_independent_loss_from_packet_history_and_the_final_row_drain() {
 #[test]
 fn reactivates_a_predicted_early_finish_and_later_reaches_reference_full_time() {
     let tape = early_finish_tape();
+    // #489: `base_delay_ticks` has to sit in a narrow window now that the
+    // preventing tackle is charge-and-execute rather than instant (see the
+    // note on `preventable_goal_initial`'s widened `windup_timer`). Two
+    // bounds, both measured directly against this fixture rather than
+    // assumed:
+    //   - it must be long enough that the LOCAL guess (no dash at all for
+    //     the missing remote slot 5) actually reaches its own false
+    //     "finished" conclusion before the real, dash-including row
+    //     corrects it -- at 25 ticks the correction still lands before the
+    //     local guess gets there and `predicted_early_finish` never fires.
+    //   - it must stay under `rollback_input_history::ROLLBACK_WINDOW_TICKS`
+    //     (30) or the delayed input is outside the rollback window entirely
+    //     and the session gives up as `LateInputUnrecoverable`, which fails
+    //     on `result.success` rather than on the prediction metrics -- 40
+    //     ticks demonstrated that failure mode directly.
+    // 26 through 30 all land in the working window; 28 is the middle of it.
     let result = rollback_lab::run(
         tape,
         RollbackLabOptions {
             profile_name: Some("early-finish-spec".to_string()),
-            profile: Some(profile(6, 0, 0, 0.0, 0.0)),
+            profile: Some(profile(28, 0, 0, 0.0, 0.0)),
             network_seed: Some(6),
             sources: Some(one_remote(5)),
             ..Default::default()
@@ -909,7 +940,12 @@ fn uses_one_logical_result_for_incremental_and_synchronous_execution() {
     assert_eq!(accounting.event_bytes, 0);
     assert_eq!(incremental.metrics.peaks.input_bytes, 11867);
     assert!(incremental.metrics.peaks.output_bytes > 0);
-    assert_eq!(incremental.metrics.peaks.event_bytes, 833);
+    // #489: standing-poke tackles now miss far more often than the old
+    // instant-resolve check ever let them (see tests/knob_contract.rs's
+    // measured whiff_rate), and each whiff is a new `TackleMiss` event this
+    // scenario did not emit before -- the retained event window's peak
+    // byte usage grew with the event count, 833 -> 2929.
+    assert_eq!(incremental.metrics.peaks.event_bytes, 2929);
     assert!(incremental.history_accounting.total_bytes > 0);
     assert!(incremental.metrics.peaks.history_bytes >= incremental.history_accounting.total_bytes);
 }
