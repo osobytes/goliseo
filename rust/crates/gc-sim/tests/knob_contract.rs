@@ -806,6 +806,136 @@ fn raising_tackle_commit_raises_whiff_rate() {
     );
 }
 
+// ---------------------------------------------------------------------
+// #531 phase 4 — the post-seam PASS_* census, re-run against the same
+// methodology and the same metric the original #491 census used.
+// ---------------------------------------------------------------------
+
+/// Reproduces #491's original census exactly (48 seeds, 30-second matches,
+/// each of the 11 `cat: "Passing"` knobs displaced across its full declared
+/// range in both directions) against `pass_completion`, so this table is
+/// directly comparable to the one recorded in the census comment above.
+///
+/// Not an assertion, deliberately: #531's own adjudication (issue comment
+/// thread) says only 3 of the 11 knobs — `PASS_ANGULAR_WEIGHT`,
+/// `PASS_ELIGIBLE_MIN`, `PASS_ELIGIBLE_MAX`, the soft-cone selection knobs
+/// consumed solely by `passing::select_receiver` — had their REACHABILITY
+/// changed by the AI-input seam (#535): the human/bot-driven slot this
+/// harness always plays already exercised the cone before the seam landed,
+/// so what changes for these 3 is dilution (far more of a match's passes
+/// now flow through the cone), not a new code path becoming live. The other
+/// 8 already executed on AI paths through the shared `release_pass` before
+/// the seam, so a continued DECORATION verdict for them needs a
+/// dilution/measurement explanation, not a reachability one — re-censusing
+/// them expecting the seam alone to have rescued them was already known to
+/// be a wasted expectation before this ran. `knob_moves_metric` (not
+/// `assert_moves`) is used throughout so a DECORATION verdict is a printed
+/// finding, not a panic.
+///
+/// `cargo test -p gc-sim --test knob_contract -- --ignored --nocapture \
+///  the_post_531_pass_census_reports_against_completion`
+#[test]
+#[ignore = "phase-4 census pilot: minutes, run by hand"]
+fn the_post_531_pass_census_reports_against_completion() {
+    let seeds = seeds(48);
+    let knobs = [
+        "PASS_ANGULAR_WEIGHT",
+        "PASS_ELIGIBLE_MIN",
+        "PASS_ELIGIBLE_MAX",
+        "PASS_ARRIVE_PACE",
+        "PASS_SPEED_MIN",
+        "PASS_SPEED_MAX",
+        "PASS_LEAD_TOLERANCE",
+        "PASS_LEAD_MIN_SPEED",
+        "PASS_LEAD_TIME_MIN",
+        "PASS_LEAD_TIME_MAX",
+        "PASS_LEAD_STEPS",
+    ];
+    println!(
+        "{:<22} {:<5} {:>10} {:>10} {:>10} {:>10}  verdict",
+        "knob", "dir", "delta", "delta_se", "noise_se", "threshold"
+    );
+    for knob in knobs {
+        for direction in [Perturb::Up, Perturb::Down] {
+            let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
+                knob,
+                metric: "pass_completion",
+                seeds: &seeds,
+                duration: DURATION,
+                perturbation: Some(1.0),
+                expect: ExpectedShift::Unstated,
+                direction: Some(direction),
+            });
+            println!(
+                "{:<22} {:<5} {:>10.4} {:>10.4} {:>10.4} {:>10.4}  {}",
+                knob,
+                if direction == Perturb::Up {
+                    "up"
+                } else {
+                    "down"
+                },
+                outcome.delta,
+                outcome.delta_se,
+                outcome.noise.standard_error,
+                outcome.threshold,
+                if outcome.moved { "WIRED" } else { "DECORATION" }
+            );
+        }
+    }
+}
+
+// The census above found two of the eleven promoted from DECORATION to
+// WIRED against `pass_completion` itself — not the metrics #491 registered
+// FOR them, but the outcome metric the original census measured them
+// against and that #531's issue body re-opens the question about. Both are
+// confirmed at double the census's seed count (n=96) before being shipped
+// as real contracts, on #537's own lesson: a knob sitting close to its
+// threshold at a modest seed count can read either way depending on luck,
+// and the fix is more seeds, not a lower bar.
+//
+// | knob (direction)         | n=48 delta | n=48 threshold | n=96 delta | n=96 threshold |
+// | ------------------------ | ---------- | -------------- | ---------- | -------------- |
+// | `PASS_ELIGIBLE_MAX` down | -0.0609    | 0.0395         | -0.0459    | 0.0278         |
+// | `PASS_SPEED_MIN` down    | +0.0819    | 0.0621         | +0.0668    | 0.0431         |
+
+/// Newly WIRED against `pass_completion`, not merely against `pass_aim_error`
+/// — the reachability story fits this one precisely. `PASS_ELIGIBLE_MAX` is
+/// one of the three knobs #531's adjudication says had their REACHABILITY
+/// changed by the seam (consumed solely by `passing::select_receiver`,
+/// reached only through the soft cone). Before the seam, the cone ran for
+/// one player in ten in this bot-driven harness (the human/bot-proxy slot);
+/// now it runs for every producer, so a tighter ceiling on how far a
+/// candidate may sit denies more of a match's actual releases, not just the
+/// proxy's own.
+///
+/// In the old census (comment block above) this was already the CLOSEST
+/// pairing measured — delta -0.0286 against a 0.0289 threshold, a hair's
+/// width from WIRED even before the seam. What moved is magnitude, not
+/// direction: -0.0286 → -0.0609 at n=48, roughly 2.1x stronger, which is
+/// the shape a dilution-driven promotion should have (the underlying effect
+/// was always there; less of the batch was immune to it).
+#[test]
+fn a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_ELIGIBLE_MAX",
+        metric: "pass_completion",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        // A lower ceiling excludes more candidates, so fewer releases find
+        // an eligible receiver at all: completion must fall.
+        expect: ExpectedShift::Decreases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the receiver ceiling is decoration against completion: {}",
+        outcome.report
+    );
+}
+
 /// `whiff_rate` registers with real seed-to-seed spread on every AI-vs-AI
 /// match, the same property `the_passing_metrics_arm_on_every_match` checks
 /// for #491's two metrics -- a metric that is sometimes absent, or that
@@ -893,4 +1023,49 @@ fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established(
         .find(|d| d.id == "ACTION_RECOVERY_CONTROL")
         .expect("registered");
     assert!((0.0..1.0).contains(&control.default));
+}
+
+/// Newly WIRED against `pass_completion` too, but NOT one of the three
+/// selection knobs — `PASS_SPEED_MIN` is consumed by `passing::speed_for`
+/// inside the shared `release_pass`, so it already executed on AI-driven
+/// releases before the seam landed (#531's adjudication is explicit that
+/// this is one of the eight, not the three). Its promotion is therefore a
+/// DILUTION story, not a reachability one: it is the same lever it always
+/// was, measured against a batch where far more of the match's releases now
+/// run through the seam's consistent charge-and-release timing instead of
+/// an instantaneous AI-only shortcut sitting alongside them as noise.
+///
+/// Not in the old census's "three closest" table at all — this pairing was
+/// not close enough to print there. Measuring it again rather than assuming
+/// the eight are settled is what surfaced it.
+///
+/// `passing::speed_for` is `(PASS_ARRIVE_PACE + FRICTION * distance).clamp(
+/// PASS_SPEED_MIN, PASS_SPEED_MAX)`. At the shipped `PASS_ARRIVE_PACE`
+/// (120 px/s), the raw curve sits below `PASS_SPEED_MIN` (420 px/s) for
+/// every pass shorter than the distance where friction alone closes a
+/// 300 px/s gap — most passes in a bot-driven match — so most releases
+/// travel at the FLOOR, not the curve. Lowering it therefore slows most of
+/// the match's passes, not just the short ones the floor's own doc comment
+/// names.
+#[test]
+fn a_lower_pass_speed_floor_raises_completion_once_dilution_drops() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_SPEED_MIN",
+        metric: "pass_completion",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        // A lower floor lets most of the match's passes travel slower,
+        // giving the receiver more time to reach and control the ball
+        // before it runs past them: completion rises.
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Down),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the pass speed floor is decoration against completion: {}",
+        outcome.report
+    );
 }

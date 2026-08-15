@@ -1346,6 +1346,15 @@ fn release_pass(
     land_pos: Option<Vec2>,
     tune: &Tuning,
 ) {
+    // Every producer's every release passes through here exactly once, so
+    // this is the denominator #531 phase 4 needed and #535 deferred as not
+    // cheap within that PR's budget: `ground_releases` (below) divided by
+    // this is the fraction of releases that reach the lead-solve gate
+    // (`land_pos.is_none() && blocker_f.is_none() && !target_is_keeper`),
+    // not just the fraction that end up resolving as a ground pass (a
+    // solved lead can still be discarded into a lob by the dink check
+    // further down, which is why the two are related but not identical).
+    pass_shadow_record(|tally| tally.total_releases += 1);
     let owner_pos = s.players[(owner_idx - 1) as usize].pos;
     let owner_id = s.players[(owner_idx - 1) as usize].id.clone();
     let target_pos = s.players[(target_idx - 1) as usize].pos;
@@ -5153,6 +5162,11 @@ pub struct PassShadowTally {
     /// as absent would make the mean say "how long are the leads we chose to
     /// play" instead of "how far into the run do passes go".
     pub lead_time_sum: f64,
+    /// Every `release_pass` call, from any of the four call sites and any
+    /// producer — the denominator for asking what fraction of releases are
+    /// ground releases (see `ground_releases`'s doc comment for the caveat
+    /// that a solved lead can still be discarded into a lob afterward).
+    pub total_releases: i64,
 }
 
 thread_local! {
