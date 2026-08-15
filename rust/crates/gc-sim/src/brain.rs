@@ -8,6 +8,7 @@
 //! they keep their authored 1-based value rather than being remapped to a
 //! 0-based array offset.
 
+use gc_core::deterministic_math;
 use gc_core::rng;
 use indexmap::IndexMap;
 use std::cmp::Ordering;
@@ -700,7 +701,7 @@ pub fn select_scored_option(
         let weight = if effective_temperature == f64::INFINITY {
             1.0
         } else {
-            ((option.score - maximum) / effective_temperature).exp()
+            deterministic_math::exp((option.score - maximum) / effective_temperature)
         };
         weights.push(weight);
         total += weight;
