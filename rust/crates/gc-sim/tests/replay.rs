@@ -40,11 +40,24 @@ use gc_sim::tuning::Tuning;
 // wrong". What this file actually proves -- that `replay` reports the first
 // diverging boundary, rejects tampering, and refuses mismatched identities --
 // is asserted against these hashes rather than by them.
+//
+// #531 phase 2 EXCEPTION: unlike #488, this bumped `match_snapshot::VERSION`
+// (11 -> 12, the new `pass_intent` field on every `MatchPlayer`), which
+// changes the canonical byte encoding of every captured snapshot including
+// boundary 0's zero-tick kickoff state -- so this one time all four values
+// below moved together, for the schema reason and no other.
+//
+// #489 EXCEPTION, same shape: `match_snapshot::VERSION` 12 -> 13 (the new
+// `action` field, see `gc_sim::action_slot`) moved boundary 0 again for the
+// schema reason alone, and the standing-poke tackle's charge/execute/
+// recover state machine can plausibly move boundaries 1..3 for real
+// (`r#match::advance_tackle_actions`) if this short fixture's three
+// stepped ticks touch a tackle -- re-derived from this build either way.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "07857e40c78bdd99",
-    "d5a84b58ddccd7be",
-    "f110ef4a498c3a06",
-    "559d9c6518dd6695",
+    "0492d110f37e0e24",
+    "489b60a4bf410be9",
+    "84e842ded5fb94e5",
+    "e2745802185af012",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

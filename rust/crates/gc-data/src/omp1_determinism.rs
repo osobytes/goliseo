@@ -436,8 +436,8 @@ mod tests {
         // documented two-step re-record command does not mention this file;
         // a re-record that stops at the JSON leaves `gc-data`'s own unit test
         // red, which is how this line came to be updated here.
-        assert_eq!(f.expected_final_hash, "02c6c7c042c18438");
-        assert_eq!(f.expected_sequence_digest, "11e762dc5c4e5a82");
+        assert_eq!(f.expected_final_hash, "4d002b60a635a76c");
+        assert_eq!(f.expected_sequence_digest, "45929ad5af7bf12a");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -453,13 +453,19 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "435f262f7968d95a");
-        // Boundary 0 above is the CAPTURED initial state and is frozen; this
-        // last boundary is derived and moves with the simulation. Same
-        // re-record, same commit -- see the note beside `expected_final_hash`.
+        assert_eq!(boundary_hash_lines()[0], "77c3c39fd45ba9f7");
+        // Boundary 0 above is the initial state hashed by the CURRENT
+        // canonical snapshot encoding -- part of the re-recordable derived
+        // half, not the frozen recorded input, so it moves whenever
+        // `match_snapshot::VERSION` or the simulation does (#531: bumped
+        // 11 -> 12 by the new `pass_intent` field on every `MatchPlayer`,
+        // including this zero-tick kickoff snapshot; #489: bumped 12 -> 13
+        // by the new `action` field on every `MatchPlayer`, same reasoning).
+        // This last boundary is likewise derived. Same re-record, same
+        // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "02c6c7c042c18438"
+            "4d002b60a635a76c"
         );
     }
 

@@ -35,7 +35,10 @@ use gc_sim::input_frame::{self, InputSampleOptions};
 /// doc comment for why this is a literal rather than a call into
 /// `protocol_fixture` (out of scope; see this file's module doc comment).
 const SESSION_ID: &str = "session_alpha";
-const MANIFEST_ID: &str = "eb59f113614c35b2";
+// #489: moved with `input_protocol_fixture::MANIFEST_ID` -- see that
+// constant's doc comment for why this tracks `match_snapshot::COMBAT_VERSION`
+// despite `input_protocol` not depending on `protocol`.
+const MANIFEST_ID: &str = "572bbff19cdfc603";
 
 const HELD_BITS: [i64; 8] = [
     input_frame::HELD_SHOOT,
@@ -690,7 +693,17 @@ fn polling_order_request<'a>(
 
 #[test]
 fn classifies_packet_and_authority_duplicates_without_first_arrival_wins() {
-    let original = fixture::guest();
+    let mut original = fixture::guest();
+    // #489: `fixture::guest()` carries `input_protocol_fixture::MANIFEST_ID`,
+    // frozen alongside `input_protocol_conformance::GOLDEN`'s wire bytes (see
+    // that constant's doc comment) rather than tracking
+    // `match_snapshot::COMBAT_VERSION`. This test's second half runs the
+    // packet through a real `canonical_host_batch`, which DOES require the
+    // live manifest id (`host_fixture`'s manifest), so it is overwritten
+    // here to this file's own, COMBAT_VERSION-tracking `MANIFEST_ID` --
+    // `classify_duplicate` below never reads or validates it, only
+    // `canonical_host_batch` does.
+    original.manifest_id = MANIFEST_ID.to_string();
     let duplicate = input_protocol::copy(&original).unwrap();
     assert_eq!(
         input_protocol::classify_duplicate(&original, &duplicate).unwrap(),

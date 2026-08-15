@@ -26,6 +26,8 @@ import type {
   CoordinatorConstructor,
   ControlMessageHeader,
   AiDrivenEvidence,
+  CorpusRunResult,
+  CorpusScenarioInfo,
   DeterminismEvidence,
   FixedClockConstructor,
   GcWasmModule,
@@ -49,6 +51,8 @@ export type {
   CoordinatorConstructor,
   ControlMessageHeader,
   AiDrivenEvidence,
+  CorpusRunResult,
+  CorpusScenarioInfo,
   DeterminismEvidence,
   FixedClock,
   FixedClockConstructor,
@@ -153,6 +157,18 @@ export interface SimHost
   /** `runAiDrivenEvidence`, stopped after `ticks` ticks — for bisecting a
    * sequence-digest divergence to the tick it starts on. */
   runAiDrivenEvidenceTo(ticks: number): AiDrivenEvidence;
+  /** #517's seeded native-vs-wasm differential corpus: the scenario list
+   * (`gc_sim::wasm_native_corpus::CORPUS`) and one runner. See
+   * `scripts/check_wasm_native_corpus.mjs`, the primary consumer, and
+   * {@link CorpusRunResult}. */
+  corpusScenarios(): CorpusScenarioInfo[];
+  runCorpusScenario(
+    id: string,
+    matchSeed: number,
+    botSeed: number,
+    ticks: number,
+    combatEnabled: boolean,
+  ): CorpusRunResult;
   /** This module's linear memory, for reading the `Float64Array` views
    * `buildRenderFrame` hands back. */
   readonly memory: WebAssembly.Memory;
@@ -248,6 +264,8 @@ export function loadSimHost(): SimHost {
     runDeterminismEvidence: native.runDeterminismEvidence,
     runAiDrivenEvidence: native.runAiDrivenEvidence,
     runAiDrivenEvidenceTo: native.runAiDrivenEvidenceTo,
+    corpusScenarios: native.corpusScenarios,
+    runCorpusScenario: native.runCorpusScenario,
     // `input_frame_bridge.rs` — plain free functions, bound to nothing, so
     // referencing them directly off `native` is exactly as correct as
     // wrapping them in a closure (same as `tuningPresets`/

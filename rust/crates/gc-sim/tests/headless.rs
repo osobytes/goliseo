@@ -451,3 +451,107 @@ fn headless_run_batch_forwards_fixture_and_bot_options_to_every_match() {
     assert_eq!(batch.matches.len(), 1);
     assert_same_metrics(&batch.matches[0], &expected);
 }
+
+// ---------------------------------------------------------------------
+// #531 phase 3 — the post-seam balance reference.
+// ---------------------------------------------------------------------
+
+/// The harness invocation phase 3 of #531 measures from: the bot-driven
+/// default harness (`HeadlessBot::Home`, one human-proxy slot, the rest
+/// AI-driven both sides), 48 full-length (120 s) matches on seeds
+/// `20001..20049` — the same base-20001 seed convention
+/// `gc-sim/tests/knob_contract.rs`'s `seeds()` helper uses, and the same
+/// seed COUNT #491/#527's original 0.6200/0.6189 completion measurements
+/// used, so this is the closest reproducible match to that comparison this
+/// repository has.
+///
+/// This is the library call the deleted pre-port `love . --sim 48` mapped
+/// to (`docs/design/fun_metrics.md`'s "Today there is no CLI" section) —
+/// see that document's "Baseline signature" sections for how the printed
+/// table is read and published. Not itself an assertion: this measures
+/// balance, and #531's own remediation plan is explicit that "the numbers
+/// get worse" is not itself something to make this test fail over.
+///
+/// `cargo test -p gc-sim --test headless -- --ignored --nocapture \
+///  post_531_balance_reference_reports_the_bot_driven_default_harness`
+#[test]
+#[ignore = "balance reference pilot: minutes, run by hand"]
+fn post_531_balance_reference_reports_the_bot_driven_default_harness() {
+    let seeds: Vec<f64> = (0..48).map(|i| 20_001.0 + i as f64).collect();
+    let batch = headless::run_batch(&BatchOpts {
+        seeds: Some(&seeds),
+        ..Default::default()
+    });
+    println!("{}", headless::report(&batch));
+
+    // Standard error on the two headline metrics #531 asks phase 3 to
+    // settle, computed the same way every other contract in this
+    // repository computes one (`knob_contract::noise_floor`), so the
+    // in-band question is answered with a number, not a mean alone.
+    for id in ["pass_completion", "turnovers_per_min", "fun"] {
+        if id == "fun" {
+            // "fun" folds every registered metric and is not itself
+            // registered in `metric_registry`, so `noise_floor` (which
+            // requires a registered id) cannot measure it — read straight
+            // off the batch aggregate `headless::report` already printed
+            // above instead.
+            let st = batch.agg.get("fun").expect("fun aggregates");
+            let se = st.sd / (st.n as f64).sqrt();
+            println!(
+                "fun                    n={:>3} mean={:>8.4} sd={:>8.4} se={:>8.4}",
+                st.n, st.mean, st.sd, se
+            );
+            continue;
+        }
+        let floor = gc_sim::knob_contract::noise_floor(id, &seeds, None);
+        println!(
+            "{id:<22} n={:>3} mean={:>8.4} sd={:>8.4} se={:>8.4}",
+            floor.n, floor.mean, floor.sd, floor.standard_error
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// #531 phase 4 — what fraction of releases reach the lead-solve gate.
+// ---------------------------------------------------------------------
+
+/// `pass_lead::solve` only runs when `land_pos.is_none() && blocker_f.is_none()
+/// && !target_is_keeper` (`match.rs::release_pass`). #535's PR body flagged
+/// measuring what fraction of releases clear that gate as "not cheap within
+/// this PR's time budget" and left it for phase 4. `PassShadowTally::
+/// ground_releases` already counts releases that resolve on the ground path
+/// (the ones the solver's result, if any, actually gets applied to); the
+/// newly added `total_releases` (this PR) counts every producer's every
+/// `release_pass` call, so the ratio is the fraction of releases that are
+/// ground releases — an upper bound on "cleared the gate", since a solved
+/// lead can still be discarded into a lob by the dink check that runs after
+/// the gate is evaluated (see `total_releases`'s doc comment on
+/// `PassShadowTally`).
+///
+/// Uses `run_match_debug` directly (not `run_batch`) because the tally is
+/// per-match diagnostic state `run_batch`/`run_match` do not surface --
+/// see `headless.rs`'s module doc, "Test seams" section.
+///
+/// `cargo test -p gc-sim --test headless -- --ignored --nocapture \
+///  post_531_ground_release_fraction_reports_the_lead_solve_gate`
+#[test]
+#[ignore = "gate-fraction pilot: minutes, run by hand"]
+fn post_531_ground_release_fraction_reports_the_lead_solve_gate() {
+    let seeds: Vec<f64> = (0..48).map(|i| 20_001.0 + i as f64).collect();
+    let mut total_releases: i64 = 0;
+    let mut ground_releases: i64 = 0;
+    for &seed in &seeds {
+        let (_, _, debug) = headless::run_match_debug(&HeadlessOpts {
+            seed,
+            ..Default::default()
+        });
+        total_releases += debug.pass_shadow.total_releases;
+        ground_releases += debug.pass_shadow.ground_releases;
+    }
+    let fraction = ground_releases as f64 / total_releases as f64;
+    println!(
+        "ground_releases={ground_releases} total_releases={total_releases} \
+         fraction={fraction:.4} (n={} seeds, bot-driven default harness, full length)",
+        seeds.len()
+    );
+}

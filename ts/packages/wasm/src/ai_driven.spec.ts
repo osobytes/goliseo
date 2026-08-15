@@ -35,8 +35,8 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "64b8ad7d35ab1c39";
-const NATIVE_SEQUENCE_DIGEST = "6c6d9581eac53f8c";
+const NATIVE_FINAL_HASH = "4c76e26c95cea2e8";
+const NATIVE_SEQUENCE_DIGEST = "c375257acf952cdf";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -128,6 +128,49 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // What these two now gate is still worth having, and is stronger than an
   // `it.fails`: any future divergence between the two targets on this
   // scenario turns them red instead of quietly satisfying an expected-fail.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #531 PHASE 2 RE-MEASUREMENT, 2026-08-14. Re-recorded because phase 2
+  // moved the gameplay AI's pass/throw decisions onto the same `MatchInput`
+  // charge-and-release seam a human uses (#531), which shifts every RNG draw
+  // downstream of the first AI pass and therefore this scenario's whole
+  // trajectory from that tick on -- see `gc-sim/tests/ai_driven_evidence.rs`.
+  // Expected this run to plausibly re-expose #405's tick-96 divergence, since
+  // #517 says WHICH transcendental calls happen moves with the trajectory.
+  // MEASURED ON THIS BUILD: wasm and native still agree exactly -- final
+  // d146d1cc4f359ca7, sequence abe72518de86a606, both targets, both native
+  // `cargo test -p gc-sim --test ai_driven_evidence` and a direct
+  // `runAiDrivenEvidence()` call against the freshly built wasm module. So
+  // these stay plain `it`, not reverted to `it.fails`; #405 remains open and
+  // latent, not fixed, for the same reason the note above gives.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #517 MECHANICAL SITE CONVERSION RE-MEASUREMENT, 2026-08-14. Re-recorded
+  // because this PR converts the nine MECHANICALLY-REPLACEABLE sites (the
+  // dribble-touch and AI-outfield-error `cos`/`sin` in `match.rs`, the
+  // aerial-contact `cos`/`sin` in `aerial.rs`, the aim-noise `cos`/`sin` in
+  // `bot.rs`, and the support-triangle/combat-arc constants) to
+  // `gc_core::deterministic_math::cos_sin` or a precomputed value, which is
+  // exactly the class of change #405's note above warns moves this
+  // scenario's whole trajectory. MEASURED ON THIS BUILD: wasm and native
+  // still agree exactly -- final eca1c4cbe8cbaf40, sequence
+  // 74bcbe5d31dd15c0, both targets, both native `cargo test -p gc-sim --test
+  // ai_driven_evidence` and this spec against the freshly built wasm module.
+  // These stay plain `it`. This is also the direct, best-available evidence
+  // that converting these nine sites did not merely move where #517's own
+  // corpus differential (`scripts/check_wasm_native_corpus.mjs`) looks: this
+  // scenario is the one #405 originally caught wasm/native disagreeing on,
+  // and it still agrees after the conversion.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #489 COMMITTED-ACTIONS RE-MEASUREMENT, 2026-08-15. Re-recorded because
+  // #489 adds `MatchPlayer::action` (match_snapshot::VERSION 12 -> 13, see
+  // `gc_sim::action_slot`) and replaces the standing-poke tackle's
+  // instant-resolve `attempt_steals` branch with a real charge/execute/
+  // recover state machine (`r#match::advance_tackle_actions`) -- exactly
+  // the class of change #405's note above warns reshapes this scenario's
+  // whole trajectory from the first tackle attempt on. See
+  // `gc-sim/tests/ai_driven_evidence.rs` for the native-side re-record.
   // ---------------------------------------------------------------------
   it("ends the match in exactly the state the native build ends it in", () => {
     expect(runAiDrivenEvidence().final_hash).toBe(NATIVE_FINAL_HASH);

@@ -1943,9 +1943,17 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
     // of bytes. #488 (locomotion) moved eight bytes' worth without touching a
     // field: 21343 -> 21351, 20825 -> 20833. What the test actually proves --
     // that the arithmetic below accounts for every byte, and that decision
-    // children are positional -- is unchanged.
+    // children are positional -- is unchanged. #531 phase 2 added a real
+    // field (`pass_intent` on every `MatchPlayer`, match_snapshot::VERSION
+    // 11 -> 12): a fixed 35 bytes per player, 10 players, +350:
+    // 21351 -> 21701, 20833 -> 21183. #489 added another
+    // (`MatchPlayer::action`, VERSION 12 -> 13): a fixed 36 bytes per idle
+    // player (name(10) + "a;"(2) + verb nil(2) + phase "none"(8) +
+    // charge_elapsed/remaining/power each "nz;"(3x3) + target nil(2) +
+    // release_threshold "nz;"(3) = 36), 10 players, +360: 21701 -> 22061,
+    // 21183 -> 21543.
     let encoded = match_snapshot::encode(&match_snapshot::capture(&state, None));
-    let expected = 21351 - 10 * legacy_key_bytes
+    let expected = 22061 - 10 * legacy_key_bytes
         + 10 * "z;".len()
         + "k9:formation;".len()
         + "s5:2-1-1;".len()
@@ -1953,7 +1961,7 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
         + 10 * "k19:keeper_get_up_timer;nz;".len()
         + transition_bytes;
     assert_eq!(encoded.len(), expected);
-    assert_eq!(encoded.len(), 20833);
+    assert_eq!(encoded.len(), 21543);
 
     let decision_marker = "k17:outfield_decision;d;";
     let next_field_marker = "k9:is_keeper;";
@@ -2099,16 +2107,26 @@ fn canonical_match_snapshots_prices_four_hypothetical_runs_on_the_valid_high_ove
     let soccer_window = (soccer_bytes + combined_delta) * boundaries;
     let combat_window = (combat_bytes + combined_delta) * boundaries;
 
+    // #531 phase 2: `pass_intent` on every `MatchPlayer` (match_snapshot::VERSION
+    // 11 -> 12) adds a fixed 35 bytes per player (10 players: +350), moving
+    // `soccer_bytes`/`combat_bytes` and everything derived from them below.
+    // `four_run_delta`/`press_delta` measure `outfield_decision`/`outfield_press`
+    // fields only, neither of which touched `pass_intent`, so both are unchanged.
+    // #489: `MatchPlayer::action` (VERSION 12 -> 13) adds another fixed 36
+    // bytes per player (10 players: +360, see the sibling worst-case-row
+    // test's comment for the per-field accounting), moving `soccer_bytes`/
+    // `combat_bytes` (and everything derived from them) again;
+    // `four_run_delta`/`press_delta` still measure unrelated fields.
     assert_eq!(boundaries, 31);
-    assert_eq!(soccer_bytes, 20697);
-    assert_eq!(combat_bytes, 24373);
+    assert_eq!(soccer_bytes, 21407);
+    assert_eq!(combat_bytes, 25083);
     assert_eq!(four_run_delta, 346);
     assert_eq!(press_delta, 26);
     assert_eq!(combined_delta, 372);
-    assert_eq!(soccer_window, 653139);
-    assert_eq!(combat_window, 767095);
-    assert_eq!(budget - soccer_window, 264365);
-    assert_eq!(budget - combat_window, 150409);
+    assert_eq!(soccer_window, 675149);
+    assert_eq!(combat_window, 789105);
+    assert_eq!(budget - soccer_window, 242355);
+    assert_eq!(budget - combat_window, 128399);
     assert!(soccer_window < budget);
     assert!(combat_window < budget);
 }
@@ -2136,11 +2154,16 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
     let budget = omp2_rollback_validation::DATA.budgets.snapshot_bytes;
     let boundaries = omp2_rollback_validation::DATA.budgets.snapshot_count;
     let combat_bytes = match_snapshot::encoded_size_canonical(&snapshot) as i64;
-    assert_eq!(combat_bytes, 24373);
+    // #531 phase 2: `pass_intent` on every `MatchPlayer` (match_snapshot::VERSION
+    // 11 -> 12) adds a fixed 35 bytes per player (10 players: +350), same as
+    // the sibling measurement above. #489: `MatchPlayer::action`
+    // (VERSION 12 -> 13) adds another fixed 36 bytes per player (+360),
+    // same as that sibling's update too.
+    assert_eq!(combat_bytes, 25083);
     // The active-AI delta priced by the measurement above.
     let combined_delta: i64 = 372;
     let combat_window = (combat_bytes + combined_delta) * boundaries;
-    assert_eq!(combat_window, 767095);
+    assert_eq!(combat_window, 789105);
 
     let worst_kind = pick_longest(
         &[
@@ -2293,14 +2316,17 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
 
     assert_eq!(key_bytes, 179);
     assert_eq!(row_bytes, 456);
-    assert_eq!(rows_per_boundary, 10);
+    // #531 phase 2: `combat_bytes` growing 350 bytes shrinks `headroom` by the
+    // same amount, and integer division drops this from 10 to 9. #489 shrinks
+    // `headroom` by a further 360 bytes but integer division still lands on 9.
+    assert_eq!(rows_per_boundary, 9);
 
     let sustained_window = (combat_bytes + combined_delta + 8 * row_bytes) * boundaries;
     assert!(sustained_window < budget);
-    assert_eq!(sustained_window, 880183);
+    assert_eq!(sustained_window, 902193);
 
     assert!(worst_tick_window > budget);
-    assert_eq!(worst_tick_window, 1488031);
+    assert_eq!(worst_tick_window, 1510041);
 }
 
 #[test]

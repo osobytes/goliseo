@@ -40,8 +40,12 @@ import { describe, expect, it } from "vitest";
 
 import { loadSimHost } from "./index.ts";
 
-const EXPECTED_FINAL_HASH = "02c6c7c042c18438";
-const EXPECTED_SEQUENCE_DIGEST = "11e762dc5c4e5a82";
+// #489: re-recorded alongside the JSON fixture and gc_data::omp1_determinism's
+// own unit test. Verified wasm and native AGREE at this value (native:
+// `cargo test -p gc-sim --test determinism_evidence`; wasm: this file's own
+// gate run) before touching these two lines, per the doc comment above.
+const EXPECTED_FINAL_HASH = "4d002b60a635a76c";
+const EXPECTED_SEQUENCE_DIGEST = "45929ad5af7bf12a";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

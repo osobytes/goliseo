@@ -195,7 +195,17 @@ pub fn row_of(tick: i64, s: &MatchState) -> Row {
 /// the bot's `MatchInput` is quantized into a slot sample, encoded to the
 /// canonical wire, decoded, validated, and dequantized back — the lossy trip
 /// `crates/gc-wasm/src/session.rs` performs on every real tick.
-fn tick_input(b: &mut bot::BotState, s: &MatchState, tick: i64, tune: &Tuning) -> MatchInput {
+///
+/// `pub(crate)`, not private: [`crate::wasm_native_corpus`] drives the same
+/// bot-authored, wire-quantized input path for its own seeded scenarios
+/// rather than re-deriving it — see that module's doc for why reusing this
+/// exact function (not a second copy) matters.
+pub(crate) fn tick_input(
+    b: &mut bot::BotState,
+    s: &MatchState,
+    tick: i64,
+    tune: &Tuning,
+) -> MatchInput {
     let raw = bot::input(b, &headless::to_bot_view(s), DT, tune);
     let mut slots: [InputSample; 8] = [input_frame::neutral_sample(); 8];
     // Slot 0 is the canonical `home_1` slot the session reads back out.
@@ -207,13 +217,18 @@ fn tick_input(b: &mut bot::BotState, s: &MatchState, tick: i64, tune: &Tuning) -
     slot_input::to_match_input(&decoded.slots[0])
 }
 
-/// The reference match, built exactly as `game/screens/match.lua`'s
-/// `Match:restart` built an ordinary one and as
-/// `crates/gc-wasm/src/session.rs` builds its live state: no
-/// `input_ownership`, no `human_controlled` override, default duration and
-/// goal limit.
+/// A match built exactly as `game/screens/match.lua`'s `Match:restart` built
+/// an ordinary one and as `crates/gc-wasm/src/session.rs` builds its live
+/// state: no `input_ownership`, no `human_controlled` override, default
+/// duration and goal limit — parameterized on `seed` so a caller can build
+/// the one frozen reference match ([`new_reference_match`]) or any other
+/// seeded scenario from the identical construction path.
+///
+/// `pub(crate)`: [`crate::wasm_native_corpus`] reuses this rather than
+/// re-deriving the same `NewMatchOptions` a second time for its own seeded
+/// corpus.
 #[must_use]
-pub fn new_reference_match() -> MatchState {
+pub(crate) fn new_match_with_seed(seed: f64) -> MatchState {
     let home = gc_data::teams::get("nebula").expect("nebula team is authored");
     let away = gc_data::teams::get("orion").expect("orion team is authored");
     sim_match::new(NewMatchOptions {
@@ -225,13 +240,19 @@ pub fn new_reference_match() -> MatchState {
         away_tactic: None,
         duration: None,
         max_goals: None,
-        seed: Some(MATCH_SEED),
+        seed: Some(seed),
         players_by_id: None,
         species_by_id: None,
         showcase_players_by_id: None,
         human_controlled: None,
         input_ownership: None,
     })
+}
+
+/// The frozen reference match: [`new_match_with_seed`] at [`MATCH_SEED`].
+#[must_use]
+pub fn new_reference_match() -> MatchState {
+    new_match_with_seed(MATCH_SEED)
 }
 
 /// Replay the AI-driven reference match and digest every tick.

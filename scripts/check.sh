@@ -87,6 +87,21 @@
 #      script -- a stale entry (naming a call site that no longer declines a
 #      direction) fails too. See that script's header and self_test()'s
 #      unstated_knob_shift_scenario. (#499)
+#   0e. gate_ci_timeout_sync (in this file)
+#      -- the fifth gate beside 0/0b/0c/0d, same cost, for the same reason
+#      this whole "stage timing" apparatus exists: two merges on `main` got
+#      CANCELLED by ci.yml's `gate` job timeout-minutes with no verdict at
+#      all, because nobody was watching the gate's total wall clock (#538).
+#      Every gate_* call below now runs through run_stage(), which times it,
+#      records it into the per-stage table main() prints at the end of every
+#      run, and enforces GATE_WALL_CLOCK_BUDGET_SECONDS -- a ceiling that
+#      fails the gate with a clear message once the running total gets close
+#      to ci.yml's timeout, rather than waiting for the runner to kill the
+#      job silently. That budget is DERIVED from CI_GATE_TIMEOUT_MINUTES, not
+#      an independent number, and this gate is the assertion that
+#      CI_GATE_TIMEOUT_MINUTES still equals what ci.yml's `gate` job actually
+#      declares -- see the comment on that constant, and self_test()'s
+#      ci_timeout_sync_scenario and stage_timing_scenario.
 #   1. cargo fmt --all --check                                      (rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
 #   3. cargo test --workspace
@@ -180,8 +195,8 @@
 #      (via vitest's own `toBe`) the exact digests step 9 checks again.
 #   9. an explicit, redundant assertion that the freshly built wasm module's
 #      runDeterminismEvidence() returns exactly
-#      final_hash=02c6c7c042c18438 and sequence_digest=11e762dc5c4e5a82.
-#      (Moved by #488; this is the SIXTH copy of the OMP-1 derived digests and
+#      final_hash=4d002b60a635a76c and sequence_digest=45929ad5af7bf12a.
+#      (Moved by #488, then again by #489; this is the SIXTH copy of the OMP-1 derived digests and
 #      the deliberate one -- the drift check below is why it exists.)
 #      It deliberately does NOT assert the scoreline, the event counts or the
 #      coverage set -- #505 demoted the first two to a report and #512 demoted
@@ -199,6 +214,27 @@
 #      vitest's test runner and reporter entirely) and comparing the result
 #      against the two hard-coded constants below in plain bash. A weakened or
 #      deleted assertion in determinism.spec.ts would not silence this step.
+#  9b. node scripts/check_wasm_native_corpus.mjs (#517)
+#      -- step 9 above proves the wasm build reproduces ONE frozen scenario
+#      (OMP-1, an IDLE match). #517 found that native and the compiled wasm
+#      module can disagree on OTHER scenarios that reach the thirteen
+#      `sin`/`cos`/`exp`/`ln` sites OMP-1 structurally never exercises
+#      (shooting, dashing, passing, dribbling, aerial contests, combat), and
+#      that this is TRAJECTORY-DEPENDENT -- which transcendental calls fire,
+#      with which arguments, moves with the exact match, so a single scenario
+#      can pass for months while the sites it never happens to reach stay
+#      silently unconverted. This step runs gc_sim::wasm_native_corpus::CORPUS
+#      (eight independently seeded AI-driven scenarios, chosen to reach every
+#      one of the thirteen sites) through a fresh native `cargo test`
+#      invocation AND the freshly built wasm module from step 6, and diffs
+#      their per-tick hashes -- unlike step 9, nothing here is pinned; both
+#      sides are computed fresh on every run. With 13 sites unconverted this
+#      DOES currently find two real divergences, tracked in that script's
+#      KNOWN_DIVERGENCES and reported loudly rather than either failing the
+#      gate or being silently absorbed -- see that script's own header for the
+#      allowlist rule (a NEW divergence, or a KNOWN one that stops
+#      reproducing, both fail hard). See self_test()'s
+#      wasm_native_corpus_scenario.
 #  10. pnpm exec vite build, then a BYTE comparison between the wasm asset in
 #      dist-app/assets and the freshly built dist/pkg-web/gc_wasm_bg.wasm.
 #      -- Steps 7-9 all exercise the `--target nodejs` artifact. The browser
@@ -276,8 +312,8 @@ determinism_spec="$wasm_pkg_dir/src/determinism.spec.ts"
 # Pinned here, independently of ts/packages/wasm/src/determinism.spec.ts's
 # own copy of the same two constants -- self_test()'s digest_drift_scenario
 # requires the two copies to still agree.
-EXPECTED_FINAL_HASH="02c6c7c042c18438"
-EXPECTED_SEQUENCE_DIGEST="11e762dc5c4e5a82"
+EXPECTED_FINAL_HASH="4d002b60a635a76c"
+EXPECTED_SEQUENCE_DIGEST="45929ad5af7bf12a"
 EXPECTED_TICKS="7201"
 EXPECTED_BOUNDARIES="7202"
 # There is deliberately no EXPECTED_COVERAGE here any more, and no
@@ -302,6 +338,28 @@ EXPECTED_BOUNDARIES="7202"
 REQUIRED_WASM_BINDGEN_VERSION="0.2.118"
 REQUIRED_NODE_MAJOR=22
 REQUIRED_PNPM_VERSION="11.1.2"
+
+# #538. The single source of truth for the `gate` job's `timeout-minutes` in
+# .github/workflows/ci.yml -- kept here, not just there, because
+# GATE_WALL_CLOCK_BUDGET_SECONDS below is DERIVED from it (never an
+# independent number that could silently drift out of proportion), and
+# because gate_ci_timeout_sync() asserts the two stay equal on every run, the
+# same "never trust one signal" discipline EXPECTED_FINAL_HASH above gets
+# from digest_drift_scenario. See ci.yml's own comment on that line for the
+# arithmetic this value was chosen from.
+CI_GATE_TIMEOUT_MINUTES=75
+
+# Minutes reserved, inside CI_GATE_TIMEOUT_MINUTES, for the parts of the
+# `gate` job this script cannot see or time: the checkout, the match-harness
+# self-test, four toolchain installs (rustup, wasm-bindgen, node, pnpm), this
+# script's OWN --self-test invocation (measured at 8s locally against
+# throwaway fixtures -- the "Prove the gate detects failure" step), and the
+# real-browser peer-agreement step plus its own dependency install. None of
+# those run inside `main()`, so none of them can be a stage in the timing
+# table below. Rounded up generously past the local measurement for a
+# slower/shared CI runner and an uncached rust-toolchain download, which this
+# machine's already-warm ~/.rustup made invisible.
+CI_GATE_OVERHEAD_BUFFER_MINUTES=10
 
 # Floors, not exact counts: they exist only to catch a suite that silently
 # matched and ran nothing (still exit 0), not to pin the exact count, which
@@ -350,6 +408,14 @@ MIN_NETWORK_PROFILE_COMPARISONS=61
 # (`git ls-files -- 'rust/**/*.rs' | grep -v /target/ | wc -l`); this floor is
 # comfortably below that, the same margin every other floor here keeps.
 MIN_UNSTATED_KNOB_RUST_FILES=250
+
+# #517's native-vs-wasm corpus differential (gate 9b): the corpus has 8
+# scenarios today (gc_sim::wasm_native_corpus::CORPUS). A parse that silently
+# matched nothing would compare zero scenarios and print an empty "OK (0
+# agree...)" summary, indistinguishable from a genuinely clean run -- this
+# floor is the same "never trust one signal" guard every other gate here
+# keeps. Raise it in the same change that grows the corpus.
+MIN_WASM_NATIVE_CORPUS_SCENARIOS=8
 
 # The same shape of floor for gates 5b and 7b (#471), and the reason they are
 # not just "run the tool and read its exit code".
@@ -433,6 +499,119 @@ run_in() {
 }
 
 # ---------------------------------------------------------------------------
+# Stage timing (#538). Two merges on `main` got cancelled by ci.yml's
+# `timeout-minutes` with no verdict at all, because nobody was watching the
+# gate's total wall clock while its stages grew. Every stage in main() runs
+# through run_stage() below so every run of this file reports where its own
+# time goes, not just the runs a human happened to be timing by hand.
+# ---------------------------------------------------------------------------
+
+STAGE_NAMES=()
+STAGE_MS=()
+GATE_START_MS=0
+GATE_ABORTED=0
+
+# The cheap half of #538's fix (AGENTS.md §9: "never trust one signal"). A
+# GitHub Actions job CANCELLED at its `timeout-minutes` produces no verdict
+# at all -- worse than a fast failure, because "still running" and "hung"
+# are indistinguishable from outside. GATE_WALL_CLOCK_BUDGET_SECONDS is a
+# ceiling INSIDE the gate, checked in run_stage() before every stage starts,
+# that fails with a clear message once the running total gets close to
+# ci.yml's own `timeout-minutes` on the `gate` job, instead of waiting for
+# the runner to kill it silently.
+#
+# DERIVED from CI_GATE_TIMEOUT_MINUTES, not an independent number -- that is
+# what keeps the ceiling and the job timeout from drifting apart on their
+# own. gate_ci_timeout_sync() (run as the very first stage) additionally
+# asserts CI_GATE_TIMEOUT_MINUTES itself still matches what ci.yml declares,
+# so a change to one without the other fails loudly instead of silently
+# going stale. This still leaves CI_GATE_OVERHEAD_BUFFER_MINUTES of margin
+# before the job's own hard kill, for the CI-only steps that number's own
+# comment lists.
+#
+# This only stops a stage from STARTING once the budget is already spent; it
+# does not interrupt a single stage that is itself the overrun (each gate_*
+# call is one stage -- e.g. `cargo test --workspace` -- and a runaway inside
+# one is not visible until it returns). It turns the common case -- growth
+# spread across many stages, which is what actually happened here -- from a
+# silent cancellation into a named failure. A single stage that alone blows
+# the whole budget is still only caught by ci.yml's own timeout-minutes; that
+# gap is real and is left to #538, not papered over here.
+GATE_WALL_CLOCK_BUDGET_SECONDS=$(( (CI_GATE_TIMEOUT_MINUTES - CI_GATE_OVERHEAD_BUFFER_MINUTES) * 60 ))
+
+# Milliseconds since the epoch. GNU date's %N is what makes sub-second
+# resolution possible -- gates 0/0b/0c/0d finish in well under a second, and
+# a whole-second clock would report every one of them as 0s every run.
+now_ms() {
+    date +%s%3N
+}
+
+# Runs one gate function, timed, and records it in STAGE_NAMES/STAGE_MS
+# regardless of whether it passed. The wrapped function's own exit status is
+# returned UNCHANGED -- timing wraps the call, it never inspects or
+# substitutes the result, the same discipline the header's "NEVER TRUST ONE
+# SIGNAL" note requires of `tee`. See self_test()'s stage_timing_scenario for
+# a red demonstration that a failing wrapped stage still fails here, and that
+# the wall-clock ceiling above skips rather than silently passes.
+run_stage() {
+    local label="$1"
+    shift
+
+    if [ "$GATE_ABORTED" -eq 1 ]; then
+        STAGE_NAMES+=("$label")
+        STAGE_MS+=(-1)
+        return 1
+    fi
+
+    local elapsed_s=$(( ($(now_ms) - GATE_START_MS) / 1000 ))
+    if [ "$elapsed_s" -ge "$GATE_WALL_CLOCK_BUDGET_SECONDS" ]; then
+        fail_msg "wall-clock budget exceeded before starting '$label': ${elapsed_s}s elapsed, budget is ${GATE_WALL_CLOCK_BUDGET_SECONDS}s"
+        echo "    (ci.yml's gate job timeout-minutes exists to catch exactly this by CANCELLING"
+        echo "     the job with NO VERDICT -- see #538. This stage and everything after it are"
+        echo "     skipped so the gate FAILS with a reason instead.)"
+        GATE_ABORTED=1
+        STAGE_NAMES+=("$label")
+        STAGE_MS+=(-1)
+        return 1
+    fi
+
+    local start end rc
+    start="$(now_ms)"
+    "$@"
+    rc=$?
+    end="$(now_ms)"
+
+    STAGE_NAMES+=("$label")
+    STAGE_MS+=("$((end - start))")
+    return "$rc"
+}
+
+# Prints the per-stage table this file exists to produce (#538): every
+# run_stage() call recorded above, in the order it ran, plus the overall wall
+# clock. Called unconditionally at the end of main(), before the pass/fail
+# verdict -- a failing run's timing is exactly the timing a human most wants
+# to see, and printing it can never change whether the run passes (see
+# run_stage()'s own comment on that).
+report_stage_timings() {
+    local total_ms=$(( $(now_ms) - GATE_START_MS ))
+    local i name ms
+
+    echo ""
+    echo "==> stage timing"
+    for i in "${!STAGE_NAMES[@]}"; do
+        name="${STAGE_NAMES[$i]}"
+        ms="${STAGE_MS[$i]}"
+        if [ "$ms" -lt 0 ]; then
+            printf '    %-55s %s\n' "$name" "skipped (wall-clock budget exceeded)"
+        else
+            printf '    %-55s %6ds\n' "$name" "$((ms / 1000))"
+        fi
+    done
+    printf '    %-55s %6ds\n' "TOTAL" "$((total_ms / 1000))"
+    echo ""
+}
+
+# ---------------------------------------------------------------------------
 # Toolchain pin verification
 # ---------------------------------------------------------------------------
 
@@ -500,6 +679,59 @@ verify_toolchain_pins() {
     fi
 
     return "$status"
+}
+
+# ---------------------------------------------------------------------------
+# #538: gate/CI timeout sync
+# ---------------------------------------------------------------------------
+
+# Extracts the `gate` job's `timeout-minutes:` value from a ci.yml-shaped
+# file -- the `gate` job's specifically, not `rollback-native-matrix`'s
+# separate 45. Factored out from gate_ci_timeout_sync() so self_test() can
+# drive this REAL parser against a throwaway fixture (ci_timeout_sync_scenario)
+# instead of a hand-written copy of its logic.
+extract_gate_timeout_minutes() {
+    local ci_yml="$1"
+    awk '
+        /^    gate:[[:space:]]*$/ { in_gate = 1; next }
+        in_gate && /^    [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+        in_gate && /timeout-minutes:/ {
+            match($0, /[0-9]+/)
+            print substr($0, RSTART, RLENGTH)
+            exit
+        }
+    ' "$ci_yml"
+}
+
+# Gate 0e, beside 0/0b/0c/0d: same cost (no toolchain, no build, seconds),
+# same failure shape -- two hand-maintained copies of one number silently
+# disagreeing. CI_GATE_TIMEOUT_MINUTES only means anything as long as it
+# equals what .github/workflows/ci.yml's `gate` job actually declares; this
+# is the assertion that makes that true rather than assumed, the same
+# discipline check_determinism_terminator applies to the OMP-1 digests.
+# Takes the ci.yml path and the expected minutes as optional overrides
+# (defaulting to the real file and CI_GATE_TIMEOUT_MINUTES) so self_test()'s
+# ci_timeout_sync_scenario can drive this REAL function -- not a copy of its
+# comparison -- against a throwaway fixture and a deliberate mismatch.
+gate_ci_timeout_sync() {
+    local ci_yml="${1:-$project_root/.github/workflows/ci.yml}"
+    local expected="${2:-$CI_GATE_TIMEOUT_MINUTES}"
+    step "gate timeout sync (ci.yml's gate job <-> check.sh's CI_GATE_TIMEOUT_MINUTES)"
+    local found
+    found="$(extract_gate_timeout_minutes "$ci_yml")"
+
+    if [ -z "$found" ]; then
+        fail_msg "could not find the gate job's timeout-minutes in $ci_yml -- extract_gate_timeout_minutes() may need updating for a ci.yml restructure"
+        return 1
+    fi
+    if [ "$found" != "$expected" ]; then
+        fail_msg "ci.yml's gate job declares timeout-minutes: $found, but check.sh's CI_GATE_TIMEOUT_MINUTES is $expected"
+        echo "      update CI_GATE_TIMEOUT_MINUTES here (and re-check GATE_WALL_CLOCK_BUDGET_SECONDS'"
+        echo "      buffer) in the SAME change that touches ci.yml's timeout-minutes -- see #538."
+        return 1
+    fi
+    echo "    ci.yml gate job timeout-minutes ($found) matches CI_GATE_TIMEOUT_MINUTES"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1534,6 +1766,67 @@ gate_determinism() {
     check_determinism_terminator "$terminator"
 }
 
+# Parses scripts/check_wasm_native_corpus.mjs's summary line ("wasm native
+# corpus differential: OK|FAILED (N agree, M known...)") from $2 (the tool's
+# combined stdout/stderr) given its own exit status $1, and enforces the
+# scenario-count floor. Pure logic, no node involved -- shared by
+# gate_wasm_native_corpus() and wasm_native_corpus_scenario()'s self-test, so
+# the check the gate performs and the check the self-test proves can go red
+# are the same code rather than two copies that could drift (AGENTS.md §9).
+check_wasm_native_corpus_summary() {
+    local status="$1"
+    local output="$2"
+
+    local agree known
+    agree="$(strip_ansi <<<"$output" | sed -n 's/^wasm native corpus differential: \(OK\|FAILED\) (\([0-9]\+\) agree.*/\2/p' | tail -n 1)"
+    known="$(strip_ansi <<<"$output" | sed -n 's/^wasm native corpus differential: \(OK\|FAILED\) ([0-9]\+ agree, \([0-9]\+\) known.*/\2/p' | tail -n 1)"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "native-vs-wasm corpus differential exited $status -- see the per-scenario report above. A FAIL entry is either a NEW divergence (not in check_wasm_native_corpus.mjs's KNOWN_DIVERGENCES) or a STALE allowlist entry (a tracked divergence that no longer reproduces); the report above names which."
+        return 1
+    fi
+    if ! all_integers "$agree" "$known"; then
+        fail_msg "native-vs-wasm corpus differential exited 0 but printed no parseable 'wasm native corpus differential: OK (N agree, M known...)' summary -- treating that as a failure, not a pass"
+        return 1
+    fi
+    local total=$((agree + known))
+    if [ "$total" -lt "$MIN_WASM_NATIVE_CORPUS_SCENARIOS" ]; then
+        fail_msg "native-vs-wasm corpus differential compared only $total scenario(s) (want >= $MIN_WASM_NATIVE_CORPUS_SCENARIOS) -- the corpus has been narrowed or the parity check silenced"
+        return 1
+    fi
+    echo "    $agree scenario(s) agree tick for tick, $known known divergence(s) tracked against #517"
+    return 0
+}
+
+# Gate 9b (#517): the seeded native-vs-wasm differential corpus. Runs
+# scripts/check_wasm_native_corpus.mjs, which drives
+# gc_sim::wasm_native_corpus::CORPUS through a fresh native `cargo test`
+# invocation AND the freshly built wasm module, and diffs their per-tick
+# hashes -- see that script's own header for what it compares and why the
+# comparison is live rather than pinned, and gate_determinism's comment above
+# for the contrasting (pinned, single-scenario) shape this complements rather
+# than replaces. Runs after gate_wasm_build (6), which is what makes
+# dist/pkg/gc_wasm.cjs exist.
+gate_wasm_native_corpus() {
+    step "native-vs-wasm corpus differential (#517): gc_sim::wasm_native_corpus vs the compiled wasm module"
+
+    local checker="$project_root/scripts/check_wasm_native_corpus.mjs"
+    if [ ! -f "$checker" ]; then
+        fail_msg "$checker is missing"
+        return 1
+    fi
+
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node "$checker" 2>&1 | tee "$log"
+    local status=$?
+    local output
+    output="$(cat "$log")"
+    rm -f "$log"
+
+    check_wasm_native_corpus_summary "$status" "$output"
+}
+
 # ---------------------------------------------------------------------------
 # Self-test: proves this gate can go red, per AGENTS.md §9's second rule.
 #
@@ -1584,6 +1877,150 @@ plumbing_scenario() {
     else
         echo "ok  a failing command piped into tee still reports nonzero under pipefail"
     fi
+    return "$failures"
+}
+
+# Scenario: run_stage() (#538) must report a wrapped command's exit status
+# UNCHANGED -- a timing wrapper that reports a stage green because it
+# MEASURED something, rather than because the stage passed, is the exact
+# failure shape this file exists to prevent (AGENTS.md §9: "never trust one
+# signal"). Also proves the wall-clock ceiling: once the budget is spent, a
+# later stage is skipped -- its command never runs -- and still fails.
+# Exercises the real run_stage(), not a copy, against its real globals,
+# saved and restored so this scenario cannot leak state into main() or into
+# a scenario that runs after it.
+stage_timing_scenario() {
+    local failures=0
+    local saved_names=("${STAGE_NAMES[@]}")
+    local saved_ms=("${STAGE_MS[@]}")
+    local saved_aborted="$GATE_ABORTED"
+    local saved_start="$GATE_START_MS"
+    local saved_budget="$GATE_WALL_CLOCK_BUDGET_SECONDS"
+
+    STAGE_NAMES=()
+    STAGE_MS=()
+    GATE_ABORTED=0
+    GATE_START_MS="$(now_ms)"
+
+    if run_stage "self-test: passing stage" true; then
+        echo "ok  a passing wrapped stage reports success through run_stage"
+    else
+        echo "SELF-TEST FAIL: a passing wrapped stage (true) reported failure through run_stage"
+        failures=1
+    fi
+
+    if run_stage "self-test: failing stage" false; then
+        echo "SELF-TEST FAIL: a failing wrapped stage (false) reported success -- run_stage swallowed its exit code"
+        failures=1
+    else
+        echo "ok  a failing wrapped stage still reports failure through run_stage"
+    fi
+
+    if [ "${#STAGE_NAMES[@]}" -ne 2 ] || [ "${#STAGE_MS[@]}" -ne 2 ]; then
+        echo "SELF-TEST FAIL: run_stage did not record both stages for the timing table (names=${#STAGE_NAMES[@]} ms=${#STAGE_MS[@]})"
+        failures=1
+    else
+        echo "ok  run_stage recorded both stages for the timing table"
+    fi
+
+    # Force the ceiling without waiting real seconds for it: rewind the
+    # clock the budget is measured against, and shrink the budget itself to
+    # something already spent.
+    GATE_START_MS=0
+    GATE_WALL_CLOCK_BUDGET_SECONDS=1
+
+    local ran=0
+    would_run() { ran=1; }
+    if run_stage "self-test: stage after the ceiling trips" would_run; then
+        echo "SELF-TEST FAIL: a stage run after the wall-clock ceiling tripped reported success"
+        failures=1
+    else
+        echo "ok  a stage run after the wall-clock ceiling trips reports failure"
+    fi
+    if [ "$ran" -ne 0 ]; then
+        echo "SELF-TEST FAIL: run_stage ran a stage's command after the wall-clock ceiling had already tripped -- it should skip, not run late"
+        failures=1
+    else
+        echo "ok  the wall-clock ceiling skips the command instead of running it late"
+    fi
+
+    if [ "$GATE_ABORTED" -ne 1 ]; then
+        echo "SELF-TEST FAIL: GATE_ABORTED did not latch after the wall-clock ceiling tripped"
+        failures=1
+    else
+        echo "ok  the wall-clock ceiling latches, so every remaining stage is skipped too"
+    fi
+
+    STAGE_NAMES=("${saved_names[@]}")
+    STAGE_MS=("${saved_ms[@]}")
+    GATE_ABORTED="$saved_aborted"
+    GATE_START_MS="$saved_start"
+    GATE_WALL_CLOCK_BUDGET_SECONDS="$saved_budget"
+
+    return "$failures"
+}
+
+# Scenario: extract_gate_timeout_minutes() (#538) must find the `gate` job's
+# OWN timeout-minutes and nothing else's -- a parser that grabbed the FIRST
+# timeout-minutes in the file would silently read rollback-native-matrix's
+# 45 instead of gate's, and a parser that matched nothing would report
+# "in sync" by never comparing anything at all.
+ci_timeout_sync_scenario() {
+    local dir="$1"
+    local fixture="$dir/ci.yml"
+    local failures=0
+    local found
+
+    cat >"$fixture" <<'EOF'
+jobs:
+    gate:
+        name: Gate
+        runs-on: ubuntu-24.04
+        timeout-minutes: 42
+
+        steps:
+            - name: something
+              run: true
+
+    rollback-native-matrix:
+        name: Native rollback matrix (on demand)
+        runs-on: ubuntu-24.04
+        timeout-minutes: 99
+EOF
+
+    found="$(extract_gate_timeout_minutes "$fixture")"
+    if [ "$found" = "42" ]; then
+        echo "ok  the gate job's own timeout-minutes (42) is extracted, not the other job's (99)"
+    else
+        echo "SELF-TEST FAIL: extract_gate_timeout_minutes() returned '$found', want 42"
+        failures=1
+    fi
+
+    local no_timeout_fixture="$dir/no_timeout.yml"
+    printf 'jobs:\n    gate:\n        name: Gate\n        runs-on: ubuntu-24.04\n\n        steps:\n            - name: something\n              run: true\n' >"$no_timeout_fixture"
+    found="$(extract_gate_timeout_minutes "$no_timeout_fixture")"
+    if [ -z "$found" ]; then
+        echo "ok  a gate job with no timeout-minutes at all is reported as not found, not as some stray number"
+    else
+        echo "SELF-TEST FAIL: extract_gate_timeout_minutes() found '$found' in a file with no timeout-minutes line"
+        failures=1
+    fi
+
+    # Drive the real gate_ci_timeout_sync(), not a copy of its comparison:
+    # the fixture declares 42, so asking it to match 42 must pass and asking
+    # it to match anything else (e.g. the real CI_GATE_TIMEOUT_MINUTES) must
+    # fail -- proving this gate actually goes red on a genuine drift, not
+    # just that the extractor reads a number.
+    expect_pass "gate_ci_timeout_sync accepts a fixture that matches the expected value" \
+        gate_ci_timeout_sync "$fixture" 42 \
+        || failures=1
+    expect_fail "gate_ci_timeout_sync rejects a fixture that does not match the expected value" \
+        gate_ci_timeout_sync "$fixture" "$((CI_GATE_TIMEOUT_MINUTES + 1))" \
+        || failures=1
+    expect_fail "gate_ci_timeout_sync rejects a file with no timeout-minutes to find at all" \
+        gate_ci_timeout_sync "$no_timeout_fixture" 42 \
+        || failures=1
+
     return "$failures"
 }
 
@@ -1821,6 +2258,62 @@ digest_drift_scenario() {
         printf '%s\n' "$coverage_output" | sed 's/^/      /'
         failures=1
     fi
+
+    return "$failures"
+}
+
+# Scenario: gate 9b (#517). Two tracks, the same split AGENTS.md §9 asks for
+# in its "harness self-test is not a harness run" rule:
+#
+#   (a) scripts/check_wasm_native_corpus.mjs's OWN --self-test, which proves
+#       the comparison/allowlist classification logic (agree / known / new /
+#       stale) can go red, entirely in memory -- no cargo, no wasm module;
+#   (b) check_wasm_native_corpus_summary(), fed FABRICATED tool output, which
+#       proves THIS SCRIPT's parsing of that tool's summary line -- the floor
+#       check, the malformed-summary rejection, the nonzero-exit rejection --
+#       can go red on its own, independently of whether the checker script
+#       itself is currently broken.
+#
+# Neither of these actually runs cargo or drives the compiled wasm module, so
+# neither proves the real gate currently passes -- only that ./scripts/
+# check.sh's own run of gate_wasm_native_corpus (which this self-test does not
+# invoke) does that, same as every other scenario in this file.
+wasm_native_corpus_scenario() {
+    local failures=0
+    local checker="$project_root/scripts/check_wasm_native_corpus.mjs"
+
+    if node "$checker" --self-test >/dev/null 2>&1; then
+        echo "ok  check_wasm_native_corpus.mjs's own self-test passes (it goes red on every divergence classification it claims to make)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_wasm_native_corpus.mjs --self-test failed:"
+        node "$checker" --self-test 2>&1 | sed 's/^/      /'
+        failures=1
+    fi
+
+    local ok_output="corpus/a: agree
+wasm native corpus differential: OK (7 agree, 1 known and tracked (#517), 0 unallowed, 0 stale)"
+    expect_pass "a real-shaped OK summary at/above the scenario floor is accepted" \
+        check_wasm_native_corpus_summary 0 "$ok_output" \
+        || failures=1
+
+    expect_fail "a nonzero exit status is rejected even if a summary line is present" \
+        check_wasm_native_corpus_summary 1 "$ok_output" \
+        || failures=1
+
+    expect_fail "output with no parseable summary line is rejected, not read as zero-is-fine" \
+        check_wasm_native_corpus_summary 0 "some unrelated output, no terminator" \
+        || failures=1
+
+    local narrow_output="wasm native corpus differential: OK (1 agree, 0 known and tracked (#517), 0 unallowed, 0 stale)"
+    expect_fail "a scenario count under MIN_WASM_NATIVE_CORPUS_SCENARIOS is rejected (the corpus narrowed, or the check was silenced)" \
+        check_wasm_native_corpus_summary 0 "$narrow_output" \
+        || failures=1
+
+    local failed_output="corpus/x: FAIL diverges at tick 4, and this scenario is not in KNOWN_DIVERGENCES
+wasm native corpus differential: FAILED (7 agree, 0 known and tracked (#517), 1 unallowed, 0 stale)"
+    expect_fail "a FAILED summary (a NEW or STALE divergence) is rejected even though it names a scenario count" \
+        check_wasm_native_corpus_summary 1 "$failed_output" \
+        || failures=1
 
     return "$failures"
 }
@@ -2789,6 +3282,13 @@ self_test() {
     echo "==> self-test: plumbing"
     plumbing_scenario || failures=1
 
+    echo "==> self-test: stage timing and the wall-clock ceiling (#538)"
+    stage_timing_scenario || failures=1
+
+    echo "==> self-test: gate/CI timeout sync, check.sh <-> ci.yml (gate 0e, #538)"
+    mkdir -p "$work/ci_timeout_sync"
+    ci_timeout_sync_scenario "$work/ci_timeout_sync" || failures=1
+
     echo "==> self-test: wire enum parity, Rust <-> TypeScript (gate 0)"
     mkdir -p "$work/wire_enum_parity"
     wire_enum_parity_scenario "$work/wire_enum_parity" || failures=1
@@ -2807,6 +3307,9 @@ self_test() {
 
     echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
+
+    echo "==> self-test: native-vs-wasm corpus differential (gate 9b, #517)"
+    wasm_native_corpus_scenario || failures=1
 
     if command -v wasm-bindgen >/dev/null 2>&1; then
         echo "==> self-test: wasm-only clippy lint (gate 4)"
@@ -2861,33 +3364,43 @@ main() {
         return 0
     fi
 
+    STAGE_NAMES=()
+    STAGE_MS=()
+    GATE_ABORTED=0
+    GATE_START_MS="$(now_ms)"
+
     local fail=0
 
-    verify_toolchain_pins || fail=1
+    # #538, ahead of even the toolchain pins: needs nothing built or
+    # installed, and it is what keeps GATE_WALL_CLOCK_BUDGET_SECONDS below
+    # from silently drifting out of proportion with ci.yml's real timeout.
+    run_stage "0e gate timeout sync (ci.yml)" gate_ci_timeout_sync || fail=1
+
+    run_stage "toolchain pins" verify_toolchain_pins || fail=1
 
     # Gate 0 first: it needs nothing built or installed, and enum drift is the
     # one failure here that reaches a player's browser rather than a console.
-    gate_wire_enum_parity || fail=1
+    run_stage "0  wire enum parity" gate_wire_enum_parity || fail=1
     # Gate 0b, beside it: same cost, same failure shape, different vocabulary
     # (#447).
-    gate_presentation_parity || fail=1
+    run_stage "0b presentation parity" gate_presentation_parity || fail=1
     # Gate 0c, beside both: the same failure shape again, for the impairment
     # profiles browser and native evidence must share (#472).
-    gate_network_profile_parity || fail=1
+    run_stage "0c network profile parity" gate_network_profile_parity || fail=1
     # Gate 0d, beside all three: same cost, and the failure it catches is a
     # feature test quietly declining to state its knob's direction rather than
     # two languages disagreeing (#499).
-    gate_unstated_knob_shift || fail=1
+    run_stage "0d unstated knob shift audit" gate_unstated_knob_shift || fail=1
 
-    gate_rust_fmt || fail=1
-    gate_rust_clippy_workspace || fail=1
-    gate_rust_test || fail=1
-    gate_rust_clippy_wasm || fail=1
+    run_stage "1  rust: cargo fmt --check" gate_rust_fmt || fail=1
+    run_stage "2  rust: cargo clippy --workspace" gate_rust_clippy_workspace || fail=1
+    run_stage "3  rust: cargo test --workspace" gate_rust_test || fail=1
+    run_stage "4  rust: cargo clippy -p gc-wasm (wasm32)" gate_rust_clippy_wasm || fail=1
 
-    gate_ts_install || fail=1
+    run_stage "5  ts: pnpm install" gate_ts_install || fail=1
     # Formatting needs nothing built, so it runs straight after the install and
     # reports in seconds rather than after the wasm build (#471).
-    gate_ts_format || fail=1
+    run_stage "5b ts: prettier --check" gate_ts_format || fail=1
     # The wasm build comes BEFORE the typecheck, not after. `@gc/wasm`'s `web`
     # subpath resolves to `dist/pkg-web/gc_wasm.d.ts`, which wasm-bindgen
     # GENERATES -- and `dist/` is gitignored, so on a clean checkout it does not
@@ -2895,16 +3408,19 @@ main() {
     # `TS2307: Cannot find module '@gc/wasm/web'`, which is invisible to anyone
     # whose working tree still has yesterday's artifacts on disk. That is
     # exactly how it passed locally for everyone and failed every CI run.
-    gate_wasm_build || fail=1
-    gate_ts_typecheck || fail=1
+    run_stage "6  ts: build gc-wasm artifacts" gate_wasm_build || fail=1
+    run_stage "7  ts: tsc --build --force" gate_ts_typecheck || fail=1
     # The lint is type-aware, so it runs after the wasm build and the typecheck
     # for exactly the reason the typecheck does: without `@gc/wasm`'s GENERATED
     # .d.ts on disk, everything downstream of it is an error type and the rules
     # that matter quietly find nothing (#471).
-    gate_ts_lint || fail=1
-    gate_ts_test || fail=1
-    gate_determinism || fail=1
-    gate_app_bundle || fail=1
+    run_stage "7b ts: eslint --max-warnings 0" gate_ts_lint || fail=1
+    run_stage "8  ts: vitest run" gate_ts_test || fail=1
+    run_stage "9  determinism digest terminator" gate_determinism || fail=1
+    run_stage "9b native-vs-wasm corpus differential (#517)" gate_wasm_native_corpus || fail=1
+    run_stage "10 ts: vite build + web wasm byte compare" gate_app_bundle || fail=1
+
+    report_stage_timings
 
     if [ "$fail" -ne 0 ]; then
         echo "GATE FAILED"

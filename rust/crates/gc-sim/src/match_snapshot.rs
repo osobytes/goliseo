@@ -31,6 +31,7 @@
 //! contract — [`append_state`] does not touch it — so it cannot affect a
 //! hash or a wire byte.
 
+use crate::action_slot::{self, ActionPhase, ActionSlot};
 use crate::aerial::{AerialOutcome, AerialStyle};
 use crate::combat_feasibility::Team as FeasibilityTeam;
 use crate::combat_snapshot::{self, CanonicalScalar, CombatMatchState, CombatSnapshotWriter};
@@ -38,17 +39,37 @@ use crate::input_frame::{self, InputOwnership, SlotId};
 use crate::keeper::{KeeperBehaviorState, KeeperShotType, SaveStyle};
 use crate::outfield_decision::{self, OutfieldDecisionState};
 use crate::outfield_press::{self, OutfieldPressState};
+use crate::pass_intent::{self, PassIntentState};
 use crate::possession_transition::{self, PossessionTransitionState, TransitionWindows};
 use gc_core::fnv1a64;
 use gc_core::vec2::Vec2;
+use gc_data::action_tuning::ActionVerb;
 use gc_data::formations;
 use gc_data::species::SimVerb;
 use gc_data::tactics::MarkingConfig;
 
 /// Soccer-only snapshot format version.
-pub const VERSION: i64 = 11;
+///
+/// 12 -> 13 (#489): added `MatchPlayer::action`, the sim-owned committed-action
+/// slot (charging/executing/recovering) a standing-poke tackle now runs
+/// through -- see `crate::action_slot`. Ordinary simulation state, and must
+/// survive rollback resimulation like any other field here.
+///
+/// 11 -> 12 (#531): added `MatchPlayer::pass_intent`, the gameplay AI's
+/// retained pass/throw charge state. It never enters `input_frame`'s wire
+/// protocol -- nothing about it crosses the network -- but it is ordinary
+/// simulation state and must survive rollback resimulation like any other
+/// field here.
+pub const VERSION: i64 = 13;
 /// Combat-companion snapshot format version.
-pub const COMBAT_VERSION: i64 = 13;
+///
+/// 13 -> 14 (#489): kept one ahead of [`VERSION`] -- the combat companion's
+/// `MatchPlayer` shape is the same struct `VERSION` versions, so
+/// `MatchPlayer::action` moves this one too. The two constants must never be
+/// equal (`snapshot.version == VERSION || snapshot.version == COMBAT_VERSION`
+/// is how a restore tells the two wire shapes apart), which is exactly the
+/// collision leaving this at 13 would have produced.
+pub const COMBAT_VERSION: i64 = 14;
 
 /// Fixed fixture size: five players per side, ten total.
 pub const PLAYER_COUNT: usize = 10;
@@ -300,12 +321,22 @@ pub struct MatchPlayer {
     pub pass_charge: f64,
     /// Player this owner would pass to if released now.
     pub pass_target: Option<i64>,
+    /// The gameplay AI's retained pass/throw charge state (#531). A human
+    /// or bot producer leaves this at its idle default; it exists so an
+    /// AI-driven pass or throw pays the same multi-tick charge time a
+    /// human's does, through the same `MatchInput` path, instead of calling
+    /// the resolver directly.
+    pub pass_intent: PassIntentState,
     /// Seconds until a pending shot/punt releases (0 = none).
     pub windup_timer: f64,
     /// Payload captured at commit.
     pub windup_shot: Option<WindupShot>,
     /// Seconds of active jockey stance remaining (grants bonus poke reach).
     pub jockey_timer: f64,
+    /// The committed-action slot (#489): charging/executing/recovering for
+    /// whichever verb currently occupies it. Today only a standing-poke
+    /// tackle ever does -- see `crate::action_slot`'s module doc.
+    pub action: ActionSlot,
 }
 
 /// The closed, versioned `MatchEvent.kind` vocabulary.
@@ -317,8 +348,11 @@ pub enum MatchEventKind {
     Pass,
     /// A dribble touch.
     Touch,
-    /// A tackle attempt.
+    /// A successful tackle attempt.
     Tackle,
+    /// A whiffed committed tackle: resolved at the end of its executing
+    /// phase without winning the ball (#489).
+    TackleMiss,
     /// A press commit: the carrier took a heavy touch.
     PressCommitHeavyTouch,
     /// A press commit: the ball is exposed.
@@ -373,6 +407,7 @@ impl MatchEventKind {
             Pass => "pass",
             Touch => "touch",
             Tackle => "tackle",
+            TackleMiss => "tackle_miss",
             PressCommitHeavyTouch => "press_commit_heavy_touch",
             PressCommitExposedBall => "press_commit_exposed_ball",
             PressCommitCover => "press_commit_cover",
@@ -910,12 +945,53 @@ fn press_reason_wire(v: crate::brain::PressReason) -> &'static str {
         NoTrigger => "no_trigger",
     }
 }
+fn pass_intent_stage_wire(v: pass_intent::PassIntentStage) -> &'static str {
+    use pass_intent::PassIntentStage::*;
+    match v {
+        Idle => "idle",
+        Charging => "charging",
+    }
+}
+
 fn transition_team_wire(v: possession_transition::TransitionTeam) -> &'static str {
     use possession_transition::TransitionTeam::*;
     match v {
         Home => "home",
         Away => "away",
     }
+}
+
+fn append_pass_intent<W: CombatSnapshotWriter>(w: &mut W, d: &PassIntentState) {
+    w.scalar(scalar_str(pass_intent_stage_wire(d.stage)));
+    w.scalar(scalar_opt_i(d.target_player));
+    w.scalar(scalar_bool(d.lofted));
+    w.scalar(scalar_num(d.target_charge));
+}
+
+fn action_verb_wire(v: ActionVerb) -> &'static str {
+    match v {
+        ActionVerb::Tackle => "tackle",
+    }
+}
+
+fn action_phase_wire(v: ActionPhase) -> &'static str {
+    use ActionPhase::*;
+    match v {
+        None => "none",
+        Charging => "charging",
+        Executing => "executing",
+        Recovering => "recovering",
+    }
+}
+
+fn append_action_slot<W: CombatSnapshotWriter>(w: &mut W, d: &ActionSlot) {
+    w.scalar(scalar_opt_str(d.verb.map(action_verb_wire)));
+    w.scalar(scalar_str(action_phase_wire(d.phase)));
+    w.scalar(scalar_num(d.charge_elapsed));
+    w.scalar(scalar_num(d.remaining));
+    w.scalar(scalar_num(d.power));
+    w.scalar(scalar_opt_i(d.target_player));
+    w.scalar(scalar_num(d.release_threshold));
 }
 
 fn append_outfield_decision<W: CombatSnapshotWriter>(w: &mut W, d: &OutfieldDecisionState) {
@@ -1141,6 +1217,9 @@ fn append_player(w: &mut Encoder, player: &MatchPlayer) {
     field!("charge", scalar_num(player.charge));
     field!("pass_charge", scalar_num(player.pass_charge));
     field!("pass_target", scalar_opt_i(player.pass_target));
+    w.name("pass_intent");
+    w.literal("pi;");
+    append_pass_intent(w, &player.pass_intent);
     field!("windup_timer", scalar_num(player.windup_timer));
     w.name("windup_shot");
     if let Some(shot) = &player.windup_shot {
@@ -1159,6 +1238,9 @@ fn append_player(w: &mut Encoder, player: &MatchPlayer) {
         w.scalar(CanonicalScalar::Nil);
     }
     field!("jockey_timer", scalar_num(player.jockey_timer));
+    w.name("action");
+    w.literal("a;");
+    append_action_slot(w, &player.action);
 }
 
 fn append_event(w: &mut Encoder, event: &MatchEvent) {
@@ -1533,6 +1615,8 @@ pub fn validate(state: &MatchState) {
     // assertion inside it is the point, exactly as for `transition` above.
     for player in &state.players {
         let _ = outfield_decision::copy_state(&player.outfield_decision);
+        let _ = pass_intent::copy_state(&player.pass_intent);
+        let _ = action_slot::copy_state(&player.action);
     }
     let _ = outfield_press::copy_state(&state.outfield_press.home);
     let _ = outfield_press::copy_state(&state.outfield_press.away);
@@ -1824,6 +1908,49 @@ fn diff_outfield_decision(
     None
 }
 
+fn diff_pass_intent(
+    path: &str,
+    a: &PassIntentState,
+    b: &PassIntentState,
+) -> Option<MatchSnapshotDifference> {
+    diff_eq!(format!("{path}.stage"), a.stage, b.stage);
+    diff_eq!(
+        format!("{path}.target_player"),
+        a.target_player,
+        b.target_player
+    );
+    diff_eq!(format!("{path}.lofted"), a.lofted, b.lofted);
+    diff_num!(
+        format!("{path}.target_charge"),
+        a.target_charge,
+        b.target_charge
+    );
+    None
+}
+
+fn diff_action_slot(path: &str, a: &ActionSlot, b: &ActionSlot) -> Option<MatchSnapshotDifference> {
+    diff_eq!(format!("{path}.verb"), a.verb, b.verb);
+    diff_eq!(format!("{path}.phase"), a.phase, b.phase);
+    diff_num!(
+        format!("{path}.charge_elapsed"),
+        a.charge_elapsed,
+        b.charge_elapsed
+    );
+    diff_num!(format!("{path}.remaining"), a.remaining, b.remaining);
+    diff_num!(format!("{path}.power"), a.power, b.power);
+    diff_eq!(
+        format!("{path}.target_player"),
+        a.target_player,
+        b.target_player
+    );
+    diff_num!(
+        format!("{path}.release_threshold"),
+        a.release_threshold,
+        b.release_threshold
+    );
+    None
+}
+
 fn diff_windup_shot(
     path: &str,
     a: Option<&WindupShot>,
@@ -2043,6 +2170,13 @@ fn diff_player(path: &str, a: &MatchPlayer, b: &MatchPlayer) -> Option<MatchSnap
     diff_num!(format!("{path}.charge"), a.charge, b.charge);
     diff_num!(format!("{path}.pass_charge"), a.pass_charge, b.pass_charge);
     diff_eq!(format!("{path}.pass_target"), a.pass_target, b.pass_target);
+    if let Some(d) = diff_pass_intent(
+        &format!("{path}.pass_intent"),
+        &a.pass_intent,
+        &b.pass_intent,
+    ) {
+        return Some(d);
+    }
     diff_num!(
         format!("{path}.windup_timer"),
         a.windup_timer,
@@ -2060,6 +2194,9 @@ fn diff_player(path: &str, a: &MatchPlayer, b: &MatchPlayer) -> Option<MatchSnap
         a.jockey_timer,
         b.jockey_timer
     );
+    if let Some(d) = diff_action_slot(&format!("{path}.action"), &a.action, &b.action) {
+        return Some(d);
+    }
     None
 }
 
