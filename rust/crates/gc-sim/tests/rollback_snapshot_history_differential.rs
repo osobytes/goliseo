@@ -185,6 +185,7 @@ fn make_player(
         windup_timer: 0.0,
         windup_shot: None,
         jockey_timer: 0.0,
+        action: gc_sim::action_slot::new_state(),
     }
 }
 

@@ -4,6 +4,7 @@
 //! modules in parallel never contend on this file.
 #![deny(missing_docs)]
 
+pub mod action_slot;
 pub mod aerial;
 pub mod ai;
 pub mod ai_driven_evidence;

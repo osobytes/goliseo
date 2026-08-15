@@ -31,6 +31,7 @@
 //! (ARCHITECTURE.md §3 rule 3's default), not `s.players`. Call sites translate between
 //! the two conventions explicitly.
 
+use crate::action_slot::{self, ActionPhase};
 use crate::aerial;
 use crate::ai;
 use crate::ball_flight::{
@@ -69,6 +70,7 @@ use crate::tuning::Tuning;
 use gc_core::deterministic_math;
 use gc_core::rng;
 use gc_core::vec2::Vec2;
+use gc_data::action_tuning::ActionVerb;
 use gc_data::formations::{self, FormationRole};
 use gc_data::players::{PlayerData, Position};
 use gc_data::showcase_player_compatibility::{self, ShowcasePlayerCompatibilityData};
@@ -153,7 +155,6 @@ const SLIDE_BASE_MIN: f64 = 200.0;
 const SLIDE_FRICTION: f64 = 2.5;
 const SLIDE_REACH: f64 = 38.0;
 const SLIDE_CD: f64 = 0.9;
-const STAND_TIMER: f64 = 0.22;
 const STAND_REACH: f64 = 34.0;
 const STAND_CD: f64 = 0.4;
 const STUN_SLOW: f64 = 0.4;
@@ -572,6 +573,7 @@ fn build_team(
             windup_timer: 0.0,
             windup_shot: None,
             jockey_timer: 0.0,
+            action: action_slot::new_state(),
         });
     }
     list
@@ -766,6 +768,7 @@ fn place_kickoff(s: &mut MatchState, kicking: Team) {
         p.windup_timer = 0.0;
         p.windup_shot = None;
         p.jockey_timer = 0.0;
+        p.action = action_slot::clear(&p.action);
     }
     // Give the kicking team the ball at the centre spot.
     let kicker: i64;
@@ -2068,17 +2071,352 @@ fn keeper_hold_pos(s: &MatchState, keeper_idx: i64) -> Vec2 {
     Vec2::new(hold_x, keeper.pos.y)
 }
 
+/// The single choke point for changing ball ownership (#489). Applies the
+/// possession invariant here, once: the OUTGOING owner's committed action
+/// (whichever verb, whichever phase) clears unconditionally, because
+/// `action_slot::clear` does not ask which verb it is clearing. Every
+/// `s.owner` assignment in this module goes through this function instead
+/// of writing the field directly — `tests/action_slot_possession_invariant.rs`
+/// proves no call site bypasses it by construction: it walks every
+/// possession-changing entry point and confirms the same behaviour.
+fn set_owner(s: &mut MatchState, new_owner: Option<i64>) {
+    if s.owner != new_owner
+        && let Some(outgoing) = s.owner
+    {
+        let p = &mut s.players[(outgoing - 1) as usize];
+        p.action = action_slot::clear(&p.action);
+    }
+    s.owner = new_owner;
+}
+
+/// Distance from `challenger_idx` to the ball, and the effective reach a
+/// standing-poke tackle needs to beat it, against `target_idx` (the
+/// player this specific committed poke is aimed at). The exact
+/// `d`/`reach`/`species_reach` computation `attempt_steals` used to make
+/// once per continuous check; now made once at the arrival-trigger check
+/// and once again at resolution, both inside `advance_tackle_actions`.
+fn tackle_distance_and_reach(
+    s: &MatchState,
+    challenger_idx: i64,
+    target_idx: i64,
+    human: bool,
+) -> (f64, f64) {
+    let challenger = &s.players[(challenger_idx - 1) as usize];
+    let target = &s.players[(target_idx - 1) as usize];
+    let mut d = challenger.pos.dist(s.ball);
+    let species_reach =
+        species::collision_reach(challenger.owned_verb) - species::dribble_protection(target.owned_verb);
+    // The human's poke also works at body-contact range from ANY angle (a
+    // toe through the legs): chasing a carrier is the default defensive
+    // situation and must be winnable.
+    if human && challenger.pos.dist(target.pos) <= STEAL_DIST + species_reach {
+        d = d.min(STEAL_DIST);
+    }
+    let reach = if human {
+        let jockey_bonus = if challenger.jockey_timer > 0.0 {
+            JOCKEY_REACH_BONUS
+        } else {
+            0.0
+        };
+        STAND_REACH + jockey_bonus
+    } else {
+        STEAL_DIST
+    };
+    (d, reach + species_reach)
+}
+
+/// Win the ball off `owner_idx` for `challenger_idx`: pop it loose toward
+/// the challenger, cancel the owner's pending wind-up, and (for a slide)
+/// knock the owner down. Shared by the slide tackle (`attempt_steals`,
+/// still an instantaneous, continuously-checked lunge) and a resolved
+/// standing-poke tackle (`advance_tackle_actions`) so the two producers
+/// cannot drift.
+fn win_ball(s: &mut MatchState, owner_idx: i64, challenger_idx: i64, sliding: bool) {
+    let owner_pos = s.players[(owner_idx - 1) as usize].pos;
+    let p_pos = s.players[(challenger_idx - 1) as usize].pos;
+    let p_facing = s.players[(challenger_idx - 1) as usize].facing;
+    let mut dir = p_pos.sub(owner_pos);
+    if dir.x == 0.0 && dir.y == 0.0 {
+        dir = p_facing;
+    }
+    let pid = s.players[(challenger_idx - 1) as usize].id.clone();
+    s.events.push(MatchEvent {
+        kind: MatchEventKind::Tackle,
+        x: owner_pos.x,
+        y: owner_pos.y,
+        player: Some(pid),
+        save_style: None,
+        style: None,
+        outcome: None,
+        jumping: None,
+        difficulty: None,
+        shot_type: None,
+        keeper_state: None,
+        keeper_depth: None,
+        on_target: None,
+    });
+    {
+        let owner_mut = &mut s.players[(owner_idx - 1) as usize];
+        owner_mut.windup_timer = 0.0;
+        owner_mut.windup_shot = None;
+    }
+    for player in &mut s.players {
+        player.keeper_set = 0.0;
+    }
+    set_owner(s, None);
+    s.ball_vel = dir.normalized().scale(TACKLE_POP_SPEED);
+    s.pickup_cd = 0.12;
+    if sliding {
+        let owner_mut = &mut s.players[(owner_idx - 1) as usize];
+        owner_mut.stun_timer = owner_mut.stun_timer.max(STUN_TIME);
+    }
+}
+
+/// Resolve a standing-poke tackle whose executing phase is due: a single
+/// check against the target's THEN-current position (not the continuous
+/// per-tick check the old instant-resolve tackle used) — see
+/// `crate::action_slot`'s module doc and this PR's description for why a
+/// longer `ACTION_TACKLE_COMMIT` therefore raises the whiff rate rather
+/// than only ever helping. A target that no longer owns the ball at all
+/// (it changed hands to someone else, or went out, while this charge was
+/// committed) is an automatic miss: commit immunity keeps the swing on
+/// schedule, but there is nothing left to win it from.
+/// Whether `target_idx` is still a legitimate standing-poke target for
+/// `challenger_idx`: they must still hold the ball, and must be on the
+/// OPPOSING team -- never a teammate and never `challenger_idx` itself.
+/// Shared by the charging-phase abort check and the executing-phase hit
+/// check so the two can never disagree about what counts as a live target.
+fn tackle_target_is_live(s: &MatchState, challenger_idx: i64, target_idx: i64) -> bool {
+    s.owner == Some(target_idx)
+        && target_idx != challenger_idx
+        && s.players[(target_idx - 1) as usize].team != s.players[(challenger_idx - 1) as usize].team
+}
+
+fn resolve_tackle(s: &mut MatchState, challenger_idx: i64, miss_recovery: f64) {
+    let target = s.players[(challenger_idx - 1) as usize].action.target_player;
+    let human = is_human_player(s, challenger_idx);
+    let hit = target.is_some_and(|t| {
+        tackle_target_is_live(s, challenger_idx, t) && {
+            let (d, reach) = tackle_distance_and_reach(s, challenger_idx, t, human);
+            d <= reach
+        }
+    });
+    if hit {
+        let owner_idx = target.expect("hit requires a live target");
+        win_ball(s, owner_idx, challenger_idx, false);
+        let p = &mut s.players[(challenger_idx - 1) as usize];
+        p.action = action_slot::resolve_success(&p.action);
+    } else {
+        let (px, py, pid) = {
+            let p = &s.players[(challenger_idx - 1) as usize];
+            (p.pos.x, p.pos.y, p.id.clone())
+        };
+        s.events.push(MatchEvent {
+            kind: MatchEventKind::TackleMiss,
+            x: px,
+            y: py,
+            player: Some(pid),
+            save_style: None,
+            style: None,
+            outcome: None,
+            jumping: None,
+            difficulty: None,
+            shot_type: None,
+            keeper_state: None,
+            keeper_depth: None,
+            on_target: None,
+        });
+        let p = &mut s.players[(challenger_idx - 1) as usize];
+        p.action = action_slot::resolve_miss(&p.action, miss_recovery);
+    }
+}
+
+/// Advance every player's standing-poke tackle action slot by one tick:
+/// charge, release, resolve, and recover (#489). Possession changes and the
+/// invariant are handled as they happen, at the single `set_owner` choke
+/// point; this function is the rest of the per-tick ordering the issue
+/// documents -- advance phase timers, check release triggers in stable
+/// player order, resolve a due execution, enter recovery for a resolved
+/// miss.
+///
+/// Pass 1 advances every player already mid-action, in stable index order.
+/// Pass 2 considers a FRESH AI commit for anyone idle -- a human's commit
+/// is decided in `move_human_player`, where the raw button edge lives, on
+/// the same #531 discipline `pass_intent`/`combat_intent` already follow:
+/// the AI never gets a private fast path, only the same `MatchInput`-shaped
+/// decision a human's press represents.
+fn advance_tackle_actions(
+    s: &mut MatchState,
+    combat_state: Option<&CombatMatchState>,
+    dt: f64,
+    tune: &Tuning,
+) {
+    let full_charge = tune.value("ACTION_TACKLE_FULL_CHARGE");
+    let commit_seconds = tune.value("ACTION_TACKLE_COMMIT");
+    let miss_recovery = tune.value("ACTION_TACKLE_MISS_RECOVERY");
+
+    for i in 0..s.players.len() {
+        let idx = (i + 1) as i64;
+        let (verb, phase) = (s.players[i].action.verb, s.players[i].action.phase);
+        if verb != Some(ActionVerb::Tackle) {
+            continue;
+        }
+        match phase {
+            ActionPhase::Charging => {
+                let human = is_human_player(s, idx);
+                let target = s.players[i].action.target_player;
+                if let Some(t) = target
+                    && !tackle_target_is_live(s, idx, t)
+                {
+                    // The situation this charge was chasing evaporated
+                    // before it ever got a shot at it (the ball changed
+                    // hands, went loose, or -- should a producer bug ever
+                    // hand this a same-team or self target again --
+                    // never was a legitimate target to begin with): abort
+                    // rather than resolve against it.
+                    s.players[i].action = action_slot::clear(&s.players[i].action);
+                    continue;
+                }
+                let arrived = target.is_some_and(|t| {
+                    let (d, reach) = tackle_distance_and_reach(s, idx, t, human);
+                    d <= reach
+                });
+                s.players[i].action = action_slot::advance_charge(&s.players[i].action, dt);
+                let held = s.players[i].action.charge_elapsed;
+                let trigger = action_slot::evaluate_release(action_slot::ReleaseTriggerInputs {
+                    input_released: false,
+                    held_seconds: held,
+                    full_charge,
+                    arrived,
+                    // Trigger 4 (AI danger threshold) is not exercised by
+                    // this verb in this PR -- see `action_slot`'s module doc.
+                    ai_danger: None,
+                    ai_threshold: 0.0,
+                });
+                if trigger.is_some() {
+                    s.players[i].action = action_slot::release(
+                        &s.players[i].action,
+                        full_charge,
+                        // No graduated power for a standing poke in this PR
+                        // (see this PR's description): every release lands
+                        // at full power.
+                        1.0,
+                        commit_seconds,
+                    );
+                }
+            }
+            ActionPhase::Executing => {
+                s.players[i].action = action_slot::advance_remaining(&s.players[i].action, dt);
+                if action_slot::due(&s.players[i].action) {
+                    resolve_tackle(s, idx, miss_recovery);
+                }
+            }
+            ActionPhase::Recovering => {
+                s.players[i].action = action_slot::advance_remaining(&s.players[i].action, dt);
+                if action_slot::due(&s.players[i].action) {
+                    s.players[i].action = action_slot::end_recovery(&s.players[i].action);
+                }
+            }
+            ActionPhase::None => {}
+        }
+        // `tackle_timer` is presentation-facing (`gc_render::player_pose`
+        // derives the existing poke pose from it): mirror the action
+        // slot's own executing-phase countdown into it rather than run a
+        // second, independently-drifting timer. Zero outside `Executing` --
+        // charging and recovering get no pose of their own in this PR (see
+        // this PR's description on render scope).
+        s.players[i].tackle_timer = if s.players[i].action.phase == ActionPhase::Executing {
+            s.players[i].action.remaining
+        } else {
+            0.0
+        };
+    }
+
+    let Some(owner_idx) = s.owner else {
+        return;
+    };
+    let owner = &s.players[(owner_idx - 1) as usize];
+    if owner.is_keeper && !owner.feet_ball {
+        return;
+    }
+    if owner.dodge_timer > 0.0 {
+        return;
+    }
+    if s.ball_z > GROUND_GRAB_HEIGHT {
+        return;
+    }
+    let owner_team = owner.team;
+    for i in 0..s.players.len() {
+        let idx = (i + 1) as i64;
+        let blocked = combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), idx));
+        let p = &s.players[i];
+        if p.team == owner_team
+            || p.is_keeper
+            || p.stun_timer > 0.0
+            || blocked
+            || p.action.phase != ActionPhase::None
+            || p.dash_cd > 0.0
+            || is_human_player(s, idx)
+        {
+            continue;
+        }
+        if p.pos.dist(s.ball) > tune.value("STEAL_ATTEMPT") {
+            continue;
+        }
+        let press = team_press(s, p.team);
+        if press.presser_index != Some(idx as u32)
+            || press.mode != outfield_press::StablePressMode::Commit
+        {
+            continue;
+        }
+        let reason = press.reason;
+        assert!(
+            reason != brain::PressReason::NoTrigger,
+            "AI press commit requires a stable reason"
+        );
+        let (pid, ppos) = {
+            let p = &s.players[i];
+            (p.id.clone(), p.pos)
+        };
+        {
+            let pm = &mut s.players[i];
+            pm.dash_cd = tune.value("AI_STEAL_CD");
+            pm.action =
+                action_slot::commit_charge(&pm.action, ActionVerb::Tackle, Some(owner_idx), 0.0);
+        }
+        let commit_kind = press_reason_to_event_kind(reason);
+        s.events.push(MatchEvent {
+            kind: commit_kind,
+            x: ppos.x,
+            y: ppos.y,
+            player: Some(pid),
+            save_style: None,
+            style: None,
+            outcome: None,
+            jumping: None,
+            difficulty: None,
+            shot_type: None,
+            keeper_state: None,
+            keeper_depth: None,
+            on_target: None,
+        });
+    }
+}
+
 /// Knock the ball loose when a challenger reaches THE BALL — not the
 /// carrier's body. The ball sticks a step ahead of the carrier's feet, so a
 /// carrier who turns their body between the challenger and the ball
-/// SHIELDS it: challenges from behind come up short. The human challenges
-/// with a standing poke or a slide (longer reach); an AI defender COMMITS
-/// to a poke as soon as the ball looks reachable and pays its cooldown even
-/// on a whiff, so a carrier who keeps moving makes defenders miss. A
-/// stunned defender can't tackle. The ball pops toward the challenger so a
-/// clean tackle tends to win possession; a slide also knocks the carrier
-/// down.
-fn attempt_steals(s: &mut MatchState, combat_state: Option<&CombatMatchState>, tune: &Tuning) {
+/// SHIELDS it: challenges from behind come up short. A stunned defender
+/// can't tackle. The ball pops toward the challenger so a clean tackle
+/// tends to win possession.
+///
+/// This function now handles only the KEEPER SMOTHER and the SLIDE tackle
+/// (#489): both stay the instantaneous, continuously-checked lunges they
+/// always were. The standing-poke tackle — human and AI alike — moved to
+/// `advance_tackle_actions`'s committed-action slot, where a charge,
+/// executing window, and a resolved miss's recovery cost all live; see that
+/// function and `crate::action_slot`'s module doc.
+fn attempt_steals(s: &mut MatchState, combat_state: Option<&CombatMatchState>) {
     let Some(owner_idx) = s.owner else {
         return;
     };
@@ -2128,7 +2466,7 @@ fn attempt_steals(s: &mut MatchState, combat_state: Option<&CombatMatchState>, t
             let owner_mut = &mut s.players[(owner_idx - 1) as usize];
             owner_mut.windup_timer = 0.0;
             owner_mut.windup_shot = None;
-            s.owner = Some(idx);
+            set_owner(s, Some(idx));
             s.ball_vel = Vec2::new(0.0, 0.0);
             s.ball_spin = 0.0;
             let keeper_mut = &mut s.players[i];
@@ -2147,128 +2485,24 @@ fn attempt_steals(s: &mut MatchState, combat_state: Option<&CombatMatchState>, t
         let owner_pos = s.players[(owner_idx - 1) as usize].pos;
         let p = &s.players[i];
         let blocked = combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), idx));
-        if p.team != owner_team && !p.is_keeper && p.stun_timer <= 0.0 && !blocked {
-            let human = is_human_player(s, idx);
+        if p.team != owner_team
+            && !p.is_keeper
+            && p.stun_timer <= 0.0
+            && !blocked
+            && is_human_player(s, idx)
+            && p.slide_timer > 0.0
+        {
             let mut d = p.pos.dist(s.ball); // reach for the ball: shielding matters
             let species_reach =
                 species::collision_reach(p.owned_verb) - species::dribble_protection(owner_verb);
             // The human's poke also works at body-contact range from ANY
             // angle (a toe through the legs): chasing a carrier is the
-            // default defensive situation and must be winnable. AI
-            // challenges stay strictly ball-side, so the human's own
-            // shielding keeps working.
-            if human && p.pos.dist(owner_pos) <= STEAL_DIST + species_reach {
+            // default defensive situation and must be winnable.
+            if p.pos.dist(owner_pos) <= STEAL_DIST + species_reach {
                 d = d.min(STEAL_DIST);
             }
-            let mut sliding = false;
-            let mut active = false;
-            let mut reach = STEAL_DIST;
-            if human {
-                if p.slide_timer > 0.0 {
-                    active = true;
-                    reach = SLIDE_REACH;
-                    sliding = true;
-                } else if p.tackle_timer > 0.0 {
-                    // A poke released from jockey stance gets bonus reach:
-                    // the defender committed to the shadow and earned a
-                    // clean strike.
-                    let jockey_bonus = if p.jockey_timer > 0.0 {
-                        JOCKEY_REACH_BONUS
-                    } else {
-                        0.0
-                    };
-                    active = true;
-                    reach = STAND_REACH + jockey_bonus;
-                }
-            } else {
-                let press = team_press(s, p.team);
-                if press.presser_index == Some(idx as u32)
-                    && press.mode == outfield_press::StablePressMode::Commit
-                    && p.dash_cd <= 0.0
-                    && d <= tune.value("STEAL_ATTEMPT")
-                {
-                    // The assigned AI presser pokes only after its
-                    // serialized contain-or-commit resolver names an
-                    // explainable reason.
-                    let reason = press.reason;
-                    assert!(
-                        reason != brain::PressReason::NoTrigger,
-                        "AI press commit requires a stable reason"
-                    );
-                    active = true;
-                    let pid = p.id.clone();
-                    let ppos = p.pos;
-                    {
-                        let pm = &mut s.players[i];
-                        pm.dash_cd = tune.value("AI_STEAL_CD");
-                        pm.tackle_timer = STAND_TIMER; // poke pose for the renderer
-                    }
-                    let commit_kind = press_reason_to_event_kind(reason);
-                    s.events.push(MatchEvent {
-                        kind: commit_kind,
-                        x: ppos.x,
-                        y: ppos.y,
-                        player: Some(pid),
-                        save_style: None,
-                        style: None,
-                        outcome: None,
-                        jumping: None,
-                        difficulty: None,
-                        shot_type: None,
-                        keeper_state: None,
-                        keeper_depth: None,
-                        on_target: None,
-                    });
-                    if d > STEAL_DIST {
-                        // Lunged past a shielded ball: stumble briefly.
-                        // Baiting the poke and breaking away is the
-                        // carrier's core move.
-                        let pm = &mut s.players[i];
-                        pm.stun_timer = pm.stun_timer.max(tune.value("WHIFF_STUMBLE"));
-                    }
-                }
-            }
-            if active && d <= reach + species_reach {
-                let owner_pos = s.players[(owner_idx - 1) as usize].pos;
-                let p_pos = s.players[i].pos;
-                let p_facing = s.players[i].facing;
-                let mut dir = p_pos.sub(owner_pos);
-                if dir.x == 0.0 && dir.y == 0.0 {
-                    dir = p_facing;
-                }
-                let pid = s.players[i].id.clone();
-                s.events.push(MatchEvent {
-                    kind: MatchEventKind::Tackle,
-                    x: owner_pos.x,
-                    y: owner_pos.y,
-                    player: Some(pid),
-                    save_style: None,
-                    style: None,
-                    outcome: None,
-                    jumping: None,
-                    difficulty: None,
-                    shot_type: None,
-                    keeper_state: None,
-                    keeper_depth: None,
-                    on_target: None,
-                });
-                // Cancel any pending wind-up on the carrier: the tackle beats
-                // the shot.
-                {
-                    let owner_mut = &mut s.players[(owner_idx - 1) as usize];
-                    owner_mut.windup_timer = 0.0;
-                    owner_mut.windup_shot = None;
-                }
-                for player in &mut s.players {
-                    player.keeper_set = 0.0;
-                }
-                s.owner = None;
-                s.ball_vel = dir.normalized().scale(TACKLE_POP_SPEED);
-                s.pickup_cd = 0.12;
-                if sliding {
-                    let owner_mut = &mut s.players[(owner_idx - 1) as usize];
-                    owner_mut.stun_timer = owner_mut.stun_timer.max(STUN_TIME); // slide knocks them down
-                }
+            if d <= SLIDE_REACH + species_reach {
+                win_ball(s, owner_idx, idx, true);
                 return;
             }
         }
@@ -3693,15 +3927,24 @@ fn move_human_player(
     let neutral = MatchInput::default();
     let input = *inputs.get(&idx).unwrap_or(&neutral);
     let aerial_active = aerial_active_for_input(s, idx, &input);
+    // A tackle charge only ever names an OPPOSING owner as its target --
+    // never a teammate and never the presser's own self, so a ball-carrying
+    // human pressing tackle on themselves can never resolve a "hit" against
+    // their own action slot (see `advance_tackle_actions`'s matching guard
+    // on the AI side, and this PR's description on the crash this closes).
+    let team = s.players[i].team;
+    let opposing_owner = s.owner.filter(|&o| o != idx && s.players[(o - 1) as usize].team != team);
     let p = &mut s.players[i];
     // Tackle button: a committed slide while SPRINTING, else a standing
     // poke — one legible rule (sprint + tackle = the big slide). Slide
-    // speed scales off current velocity (p.vel) so it feels relative.
+    // speed scales off current velocity (p.vel) so it feels relative. The
+    // standing poke commits through the same action slot an AI presser
+    // does (#489, `advance_tackle_actions`) -- no private human fast path.
     if input.dash
         && !aerial_active
         && p.aerial_recovery <= 0.0
         && p.slide_timer <= 0.0
-        && p.tackle_timer <= 0.0
+        && p.action.phase == ActionPhase::None
         && p.tackle_cd <= 0.0
         && p.stun_timer <= 0.0
     {
@@ -3718,7 +3961,7 @@ fn move_human_player(
             p.facing = d;
             p.tackle_cd = SLIDE_CD;
         } else {
-            p.tackle_timer = STAND_TIMER;
+            p.action = action_slot::commit_charge(&p.action, ActionVerb::Tackle, opposing_owner, 0.0);
             p.tackle_cd = STAND_CD;
         }
     }
@@ -3784,8 +4027,15 @@ fn move_human_player(
         // and off at the refill rate.
         let want = input.sprint && moving && p.stun_timer <= 0.0 && !jockeying;
         update_sprint(p, want, dt, tune);
-        let mut mv =
-            p.move_speed * (if p.stun_timer > 0.0 { STUN_SLOW } else { 1.0 }) * combat_scale;
+        let recovery_scale = if p.action.phase == ActionPhase::Recovering {
+            tune.value("ACTION_RECOVERY_CONTROL")
+        } else {
+            1.0
+        };
+        let mut mv = p.move_speed
+            * (if p.stun_timer > 0.0 { STUN_SLOW } else { 1.0 })
+            * recovery_scale
+            * combat_scale;
         if jockeying {
             mv *= tune.value("JOCKEY_SLOW");
         } else if p.sprinting {
@@ -3930,12 +4180,16 @@ fn move_ai_owner(
     };
     let gc = Vec2::new(goal.x + goal.w / 2.0, goal.y + goal.h / 2.0);
     let (pressure, threat_i) = nearest_outfield_opponent(s, &p);
-    // React on the NEXT tick after the tackle begins. Reading a same-frame
-    // human button here would make AI carriers psychic and invalidate a
-    // correctly timed challenge.
+    // React while a standing-poke tackle is CHARGING, not merely pressed
+    // this instant (#489 gives the charge phase a real, telegraphed
+    // duration precisely so a carrier can read and answer it — the same
+    // "evade a telegraph" idea `combat_policy`'s `EVADE_WINDOW_TICKS`
+    // already uses for shots). A same-tick reaction to a same-tick slide
+    // would still make AI carriers psychic, so that half keeps its
+    // one-tick-late check.
     let threat_committed = threat_i.is_some_and(|ti| {
         let t = &s.players[ti];
-        (t.tackle_timer > 0.0 && t.tackle_timer < STAND_TIMER)
+        (t.action.verb == Some(ActionVerb::Tackle) && t.action.phase == ActionPhase::Charging)
             || (t.slide_timer > 0.0 && t.slide_timer < SLIDE_DURATION)
     });
     if threat_committed
@@ -4370,7 +4624,15 @@ fn move_offball_outfield(
     // beyond the wake radius — no robotic shuffling on the spot.
     let p = s.players[i].clone();
     let target = targets.get(&idx).copied().unwrap_or(p.anchor);
-    let mv = p.move_speed * (if p.stun_timer > 0.0 { STUN_SLOW } else { 1.0 }) * combat_scale;
+    let recovery_scale = if p.action.phase == ActionPhase::Recovering {
+        tune.value("ACTION_RECOVERY_CONTROL")
+    } else {
+        1.0
+    };
+    let mv = p.move_speed
+        * (if p.stun_timer > 0.0 { STUN_SLOW } else { 1.0 })
+        * recovery_scale
+        * combat_scale;
     let press_state = team_press(s, p.team);
     let active_presser = press_state.presser_index == Some(idx as u32);
     // A counter-presser is closing the ball, not containing it: the
@@ -4438,7 +4700,7 @@ fn run_eligible(
         && !is_human_player(s, player_index)
         && player.stun_timer <= 0.0
         && player.slide_timer <= 0.0
-        && player.tackle_timer <= 0.0
+        && player.action.phase == ActionPhase::None
         && player.dodge_timer <= 0.0
         && player.jockey_timer <= 0.0
         && player.windup_timer <= 0.0
@@ -6755,9 +7017,9 @@ pub fn step(
         if p.slide_timer > 0.0 {
             p.slide_timer = (p.slide_timer - dt).max(0.0);
         }
-        if p.tackle_timer > 0.0 {
-            p.tackle_timer = (p.tackle_timer - dt).max(0.0);
-        }
+        // `tackle_timer` is no longer decayed here: `advance_tackle_actions`
+        // (#489) is its sole writer now, mirroring the action slot's own
+        // executing-phase countdown -- see that function's trailing comment.
         if p.tackle_cd > 0.0 {
             p.tackle_cd = (p.tackle_cd - dt).max(0.0);
         }
@@ -6843,7 +7105,8 @@ pub fn step(
     let combat_contacts = combat_state
         .as_deref_mut()
         .map(|cs| combat::collect_contacts(s, cs));
-    attempt_steals(s, combat_state.as_deref(), tune);
+    attempt_steals(s, combat_state.as_deref());
+    advance_tackle_actions(s, combat_state.as_deref(), dt, tune);
     if let (Some(cs), Some(contacts)) = (combat_state.as_deref_mut(), combat_contacts) {
         combat::resolve_contacts(s, cs, &contacts);
     }

@@ -115,6 +115,7 @@ fn make_player(id: &str, team: Team, is_keeper: bool, x: f64, y: f64) -> MatchPl
         windup_timer: 0.0,
         windup_shot: None,
         jockey_timer: 0.0,
+        action: gc_sim::action_slot::new_state(),
     }
 }
 
@@ -638,9 +639,20 @@ fn a_rollback_boundary_mid_charge_resimulates_to_exactly_one_release_no_strand_n
 /// AI-decided throughout.
 #[test]
 fn a_real_tackle_mid_charge_dispossesses_the_ai_and_releases_no_pass() {
-    let tune = fast_charge_tuning(3.0); // default PASS_RANGE_MIN/MAX: a
+    let mut tune = fast_charge_tuning(3.0); // default PASS_RANGE_MIN/MAX: a
     // 200px pass needs several real ticks to charge at the registered
     // rate ceiling, leaving a genuine window to tackle into.
+    //
+    // #489: a standing poke is no longer instant -- it charges, then
+    // executes, then resolves. Driven to its declared floor here (0.0 for
+    // the charge, ACTION_TACKLE_COMMIT's registered min of 0.05s for the
+    // commit -- `Tuning::set` clamps into range, so 0.0 would silently
+    // become 0.05 anyway) so this fixture still isolates "does a REAL
+    // tackle clear pass_intent" rather than becoming a test of tackle
+    // timing, which gc-sim/src/action_slot.rs and the knob-contract tests
+    // already cover.
+    tune.set("ACTION_TACKLE_FULL_CHARGE", 0.0);
+    tune.set("ACTION_TACKLE_COMMIT", 0.05);
 
     let carrier_pos = Vec2::new(500.0, 270.0);
     let target_pos = Vec2::new(700.0, 270.0);
@@ -700,8 +712,13 @@ fn a_real_tackle_mid_charge_dispossesses_the_ai_and_releases_no_pass() {
         "must not have released yet"
     );
 
-    // The real tackle: a standing poke, thrown on this tick only, through
-    // the same input path a human's dash button always uses.
+    // The real tackle: a standing poke, committed on this tick through the
+    // same input path a human's dash button always uses. #489: pressing
+    // dash only COMMITS the charge; at the floor tuning above it releases
+    // into its executing phase this same tick and takes a further
+    // ACTION_TACKLE_COMMIT (0.05s, ~3 ticks at 60Hz) to resolve -- input is
+    // never read again after the press (#489's "input loss does not
+    // cancel"), so the follow-up ticks are neutral input on purpose.
     sim_match::step(
         &mut state,
         DT,
@@ -712,10 +729,13 @@ fn a_real_tackle_mid_charge_dispossesses_the_ai_and_releases_no_pass() {
         None,
         &tune,
     );
+    for _ in 0..5 {
+        step_once(&mut state, &tune);
+    }
 
     assert_eq!(
         state.owner, None,
-        "a successful poke tackle knocks the ball loose -- attempt_steals unconditionally \
+        "a successful poke tackle knocks the ball loose -- win_ball unconditionally \
          clears s.owner on any successful tackle, sliding or standing"
     );
     let carrier = &state.players[(carrier_idx - 1) as usize];

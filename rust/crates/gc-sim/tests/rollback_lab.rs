@@ -511,7 +511,11 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // re-record -- `fixture_tape` folds those boundary hashes into the
     // `InputTape` this digest covers, so it moves whenever they do, even
     // though nothing about the frozen `frame_wires`/`identity` half changed.
-    assert_eq!(rollback_lab::tape_digest(&tape), "91065215ae586ea6");
+    //
+    // Re-recorded again for #489, same reason: `identity.snapshot_version`
+    // (12 -> 13, `MatchPlayer::action`) and the derived `boundary_hashes`
+    // both moved in `gc-data/src/omp1_determinism.json`.
+    assert_eq!(rollback_lab::tape_digest(&tape), "7f9fea1e03562a5e");
 }
 
 #[test]
@@ -915,7 +919,12 @@ fn uses_one_logical_result_for_incremental_and_synchronous_execution() {
     assert_eq!(accounting.event_bytes, 0);
     assert_eq!(incremental.metrics.peaks.input_bytes, 11867);
     assert!(incremental.metrics.peaks.output_bytes > 0);
-    assert_eq!(incremental.metrics.peaks.event_bytes, 833);
+    // #489: standing-poke tackles now miss far more often than the old
+    // instant-resolve check ever let them (see tests/knob_contract.rs's
+    // measured whiff_rate), and each whiff is a new `TackleMiss` event this
+    // scenario did not emit before -- the retained event window's peak
+    // byte usage grew with the event count, 833 -> 2929.
+    assert_eq!(incremental.metrics.peaks.event_bytes, 2929);
     assert!(incremental.history_accounting.total_bytes > 0);
     assert!(incremental.metrics.peaks.history_bytes >= incremental.history_accounting.total_bytes);
 }

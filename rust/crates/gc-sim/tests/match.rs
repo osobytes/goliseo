@@ -159,6 +159,12 @@ fn step(s: &mut MatchState, dt: f64, i: &MatchInput, tune: &Tuning) {
 // Frames needed to advance past the 0.15s shot wind-up at 1/60 s per step.
 const WINDUP_FRAMES: u32 = 10;
 
+// Frames needed for a standing-poke tackle to charge, execute and resolve
+// at the shipped defaults (#489: ACTION_TACKLE_FULL_CHARGE 0.1s +
+// ACTION_TACKLE_COMMIT 0.15s = 0.25s, ~15 ticks at 1/60s), plus margin for
+// an AI commit decision that does not fire on the very first eligible tick.
+const TACKLE_FRAMES: u32 = 30;
+
 fn step_frames(s: &mut MatchState, n: u32, tune: &Tuning) {
     for _ in 0..n {
         step(s, 1.0 / 60.0, &no_input(), tune);
@@ -182,6 +188,27 @@ const PASS_INTENT_BUDGET_TICKS: u32 = 180;
 /// assertion (ball velocity/spin, `receive_timer`, `s.owner`) reading the
 /// exact tick the release happened on, the same way the single-`step()`
 /// fixtures this replaces did.
+/// Steps at the canonical 1/60s tick until a standing-poke tackle resolves
+/// (a `Tackle` hit or a `TackleMiss`) as an event on that exact tick, or
+/// `budget` ticks pass without either. #489: a poke charges and executes
+/// before it resolves one way or the other, so a fixture built as "one
+/// `step()` call, then assert who has the ball" no longer holds -- and
+/// unlike `step_until_event`, blindly stepping a fixed budget PAST
+/// resolution risks a second, unrelated thing happening in the same
+/// fixture (a re-acquired loose ball, a fresh shot windup) before the
+/// assertions run. Stopping on the exact resolution tick is what
+/// `step_until_event` already does for a release; this is the same idea for
+/// the two ways a tackle can end.
+fn step_until_tackle_settled(s: &mut MatchState, budget: u32, tune: &Tuning) -> bool {
+    for _ in 0..budget {
+        step(s, 1.0 / 60.0, &no_input(), tune);
+        if has_event(s, MatchEventKind::Tackle) || has_event(s, MatchEventKind::TackleMiss) {
+            return true;
+        }
+    }
+    false
+}
+
 fn step_until_event(s: &mut MatchState, kind: MatchEventKind, budget: u32, tune: &Tuning) -> bool {
     for _ in 0..budget {
         step(s, 1.0 / 60.0, &no_input(), tune);
@@ -474,6 +501,9 @@ fn a_standing_tackle_slow_knocks_the_ball_loose() {
         }),
         &tune,
     );
+    // #489: a standing poke now charges and executes before it resolves --
+    // it no longer wins the ball on the same tick the button was pressed.
+    step_until_tackle_settled(&mut s, TACKLE_FRAMES, &tune);
     assert!(
         s.owner != Some(away_idx),
         "carrier loses possession to the standing tackle"
@@ -578,6 +608,9 @@ fn the_same_challenge_from_the_ball_side_wins_it() {
     s.players[(controlled - 1) as usize].pos = Vec2::new(60.0, 60.0);
     s.kickoff_hold = 0.0;
     step(&mut s, 0.016, &no_input(), &tune);
+    // #489: the AI defender's commit now charges and executes before it
+    // resolves -- give it the full window rather than one tick.
+    step_until_tackle_settled(&mut s, TACKLE_FRAMES, &tune);
     assert!(
         s.owner != Some(away_idx),
         "a front-on challenge dislodges the ball"
@@ -606,6 +639,8 @@ fn the_human_can_poke_the_ball_loose_from_behind_at_contact_range() {
         }),
         &tune,
     );
+    // #489: the poke charges and executes before it resolves.
+    step_until_tackle_settled(&mut s, TACKLE_FRAMES, &tune);
     assert!(
         s.owner != Some(away_idx),
         "a contact-range poke wins even from behind"
@@ -630,7 +665,16 @@ fn a_jogging_non_sprint_tackle_is_a_poke_not_a_slide() {
     );
     let me = &s.players[(controlled - 1) as usize];
     assert!(me.slide_timer <= 0.0, "no committed slide without sprint");
-    assert!(me.tackle_timer > 0.0, "a standing poke instead");
+    // #489: the press commits a charging standing-poke action, not the old
+    // instant `tackle_timer` pose -- `tackle_timer` now only mirrors the
+    // slot's own executing-phase countdown (see `r#match::advance_tackle_actions`),
+    // which is still zero this same tick the charge began.
+    assert_eq!(
+        me.action.verb,
+        Some(gc_data::action_tuning::ActionVerb::Tackle),
+        "a standing poke charge instead"
+    );
+    assert_eq!(me.action.phase, gc_sim::action_slot::ActionPhase::Charging);
 }
 
 #[test]
@@ -2880,6 +2924,15 @@ fn a_whiffed_ai_poke_stumbles_the_defender() {
         if p.team == Team::Away && !p.is_keeper && idx != carrier {
             p.pos = Vec2::new(40.0, 380.0 + idx as f64 * 15.0);
         }
+        // #489: the poke now takes real time to resolve (TACKLE_FRAMES),
+        // long enough for another home outfielder to also close in and
+        // commit its own tackle unless kept well clear -- see
+        // `a_poke_from_jockey_stance_gains_bonus_reach`'s identical
+        // isolation.
+        if p.team == Team::Home && !p.is_keeper && idx != defender && idx != controlled {
+            p.pos = Vec2::new(100.0, 40.0 + idx as f64 * 25.0);
+            p.dash_cd = 1.0;
+        }
     }
     // On the carrier's back: ball shielded, poke commits but comes up short.
     {
@@ -2891,10 +2944,32 @@ fn a_whiffed_ai_poke_stumbles_the_defender() {
     s.players[(controlled - 1) as usize].pos = Vec2::new(60.0, 60.0);
     s.kickoff_hold = 0.0;
     step(&mut s, 0.016, &no_input(), &tune);
+    // #489: the AI's poke now charges and executes before it resolves; the
+    // whiff no longer stumbles via `stun_timer` -- it enters the action
+    // slot's own `Recovering` phase (`ACTION_TACKLE_MISS_RECOVERY`,
+    // `ACTION_RECOVERY_CONTROL`), which is what actually gates the
+    // defender's movement and next commit now. The carrier is re-pinned
+    // every tick (the same technique `step_until_event_pinning` uses for an
+    // equivalent drift problem): live AI dribbling for the several extra
+    // ticks resolution now takes can fumble the ball loose on its own,
+    // which is not the property this fixture means to test.
+    let mut settled = false;
+    for _ in 0..TACKLE_FRAMES {
+        s.players[(carrier - 1) as usize].pos = carrier_pos;
+        s.players[(carrier - 1) as usize].facing = Vec2::new(-1.0, 0.0);
+        s.ball = carrier_pos.add(Vec2::new(-18.0, 0.0));
+        step(&mut s, 1.0 / 60.0, &no_input(), &tune);
+        if has_event(&s, MatchEventKind::Tackle) || has_event(&s, MatchEventKind::TackleMiss) {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the poke never resolved within the frame budget");
     assert_eq!(s.owner, Some(carrier), "the shielded carrier keeps it");
-    assert!(
-        s.players[(defender - 1) as usize].stun_timer > 0.0,
-        "the whiffing defender stumbles"
+    assert_eq!(
+        s.players[(defender - 1) as usize].action.phase,
+        gc_sim::action_slot::ActionPhase::Recovering,
+        "the whiffing defender is recovering from a missed poke"
     );
 }
 
@@ -4267,8 +4342,12 @@ fn a_poke_from_jockey_stance_gains_bonus_reach() {
             let me = &mut s.players[(controlled - 1) as usize];
             me.pos = Vec2::new(422.0, 270.0); // 40px from ball at 462, on its left
             me.vel = Vec2::new(0.0, 0.0);
-            // Prime jockey_timer so the bonus is active at poke time.
-            me.jockey_timer = if with_jockey { 0.2 } else { 0.0 };
+            // Prime jockey_timer so the bonus is still active at RESOLUTION
+            // time -- #489's poke now charges and executes over
+            // TACKLE_FRAMES (~0.5s at defaults) before it resolves, well
+            // past the real JOCKEY_HOLD (0.2s), so this is primed generously
+            // rather than to that real duration.
+            me.jockey_timer = if with_jockey { 1.0 } else { 0.0 };
             me.tackle_cd = 0.0;
             me.stun_timer = 0.0;
         }
@@ -4283,6 +4362,29 @@ fn a_poke_from_jockey_stance_gains_bonus_reach() {
             }),
             &tune,
         );
+        // #489: the poke charges and executes before it resolves -- several
+        // ticks the original single-`step()` fixture never had to survive.
+        // The AI carrier dribbling live during those ticks would drift the
+        // ball off the exact 40px this fixture is built to measure, so both
+        // the carrier and the defender are re-pinned every tick (the same
+        // technique `step_until_event_pinning` uses for an equivalent drift
+        // problem), isolating the reach comparison from anything the AI
+        // carrier would otherwise do with the extra time.
+        let mut settled = false;
+        for _ in 0..TACKLE_FRAMES {
+            let c = &mut s.players[(away_idx - 1) as usize];
+            c.pos = Vec2::new(480.0, 270.0);
+            c.facing = Vec2::new(-1.0, 0.0);
+            let ball_pos = c.pos.add(c.facing.scale(18.0));
+            s.ball = ball_pos;
+            s.players[(controlled - 1) as usize].pos = Vec2::new(422.0, 270.0);
+            step(&mut s, 1.0 / 60.0, &no_input(), &tune);
+            if has_event(&s, MatchEventKind::Tackle) || has_event(&s, MatchEventKind::TackleMiss) {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "the poke never resolved within the frame budget");
         s.owner != Some(away_idx)
     };
     assert!(
@@ -4692,7 +4794,16 @@ fn shot_parameters_are_captured_at_commit_not_at_release() {
 
 #[test]
 fn a_poke_landing_during_the_wind_up_cancels_the_shot() {
-    let tune = Tuning::new();
+    let mut tune = Tuning::new();
+    // #489: the poke now charges and executes before it resolves, so it
+    // must be driven to its floor here to still beat a shot only 0.12s from
+    // firing -- at the shipped defaults the shot would fire first. The
+    // property under test (a successful tackle mid-resolution clears a
+    // pending windup) still needs a poke that CAN win the race; this is not
+    // a claim that the shipped defaults let a defender out-race an
+    // already-committed shot.
+    tune.set("ACTION_TACKLE_FULL_CHARGE", 0.0);
+    tune.set("ACTION_TACKLE_COMMIT", 0.05);
     // Set up an away carrier in wind-up; a home defender close enough to poke.
     let mut s = new_match();
     let mut carrier_idx = None;
@@ -4748,6 +4859,31 @@ fn a_poke_landing_during_the_wind_up_cancels_the_shot() {
         }),
         &tune,
     );
+    // #489: the poke charges and executes before it resolves, even at the
+    // floor tuning above -- several ticks the original single-`step()`
+    // fixture never had to survive. The AI carrier dribbling live during
+    // those ticks (even at `WINDUP_MOVE`'s reduced pace) can push the ball
+    // meaningfully further from a defender pinned to its ORIGINAL position,
+    // which is not the property this fixture means to test (whether a
+    // successful tackle clears a pending windup) -- so both the carrier and
+    // the defender are re-pinned every tick, the same technique
+    // `step_until_event_pinning` uses for an equivalent drift problem.
+    let mut settled = false;
+    for _ in 0..TACKLE_FRAMES {
+        s.players[(carrier_idx - 1) as usize].pos = carrier_pos;
+        s.players[(carrier_idx - 1) as usize].facing = Vec2::new(-1.0, 0.0);
+        let ball_pos = s.players[(carrier_idx - 1) as usize]
+            .pos
+            .add(Vec2::new(-18.0, 0.0));
+        s.ball = ball_pos;
+        s.players[(s.controlled - 1) as usize].pos = Vec2::new(carrier_pos.x - 24.0, carrier_pos.y);
+        step(&mut s, 1.0 / 60.0, &no_input(), &tune);
+        if has_event(&s, MatchEventKind::Tackle) || has_event(&s, MatchEventKind::TackleMiss) {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the poke never resolved within the frame budget");
     // The tackle should win, clearing the payload.
     assert!(
         s.owner != Some(carrier_idx),

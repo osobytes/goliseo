@@ -35,8 +35,8 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "eca1c4cbe8cbaf40";
-const NATIVE_SEQUENCE_DIGEST = "74bcbe5d31dd15c0";
+const NATIVE_FINAL_HASH = "4c76e26c95cea2e8";
+const NATIVE_SEQUENCE_DIGEST = "c375257acf952cdf";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -161,6 +161,16 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // corpus differential (`scripts/check_wasm_native_corpus.mjs`) looks: this
   // scenario is the one #405 originally caught wasm/native disagreeing on,
   // and it still agrees after the conversion.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #489 COMMITTED-ACTIONS RE-MEASUREMENT, 2026-08-15. Re-recorded because
+  // #489 adds `MatchPlayer::action` (match_snapshot::VERSION 12 -> 13, see
+  // `gc_sim::action_slot`) and replaces the standing-poke tackle's
+  // instant-resolve `attempt_steals` branch with a real charge/execute/
+  // recover state machine (`r#match::advance_tackle_actions`) -- exactly
+  // the class of change #405's note above warns reshapes this scenario's
+  // whole trajectory from the first tackle attempt on. See
+  // `gc-sim/tests/ai_driven_evidence.rs` for the native-side re-record.
   // ---------------------------------------------------------------------
   it("ends the match in exactly the state the native build ends it in", () => {
     expect(runAiDrivenEvidence().final_hash).toBe(NATIVE_FINAL_HASH);
