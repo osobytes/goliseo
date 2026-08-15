@@ -478,8 +478,7 @@ fn melee_contact(
     if dx * facing_x + dy * facing_y < 0.0 {
         return false;
     }
-    let half_arc = (family.front_arc_degrees / 2.0).to_radians();
-    (dx / distance) * facing_x + (dy / distance) * facing_y + EPSILON >= half_arc.cos()
+    (dx / distance) * facing_x + (dy / distance) * facing_y + EPSILON >= family.front_arc_cos
 }
 
 fn segment_hits_circle(
@@ -869,7 +868,7 @@ fn guard_feasibility(
     if paths.is_empty() {
         return witness;
     }
-    let guard_arc = (family.front_arc_degrees / 2.0).to_radians().cos();
+    let guard_arc = family.front_arc_cos;
     for relative in family.windup_ticks..=cap {
         let (sx, sy, fx, fy) = committed_source_pose(observation, tape, family, relative);
         for path in &paths {

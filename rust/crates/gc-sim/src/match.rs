@@ -66,6 +66,7 @@ use crate::slot_input;
 use crate::species;
 use crate::stats;
 use crate::tuning::Tuning;
+use gc_core::deterministic_math;
 use gc_core::rng;
 use gc_core::vec2::Vec2;
 use gc_data::formations::{self, FormationRole};
@@ -238,6 +239,21 @@ const SUPPORT_FAN: f64 = 70.0;
 const SEP_RADIUS: f64 = 64.0;
 const SEP_PUSH: f64 = 16.0;
 const MARK_STICK: f64 = 20.0;
+
+/// `(cos, sin)` of `support_target`'s four fixed triangle angles (radians:
+/// -1.4, -0.7, 0.7, 1.4), precomputed rather than taken with `.cos()`/`.sin()`
+/// on the simulation path. Same reasoning as `gc_data::locomotion`'s arc
+/// cosines: neither function is correctly rounded, Rust links a different
+/// libm for `wasm32-unknown-unknown` than a native build uses, and this is a
+/// per-tick call once a carrier's teammates close into `TRIANGLE_JOIN`. The
+/// angles are fixed authored geometry, not derived, so there is nothing to
+/// recompute at runtime.
+const SUPPORT_TRIANGLE_DIRECTIONS: [(f64, f64); 4] = [
+    (0.16996714290024104, -0.9854497299884601),
+    (0.7648421872844885, -0.644217687237691),
+    (0.7648421872844885, 0.644217687237691),
+    (0.16996714290024104, 0.9854497299884601),
+];
 
 /// There is no goal limit: a match is decided on score at full time, in
 /// every mode. `max_goals` stays in the state, the snapshot, and the session
@@ -1163,8 +1179,7 @@ fn apply_ai_outfield_execution_error(
     let (next_rng, sample) = rng::roll(s.rng);
     s.rng = next_rng;
     let angle = (sample * 2.0 - 1.0) * stats::execution_error_from_outfield(first_touch, composure);
-    let cosine = angle.cos();
-    let sine = angle.sin();
+    let (cosine, sine) = deterministic_math::cos_sin(angle);
     Vec2::new(
         intended_velocity.x * cosine - intended_velocity.y * sine,
         intended_velocity.x * sine + intended_velocity.y * cosine,
@@ -2335,8 +2350,8 @@ fn support_target(
         Vec2::new(base.x - attack * SUPPORT_FAN, base.y),
     ];
     if pos[(player_index - 1) as usize].dist(carrier_pos) < TRIANGLE_JOIN {
-        for angle in [-1.4_f64, -0.7, 0.7, 1.4] {
-            let direction = Vec2::new(angle.cos() * attack, angle.sin());
+        for (cos_angle, sin_angle) in SUPPORT_TRIANGLE_DIRECTIONS {
+            let direction = Vec2::new(cos_angle * attack, sin_angle);
             let candidate = carrier_pos.add(direction.scale(tune.value("TRIANGLE_DIST")));
             candidates.push(Vec2::new(
                 candidate.x.clamp(20.0, s.field.w - 20.0),
@@ -6120,7 +6135,7 @@ fn update_ball(
                 s.rng = next_rng;
                 let slop = 1.0 - DRIBBLE_ERR_SKILL * skill;
                 let ang = (roll_a * 2.0 - 1.0) * tune.value("DRIBBLE_ERR") * slop;
-                let (ca, sa) = (ang.cos(), ang.sin());
+                let (ca, sa) = deterministic_math::cos_sin(ang);
                 let dir = Vec2::new(
                     owner.facing.x * ca - owner.facing.y * sa,
                     owner.facing.x * sa + owner.facing.y * ca,

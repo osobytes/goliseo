@@ -74,8 +74,21 @@ pub struct ActionFamilyData {
     pub projectile_speed_px_per_second: Option<f64>,
     /// Projectile lifetime in ticks.
     pub projectile_lifetime_ticks: Option<i64>,
-    /// Width of the frontal contact arc, in degrees.
+    /// Width of the frontal contact arc, in degrees. Presentation (arc
+    /// drawing) and hashing/identity read this; the simulation's per-tick
+    /// contact and feasibility checks read [`Self::front_arc_cos`] instead.
     pub front_arc_degrees: f64,
+    /// Cosine of half [`Self::front_arc_degrees`], precomputed rather than
+    /// taken with `.to_radians().cos()` on the simulation path. `cos` is not
+    /// correctly rounded, and Rust links a different libm for
+    /// `wasm32-unknown-unknown` than a native build uses, so a runtime call
+    /// here would make a native peer and a browser peer disagree in the low
+    /// bits on every combat contact/feasibility check, every tick. Same
+    /// reasoning and shipped precedent as `gc_data::locomotion`'s
+    /// `LOCO_REVERSE_ARC_COS` / `LOCO_STRAFE_ARC_COS` /
+    /// `LOCO_BACKPEDAL_ARC_COS`. Content is data (AGENTS.md §8): this is the
+    /// authored value, not a value derived by code at runtime.
+    pub front_arc_cos: f64,
     /// Movement speed multiplier while the action is active.
     pub movement_multiplier: f64,
     /// Consequence of contact landing on an unguarded target, if this family has one.
@@ -100,6 +113,7 @@ pub static ALL: &[ActionFamilyData] = &[
         projectile_speed_px_per_second: None,
         projectile_lifetime_ticks: None,
         front_arc_degrees: 100.0,
+        front_arc_cos: 0.6427876096865394,
         movement_multiplier: 0.8,
         unguarded_outcome: Some(CombatOutcomeData {
             interruption_ticks: 10,
@@ -122,6 +136,7 @@ pub static ALL: &[ActionFamilyData] = &[
         projectile_speed_px_per_second: None,
         projectile_lifetime_ticks: None,
         front_arc_degrees: 120.0,
+        front_arc_cos: 0.5000000000000001,
         movement_multiplier: 0.55,
         unguarded_outcome: None,
         guarded_recoil_px: 0.0,
@@ -140,6 +155,7 @@ pub static ALL: &[ActionFamilyData] = &[
         projectile_speed_px_per_second: None,
         projectile_lifetime_ticks: None,
         front_arc_degrees: 75.0,
+        front_arc_cos: 0.7933533402912352,
         movement_multiplier: 0.5,
         unguarded_outcome: Some(CombatOutcomeData {
             interruption_ticks: 18,
@@ -162,6 +178,7 @@ pub static ALL: &[ActionFamilyData] = &[
         projectile_speed_px_per_second: Some(300.0),
         projectile_lifetime_ticks: Some(60),
         front_arc_degrees: 20.0,
+        front_arc_cos: 0.984807753012208,
         movement_multiplier: 0.4,
         unguarded_outcome: Some(CombatOutcomeData {
             interruption_ticks: 12,

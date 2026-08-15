@@ -35,8 +35,8 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "d146d1cc4f359ca7";
-const NATIVE_SEQUENCE_DIGEST = "abe72518de86a606";
+const NATIVE_FINAL_HASH = "eca1c4cbe8cbaf40";
+const NATIVE_SEQUENCE_DIGEST = "74bcbe5d31dd15c0";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
@@ -143,6 +143,24 @@ describe("the compiled wasm module against the AI-driven Lua reference", () => {
   // `runAiDrivenEvidence()` call against the freshly built wasm module. So
   // these stay plain `it`, not reverted to `it.fails`; #405 remains open and
   // latent, not fixed, for the same reason the note above gives.
+  // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // #517 MECHANICAL SITE CONVERSION RE-MEASUREMENT, 2026-08-14. Re-recorded
+  // because this PR converts the nine MECHANICALLY-REPLACEABLE sites (the
+  // dribble-touch and AI-outfield-error `cos`/`sin` in `match.rs`, the
+  // aerial-contact `cos`/`sin` in `aerial.rs`, the aim-noise `cos`/`sin` in
+  // `bot.rs`, and the support-triangle/combat-arc constants) to
+  // `gc_core::deterministic_math::cos_sin` or a precomputed value, which is
+  // exactly the class of change #405's note above warns moves this
+  // scenario's whole trajectory. MEASURED ON THIS BUILD: wasm and native
+  // still agree exactly -- final eca1c4cbe8cbaf40, sequence
+  // 74bcbe5d31dd15c0, both targets, both native `cargo test -p gc-sim --test
+  // ai_driven_evidence` and this spec against the freshly built wasm module.
+  // These stay plain `it`. This is also the direct, best-available evidence
+  // that converting these nine sites did not merely move where #517's own
+  // corpus differential (`scripts/check_wasm_native_corpus.mjs`) looks: this
+  // scenario is the one #405 originally caught wasm/native disagreeing on,
+  // and it still agrees after the conversion.
   // ---------------------------------------------------------------------
   it("ends the match in exactly the state the native build ends it in", () => {
     expect(runAiDrivenEvidence().final_hash).toBe(NATIVE_FINAL_HASH);

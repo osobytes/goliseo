@@ -69,32 +69,18 @@ const require = createRequire(import.meta.url);
 // prints the exact tick on a mismatch) -- never by guessing a tick to make a
 // red gate pass.
 // ---------------------------------------------------------------------------
-export const KNOWN_DIVERGENCES = {
-  "corpus/short-b": {
-    tick: 21,
-    note:
-      "final_hash agrees (self-correcting -- see tools/lua_reference/README.md's " +
-      "warning that a divergence which self-corrects is still a desync); " +
-      "sequence_digest does not. ATTRIBUTION (runCorpusScenario's last_ball/last_owner/" +
-      "last_players, ticks=20 vs 21): at tick 20 every field is bit-identical; at tick " +
-      "21 the ball is owned (owner=4, a carried ball) and ONLY ball_vel.y differs, by " +
-      "~4.0e-15 (native 2.5131958737898197, wasm 2.5131958737898157) -- a single-ULP-" +
-      "scale gap, everything else (position, vel.x, owner, rng, every player position) " +
-      "bit-identical. Points at site 1 (match.rs update_ball's dribble-touch cos/sin of " +
-      "an RNG angle), not merely 'this scenario diverges somewhere'. #517.",
-  },
-  "corpus/short-c": {
-    tick: 532,
-    note:
-      "final_hash agrees (self-correcting); sequence_digest does not. ATTRIBUTION " +
-      "(ticks=531 vs 532): at tick 531 every field is bit-identical; at tick 532 the " +
-      "ball is LOOSE (owner=-1) and AIRBORNE (z=64.9), vz jumps 0->340 on both targets " +
-      "(an aerial contact occurred), and ONLY ball_vel.y differs, by ~8.9e-15 (native " +
-      "-4.053479234977864, wasm -4.053479234977855) -- everything else bit-identical. " +
-      "Points at site 4 (aerial.rs's aerial-contact cos/sin of an angle error), not " +
-      "site 1 (the ball is not owned here). #517.",
-  },
-};
+// Empty as of #517's mechanical sweep (site 1's match.rs dribble-touch
+// cos/sin and site 4's aerial.rs contact-angle cos/sin, plus the other 7
+// mechanically-replaceable sites, converted to gc_core::deterministic_math
+// / precomputed constants). This corpus's 8 scenarios now agree tick for
+// tick, native vs wasm, with nothing allowlisted. Two entries were tracked
+// here and removed on that PR: "corpus/short-b" (tick 21, attributed to site
+// 1) and "corpus/short-c" (tick 532, attributed to site 4) -- both went
+// STALE (stopped reproducing) the moment their attributed site converted,
+// which is this allowlist's own bidirectional check working as designed. The
+// four `exp`/`ln` sites (#517's remaining scope) could still reintroduce an
+// entry here; if one appears, attribute it the same way before adding it.
+export const KNOWN_DIVERGENCES = {};
 
 /**
  * Parse `dump_corpus_tick_hashes`'s stdout

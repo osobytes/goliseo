@@ -41,7 +41,7 @@ import { describe, expect, it } from "vitest";
 import { loadSimHost } from "./index.ts";
 
 const EXPECTED_FINAL_HASH = "66ebecd985f3f3ea";
-const EXPECTED_SEQUENCE_DIGEST = "0aa20d6c0b163634";
+const EXPECTED_SEQUENCE_DIGEST = "fe1320880c58a89a";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
