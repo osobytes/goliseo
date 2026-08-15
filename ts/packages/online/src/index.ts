@@ -114,6 +114,20 @@ export {
 } from "./lobby_link.ts";
 
 export {
+  type RoomServerFrame,
+  type RoomSignalingFailure,
+  type RoomSignalingFailureReason,
+  ROOM_CODE_ALPHABET,
+  ROOM_CODE_LENGTH,
+  ROOM_SIGNAL_HOST_PATH,
+  classifyClose,
+  encodeHostSignal,
+  isRoomCodeShaped,
+  parseServerFrame,
+  roomSignalJoinPath,
+} from "./room_signaling.ts";
+
+export {
   type OpaqueSnapshot,
   // Renamed: these are this module's own narrow, "only fields read"
   // duplicates of the same Rust-owned shapes `net_diagnostics` declares
