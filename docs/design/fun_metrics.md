@@ -306,9 +306,13 @@ number hold still":**
 
 | | mean | se | rule set |
 | --- | --- | --- | --- |
-| `c0fc6cf`, pre-#488/#489/#490 (#491's issue citation) | 0.6200 | 0.0098 | AI bypasses charge/hold/cone entirely |
-| `2ce0ca0`, PR #527 (post soft-cone selection, pre-#531) | 0.6189 | 0.0114 | AI still bypasses charge/hold/cone |
+| `c0fc6cf` (post-#488 locomotion, post-#490 keeper prediction, pre-#491) | 0.6200 | 0.0098 | AI bypasses charge/hold/cone entirely |
+| `2ce0ca0`, PR #527 (post-#491 soft-cone selection, pre-#531) | 0.6189 | 0.0114 | AI still bypasses charge/hold/cone |
 | this entry, `b53a5c0` (post-#531 phase 2, post-#517) | 0.6001 | 0.0101 | every producer charges, holds and is interceptable |
+
+(`#489` has not landed as of any of these three measurements — it is
+concurrent work in a separate worktree as this entry is written, not a
+commit any of these rows sit relative to.)
 
 The drop (−0.0188 against the immediately preceding measurement) is real and
 in the direction #531 predicted — the AI now pays costs it did not before —
