@@ -168,8 +168,17 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
           this.link = undefined;
         }
       } else if (effect.kind === "room_open_host") {
+        // Close whatever was there first -- `roomPick`/`chooseRole`'s own
+        // guards (round-2 council review, blocking finding 2) mean a
+        // SECOND `room_open_*` should never reach here while the first is
+        // still live, but this closes the gap unconditionally rather than
+        // depending on that: an unclosed socket left behind by a replaced
+        // `roomLink` is exactly the orphaned-connection defect blocking
+        // finding 3 describes for `room_signaling_port.ts`'s own retries.
+        this.closeRoomLink();
         this.roomLink = this.roomSignaling?.openHost();
       } else if (effect.kind === "room_open_guest") {
+        this.closeRoomLink();
         this.roomLink = this.roomSignaling?.openGuest(effect.code);
       } else if (effect.kind === "room_send") {
         this.roomLink?.send({
@@ -177,8 +186,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
           signal: effect.signal,
         });
       } else if (effect.kind === "room_close") {
-        this.roomLink?.close();
-        this.roomLink = undefined;
+        this.closeRoomLink();
       } else if (effect.kind !== "leave" && effect.kind !== "start_match") {
         if (this.link) {
           const [ok, err] = this.link.apply(effect);
@@ -222,14 +230,22 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     draw.layout(backend, lobby.layout(this.state), this.state.viewport, this.transition);
   }
 
+  /** Closes and clears `roomLink`, if one is open -- shared by `run()`'s
+   * `room_open_host`/`room_open_guest`/`room_close` handling and
+   * `teardown()`, so there is exactly one place that can leave a room-code
+   * socket open without this instance's own knowledge of it. */
+  private closeRoomLink(): void {
+    if (this.roomLink) {
+      this.roomLink.close();
+      this.roomLink = undefined;
+    }
+  }
+
   teardown(): void {
     if (this.link) {
       this.link.apply({ kind: "shutdown" });
       this.link = undefined;
     }
-    if (this.roomLink) {
-      this.roomLink.close();
-      this.roomLink = undefined;
-    }
+    this.closeRoomLink();
   }
 }

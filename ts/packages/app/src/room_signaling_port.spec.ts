@@ -188,25 +188,49 @@ describe("room_signaling_port: failure states", () => {
     expect(handle.poll()).toEqual([{ kind: "dropped", reason: "connection_lost" }]);
   });
 
-  it("reports a malformed frame without throwing", () => {
+  // Round-2 council review, blocking finding 3: every branch below used to
+  // report `{kind:"failed"}` without ever closing the socket -- against
+  // the rate-limited signaling Worker, a retry after ANY of these piled a
+  // fresh connection on top of the still-open old one, with only the
+  // room's 10-minute TTL alarm to clean it up eventually.
+  it("reports a malformed frame without throwing, and closes the socket", () => {
     const { socket, handle } = hostHandle();
     socket.open();
     socket.emitMessage("not json");
     expect(handle.poll()).toEqual([{ kind: "failed", reason: "malformed_frame" }]);
+    expect(socket.closeCalled).toBe(1);
+    // `FakeSocket.close()` synchronously re-fires its own `close` event;
+    // this must not ALSO report a redundant `dropped`/`handshake_failed`
+    // event for the same failure.
+    expect(handle.poll()).toEqual([]);
   });
 
-  it("reports a binary frame as malformed", () => {
+  it("reports a binary frame as malformed, and closes the socket", () => {
     const { socket, handle } = hostHandle();
     socket.open();
     socket.emitMessage(new ArrayBuffer(4));
     expect(handle.poll()).toEqual([{ kind: "failed", reason: "malformed_frame" }]);
+    expect(socket.closeCalled).toBe(1);
   });
 
-  it("reports the Worker's own error code from a protocol-level error frame", () => {
+  it("reports the Worker's own error code from a protocol-level error frame, and closes the socket", () => {
     const { socket, handle } = hostHandle();
     socket.open();
     socket.emitMessage('{"type":"error","error":"room_not_open"}');
     expect(handle.poll()).toEqual([{ kind: "failed", reason: "room_not_open" }]);
+    expect(socket.closeCalled).toBe(1);
+    expect(handle.poll()).toEqual([]);
+  });
+
+  it("does not send after a protocol-level error has closed the socket", () => {
+    const { socket, handle } = hostHandle();
+    socket.open();
+    socket.emitMessage('{"type":"error","error":"room_not_open"}');
+    handle.poll();
+    handle.send({ to: "g-1", signal: "offer-blob" });
+    // `FakeSocket.close()` sets `readyState` to CLOSED, and `send()` only
+    // ever writes while `readyState === OPEN`.
+    expect(socket.sent).toEqual([]);
   });
 
   it("does not double-report a close event", () => {

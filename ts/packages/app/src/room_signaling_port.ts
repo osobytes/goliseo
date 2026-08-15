@@ -83,6 +83,22 @@ function connect(
 
   if (socket !== undefined) {
     const live = socket;
+    // A `"failed"` event always means this connection is over -- every
+    // caller of this (the binary-frame branch, the unparseable-frame
+    // branch, and the Worker's own in-band `{type:"error"}` frame below)
+    // used to leave the socket open, so a retry (a fresh `connect()` call)
+    // piled a new socket on top of the old one instead of replacing it.
+    // Against the rate-limited signaling Worker, that is an orphaned
+    // connection per retry with only the room's 10-minute TTL alarm to
+    // clean it up (round-2 council review, blocking finding 3). `closed`
+    // is set BEFORE `live.close()` so the `"close"` listener below sees it
+    // already true and does not ALSO report a redundant `"dropped"`/
+    // `"handshake_failed"` event for the same failure.
+    function fail(reason: string): void {
+      events.push({ kind: "failed", reason });
+      closed = true;
+      live.close();
+    }
     live.addEventListener("message", (event: { readonly data: unknown }) => {
       if (closed) {
         return;
@@ -91,12 +107,12 @@ function connect(
         // The Worker only ever sends text frames (`room_durable_object.ts`'s
         // own contract) -- a binary frame here is a protocol violation, not
         // something to silently ignore.
-        events.push({ kind: "failed", reason: "malformed_frame" });
+        fail("malformed_frame");
         return;
       }
       const parsed = parseServerFrame(event.data);
       if (!parsed.ok) {
-        events.push({ kind: "failed", reason: "malformed_frame" });
+        fail("malformed_frame");
         return;
       }
       const frame: RoomServerFrame = parsed.value;
@@ -121,10 +137,18 @@ function connect(
         // than a generic bucket, so it travels straight through as the
         // reason -- `"protocol_error"` (`room_signaling.ts`'s own type) is
         // only the fallback for the degenerate case of an empty code.
-        events.push({
-          kind: "failed",
-          reason: frame.error !== "" ? frame.error : "protocol_error",
-        });
+        //
+        // Closed here too, deliberately, even though the Durable Object
+        // itself leaves the socket open after sending one (`webSocketMessage`
+        // just `return`s -- no `ws.close()`): nothing on THIS side has any
+        // recovery path for a `missing_target`/`unknown_target`/
+        // `message_too_large`/... reply, so continuing to poll a socket in
+        // a state this client cannot progress past would just reproduce
+        // round-2 council review's blocking finding 2 (a lobby wedged with
+        // no way forward but LEAVE) one layer down. Treating it as
+        // connection-ending here, and surfacing a clean `"failed"` event, is
+        // what actually gives the player a working retry.
+        fail(frame.error !== "" ? frame.error : "protocol_error");
       }
     });
     live.addEventListener("close", () => {

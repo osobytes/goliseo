@@ -69,7 +69,7 @@ import {
   type LobbyScreenEvent,
   type LobbyScreenState,
 } from "./lobby.ts";
-import { view as lobbyModelView } from "./lobby_model.ts";
+import { ROOM_FAILURE_TEXT, view as lobbyModelView } from "./lobby_model.ts";
 import type {
   CoordinatorAction,
   CoordinatorEvent,
@@ -1176,6 +1176,26 @@ describe("room-code entry (#552)", () => {
     expect(hit.find(currentLayout, "room_code_host")?.data?.disabled).toBe(true);
   });
 
+  // Round-2 council review, blocking finding 2: during the async window
+  // after `room_pick`/`room_submit` (`room_active` already `true`, no
+  // `coordinator` yet), every OTHER way into a role -- the manual buttons
+  // and a second room-code attempt -- must be unreachable too, not just
+  // the one button already being retried. This is the layout half of the
+  // fix; `roomPick`'s/`command()`'s own guards are the command-level half
+  // (`lobby_model.ts`'s own tests cover those directly).
+  it("disables every other role-choosing control while a room-code attempt is in flight", () => {
+    const state = click(newState(VP, ports()), "room_code_host");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "role_host")?.data?.disabled).toBe(true);
+    expect(hit.find(currentLayout, "role_guest")?.data?.disabled).toBe(true);
+    expect(hit.find(currentLayout, "room_code_join")?.data?.disabled).toBe(true);
+    expect(hit.find(currentLayout, "room_code_host")?.data?.disabled).toBe(true);
+    // A click on a disabled control is not activated at all.
+    const raced = click(state, "role_host");
+    expect(view(raced).role).toBeUndefined();
+    expect(view(raced).error).toBeUndefined();
+  });
+
   it("room_created picks the host role, shows the code, and hides the manual signal controls", () => {
     let state = click(newState(VP, ports()), "room_code_host");
     state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
@@ -1212,8 +1232,36 @@ describe("room-code entry (#552)", () => {
       kind: "lobby",
       command: { kind: "room_failed", reason: "handshake_failed" },
     });
-    expect(view(state).error).toBe("handshake_failed");
+    expect(view(state).error).toBe(ROOM_FAILURE_TEXT["handshake_failed"]);
     expect(view(state).role).toBeUndefined();
+  });
+
+  // Round-2 council review, cheap finding: `roomPick`'s host branch already
+  // cleared a stale `room_error` when starting a fresh attempt; the guest
+  // branch (opening the code composer) did not, so a guest whose previous
+  // attempt failed and who then re-opened the composer still saw the old
+  // failure line until a NEW one replaced it.
+  it("clears a stale room-code failure when re-opening the code composer", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "handshake_failed" },
+    });
+    expect(view(state).room_error).toBe(ROOM_FAILURE_TEXT["handshake_failed"]);
+    // A failed submit already leaves `room_entry` cleared and `role`
+    // unchosen, so the layout is back on the pre-role screen -- confirm
+    // that before re-opening the composer, so this test does not silently
+    // stop exercising what it claims to.
+    expect(view(state).role).toBeUndefined();
+    expect(view(state).room_entry).toBeUndefined();
+
+    state = click(state, "room_code_join"); // re-open the composer
+    expect(view(state).room_entry).toBeDefined();
+    expect(view(state).room_error).toBeUndefined();
   });
 
   // `online_lobby.ts`'s `update(dt)` dispatches a `signal`/`room_*` command
@@ -1236,9 +1284,9 @@ describe("room-code entry (#552)", () => {
     });
     state = dispatch(state, { kind: "lobby", command: { kind: "tick" } });
     expect(view(state).error).toBeUndefined(); // cleared, as every command clears it
-    expect(view(state).room_error).toBe("handshake_failed"); // still readable
+    expect(view(state).room_error).toBe(ROOM_FAILURE_TEXT["handshake_failed"]); // still readable
     const trouble = hit.find(lobbyLayout(state), "trouble");
-    expect(trouble?.text).toBe("HANDSHAKE_FAILED");
+    expect(trouble?.text).toBe(ROOM_FAILURE_TEXT["handshake_failed"]?.toUpperCase());
   });
 
   it("leaving a room-code connection in progress closes it", () => {
@@ -1254,5 +1302,76 @@ describe("room-code entry (#552)", () => {
     expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
     expect(hit.find(currentLayout, "paste_signal")).not.toBeNull();
     expect(view(state).room_active).toBe(false);
+  });
+
+  // Round-2 council review, blocking finding 1: `roomFailed`/`roomDropped`
+  // used to leave `room_active` stuck `true`, and `lobby.ts`'s layout
+  // gates the manual copy/paste controls on `!room_active` -- so a player
+  // whose room-code attempt failed and who then picked a manual role got a
+  // lobby with NO way to exchange a manual offer/answer at all, silently
+  // contradicting this issue's own "manual signaling still works"
+  // acceptance criterion.
+  it("keeps the manual fallback reachable after a failed room-code attempt", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "handshake_failed" },
+    });
+    expect(view(state).room_active).toBe(false);
+
+    state = click(state, "role_guest");
+    expect(view(state).role).toBe("guest");
+    expect(view(state).error).toBeUndefined();
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
+    expect(hit.find(currentLayout, "paste_signal")).not.toBeNull();
+  });
+
+  it("keeps the manual fallback reachable after a room-code connection drops", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    expect(view(state).room_active).toBe(true);
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_dropped" } });
+    expect(view(state).room_active).toBe(false);
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
+    expect(hit.find(currentLayout, "paste_signal")).not.toBeNull();
+  });
+
+  // Command-level half of blocking finding 2 -- `lobby_model.ts`'s own
+  // guards, driven directly (bypassing focus/click, and therefore the
+  // layout's `disabled` flag too) so a synthetic or future-bug dispatch is
+  // covered just as much as a real click would be.
+  it("refuses a manual role command while a room-code connection is in flight", () => {
+    const state = dispatch(newState(VP, ports()), {
+      kind: "lobby",
+      command: { kind: "room_pick", role: "host" },
+    });
+    expect(view(state).room_active).toBe(true);
+    expect(state.model.coordinator).toBeUndefined();
+
+    const raced = dispatch(state, { kind: "lobby", command: { kind: "role", role: "host" } });
+    expect(raced.model.coordinator).toBeUndefined();
+    expect(view(raced).error).toBeDefined();
+    // The room-code attempt itself is untouched by the refused race.
+    expect(view(raced).room_active).toBe(true);
+  });
+
+  it("refuses a second room-code attempt while one is already in flight", () => {
+    const state = dispatch(newState(VP, ports()), {
+      kind: "lobby",
+      command: { kind: "room_pick", role: "host" },
+    });
+    const raced = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_pick", role: "guest" },
+    });
+    expect(view(raced).room_entry).toBeUndefined();
+    expect(view(raced).error).toBeDefined();
+    expect(view(raced).room_active).toBe(true);
   });
 });

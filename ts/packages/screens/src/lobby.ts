@@ -175,13 +175,24 @@ export function layout(state: LobbyScreenState): Layout {
       { kind: "label", tone: "muted", focusable: false },
     );
   } else if (!view.role) {
-    left("role_host", "HOST A SESSION", 40);
+    // Disabled for the ENTIRE window a room-code attempt is in flight or
+    // established but not yet a chosen role (`view.room_status ===
+    // "connecting"` covers the first; `view.room_active` alone covers a
+    // `"connected"` state that has not yet reached `chooseRole` -- both
+    // collapse once `room_created`/`room_joined` lands, since this whole
+    // branch stops rendering the moment `view.role` is set). Activating a
+    // manual role or a second room-code attempt during this window used to
+    // wedge the lobby: the late `room_created`/`room_joined` would no-op
+    // against an already-chosen role but still leave `room_active` stuck
+    // `true` forever, with both signaling paths dead (round-2 council
+    // review, blocking finding 2). `chooseRole`'s and `roomPick`'s own
+    // call-site guards are the belt to this layout's braces.
+    const roomBusy = view.room_status === "connecting" || view.room_active;
+    left("role_host", "HOST A SESSION", 40, { disabled: roomBusy });
     left("identity", `JOIN AS  ${view.peer_id.toUpperCase()}`, ROW_H);
-    left("role_guest", "JOIN WITH AN OFFER", 40);
-    left("room_code_host", "HOST WITH A ROOM CODE", 40, {
-      disabled: view.room_status === "connecting",
-    });
-    left("room_code_join", "JOIN WITH A ROOM CODE", 40);
+    left("role_guest", "JOIN WITH AN OFFER", 40, { disabled: roomBusy });
+    left("room_code_host", "HOST WITH A ROOM CODE", 40, { disabled: roomBusy });
+    left("room_code_join", "JOIN WITH A ROOM CODE", 40, { disabled: roomBusy });
     left(
       "hint",
       "MANUAL SIGNALING: BLOBS ARE EXCHANGED BY HAND. A ROOM CODE CONNECTS AUTOMATICALLY.",

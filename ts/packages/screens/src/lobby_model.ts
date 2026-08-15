@@ -486,6 +486,40 @@ export const PREFERENCE_TEXT: Readonly<Record<string, string>> = {
   reseated: "Ownership changed and your pair had to be seated again. Ask again.",
 };
 
+// Plain-language equivalents of a room-code signaling failure -- the raw
+// tokens `room_signaling_port.ts` (`@gc/app`) reports, either its own
+// classification (`handshake_failed`, `malformed_frame`, `connection_lost`)
+// or the room-code Worker's own error code, forwarded verbatim
+// (`infra/src/room_durable_object.ts`'s `{type:"error", error}` frame /
+// `infra/src/room_state.ts`'s own error strings). A browser `WebSocket`
+// cannot read the HTTP status of a failed upgrade (`room_signaling.ts`'s
+// own header), so a bad code, an expired room, a full room, and a rate
+// limit are indistinguishable there and all collapse to
+// `handshake_failed` -- `room_not_open`/`room_expired`/`room_full`/... are
+// listed anyway, defensively, for the in-band `{type:"error"}` frame a
+// live connection can still receive after connecting (e.g. the room
+// closing out from under it). Unmapped tokens fall back to the raw token
+// itself (mirrors `PREFERENCE_TEXT`'s own `?? key` fallback), never thrown.
+export const ROOM_FAILURE_TEXT: Readonly<Record<string, string>> = {
+  handshake_failed: "Could not reach the room service. Check the code, or try again.",
+  malformed_frame: "The room service sent something this game could not read. Try again.",
+  connection_lost: "The connection to the room service was lost.",
+  protocol_error: "The room service reported an unexpected problem.",
+  room_not_open: "That code is not an open room.",
+  room_closed: "That room has closed.",
+  room_expired: "That code has expired.",
+  already_joined: "You are already connected to that room.",
+  room_full: "That room is full.",
+  host_already_claimed: "That room already has a host.",
+  message_too_large: "That message was too large to send.",
+  missing_target: "The room service could not tell who that message was for.",
+  unknown_target: "That peer is no longer in the room.",
+  no_host: "The host is no longer connected.",
+  unknown_sender: "The room service did not recognize the sender.",
+  invalid_envelope: "The room service could not read that message.",
+  binary_not_supported: "The room service does not support that message type.",
+};
+
 function defaultTemplate(ports: LobbyModelPorts): (mode: SessionMatchMode) => SessionManifest {
   return (mode) => ports.protocolFixture.manifest(mode);
 }
@@ -1180,9 +1214,20 @@ function roomPick(
   if (model.coordinator) {
     return { ...model, error: "the session role is already chosen" };
   }
+  // A room-code attempt already in flight (or established) must finish or
+  // be cancelled (`room_cancel`/`leave`) before another one starts -- this
+  // is the room-code buttons' own side of the same race `chooseRole`'s
+  // call site guards for the manual "role" command (round-2 council
+  // review, blocking finding 2): `lobby.ts`'s layout already disables
+  // `room_code_host`/`room_code_join` for this window, and this is the
+  // belt to that layout's braces.
+  if (model.room_active) {
+    return { ...model, error: "a room-code connection is already in progress" };
+  }
   if (role === "guest") {
+    const { room_error: _roomError, ...rest } = model;
     return {
-      ...model,
+      ...rest,
       room_entry: roomEntry(new Array(ROOM_CODE_LENGTH).fill(""), 0),
       status: "Enter the room code your host is showing.",
     };
@@ -1365,19 +1410,32 @@ function roomPeerSignal(
 }
 
 function roomFailed(model: LobbyModel, reason: string): LobbyModel {
+  const text = ROOM_FAILURE_TEXT[reason] ?? reason;
   // Both fields, deliberately: `error` for the first frame (consistent
   // with every other command's error surface), `room_error` so the message
   // survives the trailing `tick` command that same frame's `update(dt)`
   // dispatches right after -- see `room_error`'s own doc on `LobbyModel`.
-  return { ...model, room_status: "failed", error: reason, room_error: reason };
+  //
+  // `room_active: false` matters just as much as either: it is what
+  // `lobby.ts`'s layout reads to decide whether the manual copy/paste
+  // controls are shown at all (`view.role && !view.room_active`). Leaving
+  // it `true` after a failure -- the connection this flag was tracking no
+  // longer exists -- made the manual fallback this issue's own acceptance
+  // criteria promise ("manual signaling still works") unreachable for a
+  // player who tried a room code first and picked a manual role after it
+  // failed. Mirrors `roomCancel`/`leave`, which already clear it on every
+  // other way out of the room-code path.
+  return { ...model, room_status: "failed", room_active: false, error: text, room_error: text };
 }
 
 function roomDropped(model: LobbyModel): LobbyModel {
   if (model.room_status !== "connected") {
     return model;
   }
-  const reason = "the room-code connection was lost";
-  return { ...model, room_status: "failed", error: reason, room_error: reason };
+  const text = ROOM_FAILURE_TEXT["connection_lost"] as string;
+  // `room_active: false` -- see `roomFailed`'s own comment; the same
+  // reasoning applies to a connection that was live and then dropped.
+  return { ...model, room_status: "failed", room_active: false, error: text, room_error: text };
 }
 
 export type LobbyCommand =
@@ -1436,7 +1494,21 @@ export function command(
   let next: LobbyModel = withoutError;
   switch (cmd.kind) {
     case "role":
-      next = chooseRole(next, ports, cmd.role, effects);
+      // Guarded HERE rather than inside `chooseRole` itself: `roomCreated`/
+      // `roomJoined` call `chooseRole` directly while `room_active` is
+      // ALREADY `true` (set the moment a room-code attempt starts, well
+      // before either arrives) -- a guard inside `chooseRole` would reject
+      // its own success path. This is specifically the manual "role"
+      // command's own guard: a role pick may not race an in-flight or
+      // established room-code connection. `lobby.ts`'s layout already
+      // disables `role_host`/`role_guest` for the same window; this is the
+      // belt to that layout's braces, so a stale layout or a synthetic
+      // dispatch cannot wedge the lobby the way round-2 council review's
+      // blocking finding 2 did. See `roomPick`'s matching guard for the
+      // room-code buttons' own side of the same race.
+      next = next.room_active
+        ? { ...next, error: "a room-code connection is in progress" }
+        : chooseRole(next, ports, cmd.role, effects);
       break;
     case "mode":
       next = setMode(next, ports, cmd.mode);

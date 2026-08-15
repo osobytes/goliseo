@@ -27,7 +27,12 @@
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
 import { fakeStar, fakeStarRendezvous, type StarTransportAdapter } from "@gc/transport";
-import type { LobbyScreenState, RoomSignalingEvent, RoomSignalingHandle } from "@gc/screens";
+import {
+  LOBBY_ROOM_FAILURE_TEXT,
+  type LobbyScreenState,
+  type RoomSignalingEvent,
+  type RoomSignalingHandle,
+} from "@gc/screens";
 import { createOnlinePorts, type OnlinePortsDeps } from "./online_ports.ts";
 import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { APP_CONTENT, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
@@ -112,12 +117,18 @@ interface FakeRoom {
 interface FakeRoomRendezvous {
   openHost(): RoomSignalingHandle;
   openGuest(code: string): RoomSignalingHandle;
+  /** Total `close()` calls across every host handle this rendezvous has
+   * ever produced -- round-2 council review, blocking finding 3: proves
+   * `online_lobby.ts` closes a stale `roomLink` before replacing it with a
+   * fresh one on a retry, rather than leaking it. */
+  hostCloseCount(): number;
 }
 
 function fakeRoomRendezvous(): FakeRoomRendezvous {
   const rooms = new Map<string, FakeRoom>();
   let roomCounter = 0;
   let guestCounter = 0;
+  let hostCloses = 0;
 
   function openHost(): RoomSignalingHandle {
     roomCounter += 1;
@@ -140,6 +151,9 @@ function fakeRoomRendezvous(): FakeRoomRendezvous {
         room.guestQueues.get(effect.to)?.push({ kind: "signal", signal: effect.signal });
       },
       close: () => {
+        if (!closed) {
+          hostCloses += 1;
+        }
         closed = true;
         rooms.delete(code);
       },
@@ -185,7 +199,7 @@ function fakeRoomRendezvous(): FakeRoomRendezvous {
     };
   }
 
-  return { openHost, openGuest };
+  return { openHost, openGuest, hostCloseCount: () => hostCloses };
 }
 
 function typeCode(lobby: DispatchableLobby, code: string): void {
@@ -298,7 +312,21 @@ describe("room_code_lobby: failure states", () => {
     // command `pump()`'s `update(dt)` dispatches every frame, so only the
     // dedicated, persistent field still holds the failure by the time this
     // assertion runs (`room_error`'s own doc on `LobbyModel`).
-    expect(guest.state.model.room_error).toBe("handshake_failed");
+    expect(guest.state.model.room_error).toBe(LOBBY_ROOM_FAILURE_TEXT["handshake_failed"]);
+    // A failed room-code attempt must not leave `room_active` stuck `true`
+    // -- that would hide the manual copy/paste controls forever
+    // (`lobby.ts`'s layout gates them on `!room_active`), making the
+    // "manual signaling still works" fallback unreachable after exactly
+    // the failure this test drives. Round-2 council review, blocking
+    // finding 1.
+    expect(guest.state.model.room_active).toBe(false);
+
+    // The manual path is genuinely usable from here: picking a manual
+    // role now must not be refused, and must reach a normal, working
+    // manual lobby (not one wedged mid-connection).
+    guest.dispatch({ kind: "role", role: "guest" });
+    expect(guest.state.model.role).toBe("guest");
+    expect(guest.state.model.error).toBeUndefined();
   });
 
   it("leaves the manual signaling path fully usable alongside the room-code one", () => {
@@ -316,5 +344,86 @@ describe("room_code_lobby: failure states", () => {
     lobby.dispatch({ kind: "role", role: "host" });
     expect(lobby.state.model.role).toBe("host");
     expect(lobby.state.model.room_active).toBe(false);
+  });
+
+  // Round-2 council review, blocking finding 2: a manual role pick (or a
+  // second room-code attempt) used to stay reachable during the async
+  // window after `room_pick`/`room_submit` -- `room_active` already `true`,
+  // `room_status: "connecting"`, but no `coordinator` yet. Activating one
+  // then wedged the lobby: the LATE `room_created`/`room_joined` would
+  // no-op against the already-chosen role but still leave `room_active`
+  // stuck `true` forever, with no way to reach either signaling path again
+  // except LEAVE.
+  it("refuses a manual role pick raced against an in-flight room-code connection", () => {
+    const roomRendezvous = fakeRoomRendezvous();
+    const ports = newTestOnlinePorts(() => undefined, roomRendezvous);
+    const host = newDispatchableLobby(ports, () => {});
+
+    // `room_open_host` is processed synchronously by `dispatch()` -- the
+    // fake's `created` event is queued but not yet polled, so this is
+    // exactly the async window: `room_active` is `true`, `coordinator` is
+    // still `undefined`.
+    host.dispatch({ kind: "room_pick", role: "host" });
+    expect(host.state.model.room_active).toBe(true);
+    expect(host.state.model.coordinator).toBeUndefined();
+
+    // The race: a manual role pick during that window is refused, not
+    // silently accepted and then abandoned.
+    host.dispatch({ kind: "role", role: "host" });
+    expect(host.state.model.coordinator).toBeUndefined();
+    expect(host.state.model.error).toBeDefined();
+
+    // A second room-code attempt during the SAME window is refused too.
+    host.dispatch({ kind: "room_pick", role: "guest" });
+    expect(host.state.model.room_entry).toBeUndefined();
+    expect(host.state.model.error).toBeDefined();
+
+    // The original room-code attempt itself is unaffected by either
+    // refused race and still completes normally.
+    pump([host], []);
+    expect(host.state.model.role).toBe("host");
+    expect(host.state.model.coordinator?.role).toBe("host");
+    expect(host.state.model.room_code).toBeDefined();
+  });
+
+  // Round-2 council review, blocking finding 3: a room-code retry used to
+  // leave the PREVIOUS attempt's socket open (`room_signaling_port.ts`
+  // never closed it on a protocol-level failure, and `online_lobby.ts`
+  // overwrote `this.roomLink` without closing the old one first) --
+  // against the rate-limited signaling Worker, every retry orphaned
+  // another live connection.
+  it("closes the previous room-code connection before a retry opens a new one", () => {
+    const roomRendezvous = fakeRoomRendezvous();
+    const ports = newTestOnlinePorts(() => undefined, roomRendezvous);
+    const host = newDispatchableLobby(ports, () => {});
+
+    // Never pumped: the fake's `created` event for THIS attempt sits
+    // unpolled, so `chooseRole` never runs and `coordinator` stays
+    // `undefined` -- exactly a connection that fails before ever
+    // succeeding (a Worker outage, a network drop mid-handshake), not a
+    // connection that succeeded and later died. `roomPick`'s own
+    // "already chosen" guard would otherwise block a legitimate retry, so
+    // this is the scenario where one actually has to work.
+    host.dispatch({ kind: "room_pick", role: "host" });
+    expect(host.state.model.role).toBeUndefined();
+    expect(roomRendezvous.hostCloseCount()).toBe(0);
+
+    // A failure -- exactly what `room_signaling_port.ts`'s own `fail()`
+    // helper now reports after closing its own socket (blocking finding
+    // 3's other half) -- resets `room_active` (blocking finding 1)
+    // without the pure model ever pushing a `room_close` effect itself,
+    // so `online_lobby.ts`'s `roomLink` is a stale, not-yet-closed
+    // reference until the next `room_open_*` effect closes it.
+    host.dispatch({ kind: "room_failed", reason: "handshake_failed" });
+    expect(host.state.model.room_active).toBe(false);
+    expect(host.state.model.role).toBeUndefined();
+
+    // Retrying as host opens a genuinely new connection, and closes the
+    // stale one first rather than leaking it.
+    host.dispatch({ kind: "room_pick", role: "host" });
+    expect(roomRendezvous.hostCloseCount()).toBe(1);
+    pump([host], []);
+    expect(host.state.model.role).toBe("host");
+    expect(host.state.model.room_code).toBeDefined();
   });
 });
