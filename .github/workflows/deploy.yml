@@ -1,0 +1,204 @@
+name: Deploy
+
+# #551. Builds the same `ts/dist-app/` the `gate` job in ci.yml verifies
+# byte-for-byte, then serves it -- plus the room-code signaling Durable
+# Object and the TURN-credentials route -- from Cloudflare Workers.
+#
+# Deliberately a SEPARATE workflow from ci.yml, not a job appended to
+# `gate`: this one needs Cloudflare account credentials, `gate` must stay
+# runnable (and does run, on every PR) with none. Nothing here weakens or
+# duplicates `gate` -- it reuses `gate`'s own toolchain-install steps
+# verbatim (rustup, the pinned wasm-bindgen-cli, the pinned Node, the
+# pinned pnpm) and the same build commands scripts/check.sh's
+# gate_wasm_build/gate_app_bundle stages run, so the artifact this deploys
+# is built the same way the one `gate` verifies is. AGENTS.md forbids
+# hand-mirrored steps that can silently diverge; the honest alternative
+# here -- since these are raw shell steps in ci.yml, not a shared script --
+# is to copy them exactly rather than invent a different build path.
+on:
+    workflow_dispatch:
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+concurrency:
+    # Never cancel a deploy that is already talking to the Cloudflare API
+    # mid-flight -- an interrupted `wrangler deploy` can leave the Worker
+    # and its Durable Object migration in an inconsistent state.
+    group: deploy-${{ github.workflow }}
+    cancel-in-progress: false
+
+jobs:
+    deploy:
+        name: Build and deploy
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+            # Fails the whole job early and legibly rather than letting the
+            # build run for minutes before wrangler-action fails opaquely
+            # deep in the deploy step. The TURN pair is a WARN, not a FAIL:
+            # the owner may not have created a Cloudflare Realtime TURN key
+            # yet, and index.ts's /api/turn-credentials is explicitly
+            # designed to return 404 (STUN-only degrade) when it is unset --
+            # see docs/online/hosting_runbook.md for the one-time dashboard
+            # steps that create all three secrets.
+            - name: Verify required secrets, and choose which to propagate to the Worker
+              id: secrets_check
+              env:
+                  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+                  TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+                  TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}
+              run: |
+                  if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+                      echo "::error::CLOUDFLARE_API_TOKEN is not set. Create an 'Edit Cloudflare Workers' API token and add it as a repository secret named CLOUDFLARE_API_TOKEN -- see docs/online/hosting_runbook.md -- before this workflow can deploy."
+                      exit 1
+                  fi
+                  if [ -n "$TURN_KEY_ID" ] && [ -n "$TURN_API_TOKEN" ]; then
+                      {
+                          echo "worker_secrets<<SECRETS_EOF"
+                          echo "TURN_KEY_ID"
+                          echo "TURN_API_TOKEN"
+                          echo "SECRETS_EOF"
+                      } >> "$GITHUB_OUTPUT"
+                  else
+                      echo "::warning::TURN_KEY_ID and/or TURN_API_TOKEN are not set as repository secrets. Deploying without them -- /api/turn-credentials will return 404 and clients degrade to STUN-only until the owner creates a Cloudflare Realtime TURN key and adds both secrets (see docs/online/hosting_runbook.md)."
+                      echo "worker_secrets=" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Install rustup if missing
+              run: |
+                  if ! command -v rustup >/dev/null 2>&1; then
+                      curl --fail --location --retry 3 --silent --show-error \
+                          https://sh.rustup.rs \
+                          | sh -s -- -y --profile minimal --default-toolchain none
+                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+                  fi
+
+            - name: Select the pinned rust toolchain
+              working-directory: rust
+              run: rustup show
+
+            # Identical to ci.yml's "Install pinned wasm-bindgen-cli" step --
+            # see that step's own comment for why the version is pinned
+            # exactly rather than by semver range.
+            - name: Install pinned wasm-bindgen-cli
+              env:
+                  WASM_BINDGEN_VERSION: 0.2.118
+                  WASM_BINDGEN_SHA256: 00b519c9fc2d6e087265da1a00f29160bfcc6a823993482bc2e691910287427b
+              run: |
+                  tool_dir="$RUNNER_TEMP/wasm-bindgen-cli"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/wasm-bindgen.tar.gz" \
+                      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+                  echo "${WASM_BINDGEN_SHA256}  $tool_dir/wasm-bindgen.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/wasm-bindgen.tar.gz" -C "$tool_dir" --strip-components=1
+                  chmod +x "$tool_dir/wasm-bindgen"
+                  "$tool_dir/wasm-bindgen" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            # Identical to ci.yml's "Install pinned Node.js" step.
+            - name: Install pinned Node.js
+              env:
+                  NODE_VERSION: 22.22.0
+                  NODE_SHA256: 9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37
+              run: |
+                  tool_dir="$RUNNER_TEMP/node"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/node.tar.xz" \
+                      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+                  echo "${NODE_SHA256}  $tool_dir/node.tar.xz" | sha256sum --check --status
+                  tar -xJf "$tool_dir/node.tar.xz" -C "$tool_dir" --strip-components=1
+                  "$tool_dir/bin/node" --version
+                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
+
+            # Identical to ci.yml's "Install pinned pnpm" step.
+            - name: Install pinned pnpm
+              env:
+                  PNPM_VERSION: 11.1.2
+                  PNPM_SHA256: f82f761572d9621c5a646ccc00a1ecec4cf5839d66b714497e6ca10cd2e086ee
+              run: |
+                  tool_dir="$RUNNER_TEMP/pnpm"
+                  mkdir -p "$tool_dir"
+                  curl --fail --location --retry 3 --silent --show-error \
+                      --output "$tool_dir/pnpm.tar.gz" \
+                      "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"
+                  echo "${PNPM_SHA256}  $tool_dir/pnpm.tar.gz" | sha256sum --check --status
+                  tar -xzf "$tool_dir/pnpm.tar.gz" -C "$tool_dir"
+                  chmod +x "$tool_dir/pnpm"
+                  "$tool_dir/pnpm" --version
+                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+            - name: "ts: pnpm install --frozen-lockfile"
+              working-directory: ts
+              run: pnpm install --frozen-lockfile
+
+            # Only the BROWSER wasm target -- ts/vite.config.ts's doc: the
+            # app shell imports @gc/wasm's `web` export, built by this
+            # script into dist/pkg-web. The `nodejs` target build.mjs
+            # produces (used by vitest, gc-wasm's determinism spec) is not
+            # part of the shipped bundle and is not needed to deploy.
+            - name: "ts/packages/wasm: node scripts/build_web.mjs"
+              working-directory: ts/packages/wasm
+              run: node scripts/build_web.mjs
+
+            # Same command scripts/check.sh's gate_app_bundle runs, and the
+            # SAME wasm artifact gate_app_bundle then byte-compares against
+            # the one it embeds -- see that gate's own comment in
+            # scripts/check.sh for why the comparison matters. Rerunning it
+            # here is not redundant with `gate`: `gate` proves a given
+            # commit's build is reproducible bit-for-bit, not that THIS
+            # workflow, on THIS runner, produced the same bytes -- and it
+            # did not check out the same ref before pull_request events, so
+            # trusting its result for what ends up deployed would be
+            # unfounded.
+            - name: "ts: pnpm exec vite build"
+              working-directory: ts
+              run: pnpm exec vite build
+
+            - name: "infra: pnpm install --frozen-lockfile"
+              working-directory: infra
+              run: pnpm install --frozen-lockfile
+
+            - name: "infra: pnpm exec tsc --noEmit"
+              working-directory: infra
+              run: pnpm exec tsc --noEmit
+
+            - name: "infra: pnpm exec eslint ."
+              working-directory: infra
+              run: pnpm exec eslint .
+
+            # The room state machine's headless unit tests (room_state.ts,
+            # room_code.ts, rate_limiter.ts, turn_credentials.ts) -- see
+            # infra/vitest.config.ts's doc for what this suite does and does
+            # not cover.
+            - name: "infra: pnpm exec vitest run"
+              working-directory: infra
+              run: pnpm exec vitest run
+
+            # wrangler-action uses the wrangler already installed in
+            # workingDirectory (infra/package.json pins wrangler@4.123.0,
+            # installed above) rather than fetching its own, so this and
+            # `wrangler dev` locally run the identical version.
+            #
+            # secrets: is empty (see the first step) when TURN_KEY_ID/
+            # TURN_API_TOKEN are not both set -- an empty `secrets:` input
+            # sets nothing, so the Worker simply keeps whatever TURN
+            # secrets (if any) were set by a previous run, or none.
+            - name: Deploy to Cloudflare Workers
+              uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+              with:
+                  apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+                  workingDirectory: infra
+                  packageManager: pnpm
+                  secrets: ${{ steps.secrets_check.outputs.worker_secrets }}
+              env:
+                  TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+                  TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}

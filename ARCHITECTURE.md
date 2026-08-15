@@ -167,7 +167,20 @@ ts/
   packages/online                         lobby, signalling, diagnostics
   packages/wasm                             loads/types the built wasm module
   packages/app                                app shell
+infra/
+  wrangler.jsonc             Worker config: static assets, room-code signaling DO, TURN route
+  src/                         the Worker + Durable Object source
 ```
+
+`infra/` (#551) is a third, deliberately separate deploy unit: its own
+`package.json`, `tsconfig.json` and test setup, never entered by `rust/` or
+`ts/`'s dependency graph and never importing from either. It hosts the
+built `ts/dist-app/` and runs the two small server pieces the online path
+needs — room-code signaling and TURN credentials — as a Cloudflare Worker.
+See `docs/online/hosting_runbook.md` for what it does and how it deploys,
+and `docs/online/relay_topology_decision.md` for why a Durable Object here
+does not revisit that decision: signaling and TURN sit off the game's data
+path, which stays P2P host-star.
 
 ---
 

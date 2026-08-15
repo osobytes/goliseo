@@ -1,0 +1,18 @@
+# Copied verbatim into dist-app/ by `vite build` (Vite's publicDir
+# passthrough -- vite.config.ts does not override `root`, so the default
+# publicDir is ts/public/, and everything here lands at the build output's
+# root unchanged). Read by Cloudflare Workers static assets
+# (infra/wrangler.jsonc's "assets" block) to set response headers that the
+# platform's default content-type inference should not be trusted to get
+# right on its own for a streaming-compiled module: issue #551 requires
+# `.wasm` served as `application/wasm` explicitly, not left to guesswork.
+#
+# `*` is Workers static assets' one-and-only greedy splat per pattern, and
+# it spans path segments -- confirmed against a local `wrangler dev`, one
+# rule matches both the content-hashed wasm-bindgen artifact under
+# dist-app/assets/ (see scripts/check.sh's gate_app_bundle) and any future
+# .wasm at the build output's root. A second, narrower rule here would only
+# double the header (Workers static assets applies every matching rule),
+# not add coverage.
+/*.wasm
+  Content-Type: application/wasm

@@ -1,0 +1,108 @@
+//! The Worker entry point. `wrangler.jsonc`'s `assets.run_worker_first`
+//! routes only `/api/*` and `/signal/*` here -- every other path (the app
+//! shell, its JS bundle, its `.wasm`) is served directly from
+//! `ts/dist-app/` by the platform's static assets layer without this file
+//! running at all.
+//!
+//! Two routes:
+//! - `/signal/host` and `/signal/join` upgrade to a WebSocket and hand off
+//!   to a `RoomDurableObject`, one per room code (`room_durable_object.ts`).
+//!   `Room-Role` is set HERE, from which route matched -- never read from
+//!   anything the client sent, so a client cannot self-declare "host".
+//! - `/api/turn-credentials` mints short-TTL TURN credentials (`turn_credentials.ts`).
+
+import { generateRoomCode, isValidRoomCode } from "./room_code.ts";
+import {
+  TURN_CREDENTIAL_TTL_SECONDS,
+  fetchIceServers,
+  isSameOrigin,
+  type TurnKeyCredentials,
+} from "./turn_credentials.ts";
+
+export { RoomDurableObject } from "./room_durable_object.ts";
+
+/** Bounded retries against a code collision (or a still-live prior room on that code). */
+const MAX_CODE_ATTEMPTS = 5;
+
+async function handleHostSignal(request: Request, env: Env): Promise<Response> {
+  const forwarded = new Headers(request.headers);
+  forwarded.set("Room-Role", "host");
+
+  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt += 1) {
+    const randomBytes = crypto.getRandomValues(new Uint8Array(6));
+    const code = generateRoomCode(randomBytes);
+    const stub = env.ROOM.getByName(code);
+    const response = await stub.fetch(new Request(request.url, { headers: forwarded }));
+    if (response.status !== 409) {
+      return response;
+    }
+    // 409 here means this freshly generated code already names a live
+    // room -- astronomically unlikely (see room_code.ts's doc) but cheap
+    // to retry rather than assume can't happen.
+  }
+  return new Response("could not allocate a room code, try again", { status: 503 });
+}
+
+async function handleJoinSignal(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const code = (url.searchParams.get("code") ?? "").toUpperCase();
+  if (!isValidRoomCode(code)) {
+    return new Response("invalid room code", { status: 400 });
+  }
+  const forwarded = new Headers(request.headers);
+  forwarded.set("Room-Role", "guest");
+  const stub = env.ROOM.getByName(code);
+  return stub.fetch(new Request(request.url, { headers: forwarded }));
+}
+
+async function handleTurnCredentials(request: Request, env: Env): Promise<Response> {
+  // Same-origin only -- this route mints credentials that cost money.
+  if (!isSameOrigin(request.url, request.headers.get("Origin"))) {
+    return new Response("forbidden", { status: 403 });
+  }
+
+  const rateLimitKey = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const { success } = await env.TURN_RATE_LIMITER.limit({ key: rateLimitKey });
+  if (!success) {
+    return new Response("too many requests", { status: 429 });
+  }
+
+  // Secrets unset (owner hasn't finished account setup, or local dev with
+  // no .dev.vars) -- 404 so the client degrades to STUN-only. This exact
+  // contract is depended on by the client-side issue in this milestone;
+  // do not change it to a different status without updating that side too.
+  if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
+    return new Response(null, { status: 404 });
+  }
+
+  const credentials: TurnKeyCredentials = { keyId: env.TURN_KEY_ID, apiToken: env.TURN_API_TOKEN };
+  const result = await fetchIceServers(credentials, TURN_CREDENTIAL_TTL_SECONDS, fetch);
+  if (!result.ok) {
+    // Never log credentials.keyId/apiToken; result.error is a fixed
+    // stringly-typed code (turn_credentials.ts), never response content.
+    console.error("turn-credentials: upstream call failed", result.error);
+    return new Response("upstream TURN provider error", { status: 502 });
+  }
+
+  return Response.json(result.value, {
+    headers: { "cache-control": "no-store" },
+  });
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/signal/host") {
+      return handleHostSignal(request, env);
+    }
+    if (url.pathname === "/signal/join") {
+      return handleJoinSignal(request, env);
+    }
+    if (url.pathname === "/api/turn-credentials" && request.method === "GET") {
+      return handleTurnCredentials(request, env);
+    }
+
+    return new Response("not found", { status: 404 });
+  },
+};

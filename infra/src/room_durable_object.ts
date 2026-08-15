@@ -1,0 +1,348 @@
+//! `RoomDurableObject`: the impure glue around `room_state.ts`'s pure
+//! reducer. One instance per room code -- `getByName(code)` in `index.ts`
+//! -- addressed by `ctx.id.name`, which the platform recovers for us
+//! because every stub is created via `getByName`, never `newUniqueId`.
+//!
+//! Hibernation-safe by construction: nothing this class needs to answer a
+//! request lives only in JS memory. The room's authoritative state lives
+//! in one SQLite row (`loadState`/`saveState`); each live socket's own
+//! identity (`connectionId`, `role`) travels with it via
+//! `serializeAttachment`, which the runtime preserves across a
+//! hibernate/wake cycle even though the class instance itself is
+//! discarded and re-constructed.
+//!
+//! The one thing this file is not allowed to do, per issue #551 and
+//! `docs/online/relay_topology_decision.md`'s "dumb relay" principle: read
+//! the CONTENTS of a signaling message. `webSocketMessage` below reads
+//! exactly one field from a host's message (`to`, the routing envelope)
+//! and forwards `body` untouched in both directions.
+
+import { DurableObject } from "cloudflare:workers";
+
+import { type FixedWindowState, tryConsume } from "./rate_limiter.ts";
+import {
+  type ConnectionId,
+  type RoomState,
+  ROOM_TTL_MS,
+  claimHost,
+  closeRoom,
+  isExpired,
+  joinGuest,
+  newRoom,
+  removeConnection,
+  routeSignal,
+} from "./room_state.ts";
+
+/** At most this many join *attempts* (successful or not) per room per window -- abuse guard. */
+const JOIN_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
+
+/** How long a just-closed room's storage lingers before cleanup, to let in-flight sends land. */
+const CLOSE_GRACE_MS = 5_000;
+
+type Role = "host" | "guest";
+
+interface SocketAttachment {
+  readonly connectionId: ConnectionId;
+  readonly role: Role;
+}
+
+function isSocketAttachment(value: unknown): value is SocketAttachment {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const v = value as Partial<SocketAttachment>;
+  return typeof v.connectionId === "string" && (v.role === "host" || v.role === "guest");
+}
+
+interface RoomRow extends Record<string, SqlStorageValue> {
+  readonly code: string;
+  readonly created_at_ms: number;
+  readonly phase: string;
+  readonly host_id: string | null;
+  readonly guest_ids: string;
+  readonly join_window_start_ms: number | null;
+  readonly join_window_count: number | null;
+}
+
+/** The room-code signaling Durable Object. See this module's doc for the shape. */
+export class RoomDurableObject extends DurableObject<Env> {
+  public constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // sql.exec is synchronous -- schema setup finishes before the
+    // constructor returns, with nothing to gate via blockConcurrencyWhile
+    // (which is for holding off requests during genuinely ASYNC init).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS room (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        code TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        host_id TEXT,
+        guest_ids TEXT NOT NULL,
+        join_window_start_ms INTEGER,
+        join_window_count INTEGER
+      )
+    `);
+  }
+
+  private codeFromId(): string {
+    const name = this.ctx.id.name;
+    if (name === undefined) {
+      // Programmer error, not a client-triggerable one: every stub in this
+      // codebase is created via getByName(code) (index.ts), never
+      // newUniqueId() or idFromString(). AGENTS.md §7: fail loud.
+      throw new Error("RoomDurableObject must be addressed via getByName(code)");
+    }
+    return name;
+  }
+
+  private loadState(nowMs: number): RoomState {
+    const row = this.ctx.storage.sql
+      .exec<RoomRow>(
+        "SELECT code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
+      )
+      .toArray()[0];
+    if (row === undefined) {
+      return newRoom(this.codeFromId(), nowMs);
+    }
+    return {
+      code: row.code,
+      createdAtMs: row.created_at_ms,
+      phase: row.phase as RoomState["phase"],
+      hostId: row.host_id,
+      guestIds: JSON.parse(row.guest_ids) as ConnectionId[],
+    };
+  }
+
+  private loadJoinWindow(): FixedWindowState | null {
+    const row = this.ctx.storage.sql
+      .exec<RoomRow>(
+        "SELECT code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
+      )
+      .toArray()[0];
+    if (row === undefined || row.join_window_start_ms === null || row.join_window_count === null) {
+      return null;
+    }
+    return { windowStartMs: row.join_window_start_ms, count: row.join_window_count };
+  }
+
+  private saveState(state: RoomState, joinWindow?: FixedWindowState): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room (id, code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         code = excluded.code,
+         created_at_ms = excluded.created_at_ms,
+         phase = excluded.phase,
+         host_id = excluded.host_id,
+         guest_ids = excluded.guest_ids,
+         join_window_start_ms = COALESCE(excluded.join_window_start_ms, room.join_window_start_ms),
+         join_window_count = COALESCE(excluded.join_window_count, room.join_window_count)`,
+      state.code,
+      state.createdAtMs,
+      state.phase,
+      state.hostId,
+      JSON.stringify(state.guestIds),
+      joinWindow?.windowStartMs ?? null,
+      joinWindow?.count ?? null,
+    );
+  }
+
+  public override async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("Upgrade") !== "websocket") {
+      return new Response("expected a WebSocket upgrade", { status: 426 });
+    }
+    const role = request.headers.get("Room-Role");
+    if (role !== "host" && role !== "guest") {
+      // Set by index.ts, never by the client directly -- see its own doc.
+      return new Response("missing or invalid Room-Role", { status: 400 });
+    }
+
+    const nowMs = Date.now();
+    let state = this.loadState(nowMs);
+
+    // First request this instance has ever served for this code: arm the
+    // TTL cleanup alarm. Harmless to (re-)arm on a request that goes on to
+    // fail its claim below -- disconnect()/alarm() below treat an
+    // unpersisted synthetic room as already closed.
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(state.createdAtMs + ROOM_TTL_MS);
+    }
+
+    if (state.phase !== "closed" && isExpired(state, nowMs)) {
+      state = closeRoom(state);
+      this.saveState(state);
+    }
+
+    const windowResult = tryConsume(this.loadJoinWindow(), nowMs, JOIN_RATE_LIMIT);
+    if (!windowResult.ok) {
+      return new Response("too many join attempts for this room", { status: 429 });
+    }
+
+    const connectionId = crypto.randomUUID();
+    const claimResult =
+      role === "host"
+        ? claimHost(state, connectionId, nowMs)
+        : joinGuest(state, connectionId, nowMs);
+    if (!claimResult.ok) {
+      this.saveState(state, windowResult.value);
+      return new Response(claimResult.error, { status: 409 });
+    }
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    const attachment: SocketAttachment = { connectionId, role };
+    server.serializeAttachment(attachment);
+    this.ctx.acceptWebSocket(server);
+    this.saveState(claimResult.value, windowResult.value);
+
+    server.send(
+      JSON.stringify(
+        role === "host"
+          ? { type: "created", code: state.code }
+          : { type: "joined", code: state.code },
+      ),
+    );
+    if (role === "guest") {
+      // The host has no other way to learn a guest's connection id --
+      // and needs it to address that guest in a signal's `to` field.
+      this.sendToHost({ type: "guest_joined", guestId: connectionId });
+    }
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Send `body` to the room's host socket, if one is currently connected. */
+  private sendToHost(body: unknown): void {
+    const message = JSON.stringify(body);
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment: unknown = socket.deserializeAttachment();
+      if (isSocketAttachment(attachment) && attachment.role === "host") {
+        socket.send(message);
+      }
+    }
+  }
+
+  public override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const attachment: unknown = ws.deserializeAttachment();
+    if (!isSocketAttachment(attachment)) {
+      ws.close(1011, "unrecognized connection");
+      return;
+    }
+
+    const byteLength =
+      typeof message === "string" ? new TextEncoder().encode(message).length : message.byteLength;
+
+    // Routing metadata only. `body` is forwarded exactly as received in
+    // both directions -- this is the one place this file reads any part of
+    // a signaling message, and it stops at `to`.
+    let toId: ConnectionId | undefined;
+    let outgoingBody: unknown = message;
+    if (attachment.role === "host") {
+      if (typeof message !== "string") {
+        ws.send(JSON.stringify({ type: "error", error: "binary_not_supported" }));
+        return;
+      }
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(message);
+      } catch {
+        ws.send(JSON.stringify({ type: "error", error: "invalid_envelope" }));
+        return;
+      }
+      const to = (envelope as { to?: unknown }).to;
+      if (typeof to !== "string") {
+        ws.send(JSON.stringify({ type: "error", error: "missing_target" }));
+        return;
+      }
+      toId = to;
+      outgoingBody = (envelope as { body?: unknown }).body;
+    }
+
+    const nowMs = Date.now();
+    const state = this.loadState(nowMs);
+    const routeResult = routeSignal(state, {
+      fromId: attachment.connectionId,
+      byteLength,
+      ...(toId !== undefined ? { toId } : {}),
+    });
+    if (!routeResult.ok) {
+      ws.send(JSON.stringify({ type: "error", error: routeResult.error }));
+      return;
+    }
+
+    const outgoing = JSON.stringify(
+      attachment.role === "host"
+        ? { type: "signal", from: "host", body: outgoingBody }
+        : { type: "signal", from: attachment.connectionId, body: outgoingBody },
+    );
+
+    for (const socket of this.ctx.getWebSockets()) {
+      const other: unknown = socket.deserializeAttachment();
+      if (isSocketAttachment(other) && routeResult.value.includes(other.connectionId)) {
+        socket.send(outgoing);
+      }
+    }
+  }
+
+  public override async webSocketClose(ws: WebSocket): Promise<void> {
+    await this.disconnect(ws);
+  }
+
+  public override async webSocketError(ws: WebSocket): Promise<void> {
+    await this.disconnect(ws);
+  }
+
+  private async disconnect(ws: WebSocket): Promise<void> {
+    const attachment: unknown = ws.deserializeAttachment();
+    if (!isSocketAttachment(attachment)) {
+      return;
+    }
+    const state = this.loadState(Date.now());
+    const nextState = removeConnection(state, attachment.connectionId);
+    this.saveState(nextState);
+
+    if (nextState.phase === "closed") {
+      // Close the OTHER live sockets from the alarm handler, not here.
+      // A hibernatable socket's close() called synchronously from inside a
+      // DIFFERENT socket's own webSocketClose handler does not reliably
+      // deliver the close frame in every runtime (observed locally under
+      // `wrangler dev`); a fresh alarm invocation closing them does. The
+      // short grace period this schedules is imperceptible for a
+      // handshake-only relay.
+      await this.ctx.storage.setAlarm(Date.now() + CLOSE_GRACE_MS);
+    } else if (attachment.role === "guest") {
+      // A guest left but the room (and the host's connection) is still
+      // live -- tell the host so it can tear down that guest's peer
+      // connection instead of waiting on a WebRTC-level timeout.
+      this.sendToHost({ type: "guest_left", guestId: attachment.connectionId });
+    }
+  }
+
+  public override alarm(): void {
+    const state = this.loadState(Date.now());
+    if (state.phase !== "closed") {
+      this.saveState(closeRoom(state));
+    }
+    // Unconditional: this alarm is the cleanup point both for TTL expiry
+    // (state was still open above) and for the short grace period
+    // disconnect() schedules once a host departure has already closed the
+    // room -- either way, any socket still open at this point should not
+    // be.
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        socket.close(1000, "room closed");
+      } catch {
+        // Already closing; nothing to do.
+      }
+    }
+    // Deliberately NOT ctx.storage.deleteAll(): closing a socket here
+    // schedules its OWN webSocketClose callback asynchronously, which
+    // calls disconnect() -> loadState() on this same instance. Dropping
+    // the table now would make that later, already-in-flight callback
+    // fail with "no such table". A closed room's one-row footprint costs
+    // nothing worth racing this for; the row simply stays "closed" and
+    // isValidRoomCode/claimHost reject anything further against this code.
+  }
+}
