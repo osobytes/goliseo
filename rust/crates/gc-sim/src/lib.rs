@@ -78,3 +78,4 @@ pub mod sweep;
 pub mod tripwire;
 pub mod tunable_registry;
 pub mod tuning;
+pub mod wasm_native_corpus;
