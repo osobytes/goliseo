@@ -37,3 +37,24 @@ disallowed_types = "deny"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[profile.test]
+# gc-sim is a floating-point simulation; `cargo test --workspace` was running
+# it at the implicit default of opt-level 0, which measured at 91% of
+# scripts/check.sh's total wall clock (#538's own stage-timing table: 1023s
+# of 1123s). rustc's optimizer does not enable fast-math and does not
+# reassociate IEEE 754 operations, so raising opt-level changes speed, not
+# results -- verified, not assumed: the OMP-1 determinism digests
+# (final_hash/sequence_digest) and every differential/baseline suite listed
+# in scripts/check.sh's header are bit-identical at opt-level 0, 2 and 3.
+# opt-level 3 was chosen over 2 because it measured both faster to RUN
+# (162s vs 177s warm workspace-wide) and no slower to compile from a clean
+# target/ (205s vs 219s) -- there was no tradeoff to make. Overriding only
+# `[profile.test.package."*"]` (dependencies, not workspace crates) was
+# tried and rejected: the hot loops live in gc-sim/gc-core themselves, so it
+# left the five slowest suites unchanged (measured: still ~13min for just
+# those five, against ~2min with the workspace crates included). Overflow
+# checks and debug assertions are untouched by this -- opt-level is
+# independent of both, and neither is set here, so they keep their profile
+# default of `true`.
+opt-level = 3
