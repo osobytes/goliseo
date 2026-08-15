@@ -418,7 +418,7 @@ fn braking_harder_shortens_a_reversal() {
 /// three times as far as the braking one does.
 #[test]
 fn accelerating_harder_shortens_a_reversal() {
-    let seeds = seeds(24);
+    let seeds = seeds(48);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "LOCO_RUN_ACCEL_MULT",
         metric: "time_to_reverse",

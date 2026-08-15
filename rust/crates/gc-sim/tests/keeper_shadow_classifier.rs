@@ -140,7 +140,26 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     let seeds = baseline::seeds();
     let (total, had_disagree, had_deferred) = classify(&seeds);
 
-    // Re-pinned by #531 phase 2 (the gameplay AI's pass/throw seam), in the
+    // Re-pinned by #517's mechanical transcendental sweep (the dribble-touch
+    // and AI-outfield-error cos/sin, the aerial-contact cos/sin, the bot
+    // aim-noise cos/sin, and the support-triangle/combat-arc precomputed
+    // constants), in the SAME commit as `gc_data::outfield_ai_baseline`'s
+    // v10 -> v11 re-freeze, for the reason the paragraph below already
+    // gives.
+    //
+    // candidates 9285 -> 9438: nine call sites across `match.rs`,
+    // `aerial.rs`, `bot.rs`, `combat.rs` and `combat_feasibility.rs` moved
+    // from `f64::cos`/`f64::sin` (not correctly rounded, and different
+    // between native and wasm libm) to `gc_core::deterministic_math::cos_sin`
+    // or a precomputed constant, changing every dribble touch, off-ball
+    // support run and AI release angle by ULP-scale amounts that compound
+    // over a 7200-tick match into materially different possession
+    // sequences -- more of them now reach a keeper. `disagree_height`
+    // 18 -> 40 and `disagree_deferred` 172 -> 159 move with it; `new_only`
+    // stays structurally 0, which is the assertion that would have been a
+    // finding rather than a re-pin.
+    //
+    // Previously re-pinned by #531 phase 2 (the gameplay AI's pass/throw seam), in the
     // SAME commit as `gc_data::outfield_ai_baseline`'s v9 -> v10 re-freeze,
     // for the reason the paragraph below already gives.
     //
@@ -178,11 +197,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9285);
-    assert_eq!(total.agree_true, 2751);
-    assert_eq!(total.agree_false, 6344);
-    assert_eq!(total.disagree_deferred, 172);
-    assert_eq!(total.disagree_height, 18);
+    assert_eq!(total.candidates, 9438);
+    assert_eq!(total.agree_true, 3117);
+    assert_eq!(total.agree_false, 6122);
+    assert_eq!(total.disagree_deferred, 159);
+    assert_eq!(total.disagree_height, 40);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -239,7 +258,22 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // episodes remain the dominant driver. The shift from 6/21/24 to
     // 6/23/25 tracks the rise in candidates and disturbs nothing about the
     // conclusion.
-    assert_eq!(matches_with_disagree, 6);
-    assert_eq!(matches_with_deferred, 23);
-    assert_eq!(matches_with_either, 25);
+    //
+    // Re-pinned by #517's mechanical transcendental sweep alongside the
+    // counts above. Unlike every prior re-pin here, this change is not a
+    // gameplay AI change to compare against the old-code/new-code control
+    // arm from PR #501 -- it is nine call sites moving from native libm
+    // `cos`/`sin` to `gc_core::deterministic_math::cos_sin` or a precomputed
+    // constant, which is exactly the kind of RNG-stream-shifting,
+    // one-tick-earlier-or-later change this file's own module doc describes
+    // as `disagree_deferred`'s signature. `disagree_height` alone touches
+    // 11/60 matches (18%), and folding in `disagree_deferred` reaches 33/60
+    // (55%). Both counts rose along with `disagree_height`'s near-2.5x jump
+    // above; deferred episodes remain the larger of the two buckets, so the
+    // reconciliation this paragraph exists to explain is unchanged in kind,
+    // even though this re-pin has no historical byte-divergent split to
+    // compare its own fraction against.
+    assert_eq!(matches_with_disagree, 11);
+    assert_eq!(matches_with_deferred, 25);
+    assert_eq!(matches_with_either, 33);
 }

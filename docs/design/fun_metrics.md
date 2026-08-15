@@ -488,6 +488,68 @@ commands each entry cites are the deleted Lua CLI (see the banner at the top),
 and no entry has been re-measured on `gc-sim`. Every number below is the Lua
 tree's, from **2026-07-08** (oldest) to **2026-08-10** (newest).
 
+- **2026-08-14 — nine `gc-sim`/`gc-data` transcendental call sites converted
+  to `gc_core::deterministic_math::cos_sin` or a precomputed constant, so
+  native and the compiled wasm module compute the same simulation state
+  (#517's mechanical sweep).** `baseline_version` **10 → 11**, signature
+  `95850e11e242ea9b` → `fcb849367c7c26e4`; `identity.tuning_hash`,
+  `identity.content_hash`, `identity.fixture_hash` and `snapshot_version`
+  unchanged — no knob defaults or content moved, only mechanics. Re-frozen
+  via `record_outfield_ai_baseline`, per that module's own re-freeze
+  protocol.
+
+  This is not a gameplay change: `f64::cos`/`f64::sin` (not correctly
+  rounded, and a different libm on `wasm32-unknown-unknown` than native)
+  moved to `gc_core::deterministic_math::cos_sin` at `match.rs`'s dribble
+  touch and AI-outfield execution-error sites, `aerial.rs`'s contact-angle
+  rotation, and `bot.rs`'s aim noise; `match.rs`'s four-literal-angle support
+  triangle and `gc-data`'s `ActionFamilyData::front_arc_cos` (read by
+  `combat.rs`/`combat_feasibility.rs`) moved to precomputed constants. Each
+  site's own output shifts by an amount on the order of `cos_sin`'s ~1e-13
+  relative accuracy against libm, but the simulation is a long-running
+  nonlinear system (7,200 ticks, collisions, AI decisions) — once one
+  dribble touch or support run lands a player a fraction of a pixel
+  differently, the rest of that possession sequence runs on genuinely
+  different state, not just genuinely different bits. `gc-sim`'s
+  `KNOWN_DIVERGENCES` allowlist in `scripts/check_wasm_native_corpus.mjs`
+  went from two tracked native/wasm divergences (attributed to two of these
+  nine sites) to zero, which is the point of the change; this baseline's
+  drift is that same mechanism's cost on the native side, since the frozen
+  fixture pins exact hashes and does not distinguish "moved for a bug" from
+  "moved because a call that used to disagree with wasm now agrees with it."
+
+  | metric | frozen (v10) | re-frozen (v11) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.267473 | 0.256633 | −0.010841 |
+  | `goals_total` | 1.883333 | 1.783333 | −0.100000 |
+  | `goals_home` | 0.650000 | 0.750000 | +0.100000 |
+  | `goals_away` | 1.233333 | 1.033333 | −0.200000 |
+  | `shots` | 29.000000 | 30.166667 | +1.166667 |
+  | `shots_per_goal` | 16.433642 | 19.657738 | +3.224096 |
+  | `save_rate` | 0.889098 | 0.899940 | +0.010842 |
+  | `passes` | 32.683333 | 31.633333 | −1.050000 |
+  | `pass_completion` | 0.524982 | 0.536465 | +0.011483 |
+  | `turnovers_per_min` | 9.778232 | 9.263996 | −0.514236 |
+  | `possession_balance` | 0.518344 | 0.525805 | +0.007461 |
+  | `longest_drought_s` | 13.325278 | 13.563889 | +0.238611 |
+  | `decided_late` | 0.667803 | 0.627862 | −0.039941 |
+  | `lead_changes` | 0.016667 | 0.033333 | +0.016667 |
+  | `margin` | 1.050000 | 1.116667 | +0.066667 |
+  | `duration` | 117.205000 | 117.481667 | +0.276667 |
+  | `ai_dribble_carry_s` | 28.371944 | 28.540556 | +0.168611 |
+  | `ai_dribble_close_share` | 0.843196 | 0.851183 | +0.007987 |
+  | `ai_dribble_sprint_share` | 0.140410 | 0.133638 | −0.006773 |
+  | `ai_dribble_juke_share` | 0.075924 | 0.075090 | −0.000834 |
+  | `ai_dribble_touches_per_min` | 99.758856 | 97.251863 | −2.506993 |
+  | `ai_dribble_heavy_losses_per_min` | 0.437461 | 0.458042 | +0.020580 |
+  | `ai_jukes` | 30.933333 | 30.900000 | −0.033333 |
+
+  `gc_sim::keeper_shadow_classifier`'s frozen 60-seed counts moved in the
+  same commit, for the same reason: `candidates` 9285 → 9438,
+  `disagree_height` 18 → 40, `disagree_deferred` 172 → 159, `new_only`
+  unchanged at 0 (the structural argument for it does not depend on which
+  libm computed the angle that got a carrier to a given position).
+
 - **2026-08-14 — the gameplay AI's pass/throw decisions moved onto the same
   `MatchInput` charge-and-release seam a human uses, instead of calling
   `release_pass` directly (#531 phase 2, re-recording phase 1's #535

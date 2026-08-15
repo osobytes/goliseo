@@ -437,7 +437,7 @@ mod tests {
         // a re-record that stops at the JSON leaves `gc-data`'s own unit test
         // red, which is how this line came to be updated here.
         assert_eq!(f.expected_final_hash, "66ebecd985f3f3ea");
-        assert_eq!(f.expected_sequence_digest, "0aa20d6c0b163634");
+        assert_eq!(f.expected_sequence_digest, "fe1320880c58a89a");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
