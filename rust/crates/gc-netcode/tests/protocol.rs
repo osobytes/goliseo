@@ -164,7 +164,7 @@ fn replace_manifest_player_id(
 fn omp3_online_protocol_pins_the_accepted_input_snapshot_tape_and_combat_schema_versions() {
     assert_eq!(protocol::CURRENT_VERSIONS.protocol, 1);
     assert_eq!(protocol::CURRENT_VERSIONS.input, 2);
-    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 13);
+    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 14);
     assert_eq!(protocol::CURRENT_VERSIONS.tape, 2);
     assert_eq!(protocol::CURRENT_VERSIONS.combat, 3);
 }
@@ -172,16 +172,19 @@ fn omp3_online_protocol_pins_the_accepted_input_snapshot_tape_and_combat_schema_
 #[test]
 fn omp3_online_protocol_matches_literal_wire_manifest_transcript_and_per_kind_golden_evidence() {
     let report = conformance::verify();
-    assert_eq!(report.manifest_id, "eb59f113614c35b2");
-    assert_eq!(report.transcript_id, "653cba3b32c62ce9");
+    // #489: repinned alongside `protocol_conformance::GOLDEN` -- see that
+    // constant's doc comment. `match_snapshot::COMBAT_VERSION` moved
+    // 13 -> 14.
+    assert_eq!(report.manifest_id, "572bbff19cdfc603");
+    assert_eq!(report.transcript_id, "a83439d3fe39fa52");
     assert_eq!(report.message_count, 15);
     assert_eq!(
         gc_core::fnv1a64::hash(conformance::GOLDEN.complete_wire.as_bytes()),
-        "363c57d949586608"
+        "61cf18d63e6076e9"
     );
     assert_eq!(
         conformance::marker(&report),
-        "GC_PROTOCOL|golden|schema=1|manifest_id=eb59f113614c35b2|transcript_id=653cba3b32c62ce9|messages=15"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=572bbff19cdfc603|transcript_id=a83439d3fe39fa52|messages=15"
     );
 }
 
@@ -1350,7 +1353,45 @@ fn handshake_build_declaration_counts_the_declaration_as_part_of_the_vocabulary_
 // `tools/lua_reference/README.md` for capture provenance). These assert
 // exact bytes, not merely that Rust's own encode/decode round-trip through
 // themselves.
+//
+// #489, schema-coupled, same root cause and same PR as
+// `coordinator_conformance::Golden`, `protocol_conformance::GOLDEN`, and
+// `desync_package_identity_vector.txt`'s `manifest_id`/`snapshot_version`
+// (see those constants' doc comments): `match_snapshot::COMBAT_VERSION`
+// bumps 13 -> 14, and every value below derived from `manifest_id` moves
+// with it. `HANDSHAKE_WIRE` and `VOCAB_ID` carry no manifest content and
+// still read the frozen fixture unmodified — only `MIN_WIRE(_LEN/_HASH)`,
+// `MAXIMAL_MANIFEST_ID`, `MAXIMAL_WIRE(_LEN/_HASH)`, `MANIFEST_ID` and
+// `TRANSCRIPT_ID` are retired to the `*_BASELINE_489` constants below,
+// following `tools/lua_reference/README.md`'s partial-retirement procedure
+// (as used for `match_snapshot_case_a/b_lua_reference.txt` et al. under
+// #536). The frozen fixture file itself, and every other assertion reading
+// it, are unmodified. Recorded the same way as those: reading each
+// assertion's own failure output (`MIN_WIRE`/`MAXIMAL_WIRE` via a temporary
+// `eprintln!` added, run, then removed, since both need intermediate values
+// a panic alone would not surface past the first divergence).
 // ---------------------------------------------------------------------------
+
+/// See the module-section doc comment above.
+const MIN_WIRE_BASELINE_489: &str = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:572bbff19cdfc603s4:kinds15:\
+manifest_accepts10:message_ids16:GCMI;1;1:s1:p1:0s7:peer_ids1:ps8:sequencei1:0s10:session_ids1:ss7:versioni1:1";
+/// See the module-section doc comment above. Unchanged from the frozen
+/// fixture's `MIN_WIRE_LEN` — the new and old manifest ids are both 16-byte
+/// hex hashes, so wire length does not move even though the bytes do.
+const MIN_WIRE_LEN_BASELINE_489: usize = 176;
+/// See the module-section doc comment above.
+const MIN_WIRE_HASH_BASELINE_489: &str = "8a579038a6ca68f7";
+/// See the module-section doc comment above.
+const MAXIMAL_MANIFEST_ID_BASELINE_489: &str = "3d57dda4f63b8b0c";
+/// See the module-section doc comment above. Unchanged from the frozen
+/// fixture's `MAXIMAL_WIRE_LEN`, same reasoning as `MIN_WIRE_LEN_BASELINE_489`.
+const MAXIMAL_WIRE_LEN_BASELINE_489: usize = 7240;
+/// See the module-section doc comment above.
+const MAXIMAL_WIRE_HASH_BASELINE_489: &str = "c27bb322ce5a552a";
+/// See the module-section doc comment above.
+const MANIFEST_ID_BASELINE_489: &str = "572bbff19cdfc603";
+/// See the module-section doc comment above.
+const TRANSCRIPT_ID_BASELINE_489: &str = "a83439d3fe39fa52";
 
 #[test]
 fn differential_handshake_wire_matches_the_real_lua_byte_for_byte() {
@@ -1374,14 +1415,11 @@ fn differential_minimum_size_message_matches_the_real_lua_byte_for_byte() {
     let body = Value::record(vec![("manifest_id", Value::str(manifest_id))]);
     let message = protocol::new(MessageKind::ManifestAccept, "s", "p", 0, body).unwrap();
     let wire = protocol::encode(&message).unwrap();
-    assert_eq!(wire, lua_ref("MIN_WIRE"));
-    assert_eq!(
-        wire.len(),
-        lua_ref("MIN_WIRE_LEN").parse::<usize>().unwrap()
-    );
+    assert_eq!(wire, MIN_WIRE_BASELINE_489);
+    assert_eq!(wire.len(), MIN_WIRE_LEN_BASELINE_489);
     assert_eq!(
         gc_core::fnv1a64::hash(wire.as_bytes()),
-        lua_ref("MIN_WIRE_HASH")
+        MIN_WIRE_HASH_BASELINE_489
     );
 }
 
@@ -1520,7 +1558,7 @@ fn differential_maximum_size_payload_matches_the_real_lua_byte_for_byte() {
 
     protocol::validate_manifest(&manifest).expect("maximal manifest must validate");
     let manifest_id = protocol::manifest_id(&manifest);
-    assert_eq!(manifest_id, lua_ref("MAXIMAL_MANIFEST_ID"));
+    assert_eq!(manifest_id, MAXIMAL_MANIFEST_ID_BASELINE_489);
 
     let body = Value::record(vec![
         ("manifest_id", Value::str(manifest_id.clone())),
@@ -1542,13 +1580,10 @@ fn differential_maximum_size_payload_matches_the_real_lua_byte_for_byte() {
     .unwrap();
     let wire = protocol::encode(&message).unwrap();
     assert!(wire.len() <= protocol::MAX_WIRE_BYTES);
-    assert_eq!(
-        wire.len(),
-        lua_ref("MAXIMAL_WIRE_LEN").parse::<usize>().unwrap()
-    );
+    assert_eq!(wire.len(), MAXIMAL_WIRE_LEN_BASELINE_489);
     assert_eq!(
         gc_core::fnv1a64::hash(wire.as_bytes()),
-        lua_ref("MAXIMAL_WIRE_HASH")
+        MAXIMAL_WIRE_HASH_BASELINE_489
     );
 }
 
@@ -1557,11 +1592,11 @@ fn differential_vocabulary_manifest_and_transcript_ids_match_the_real_lua() {
     assert_eq!(protocol::vocabulary_id(), lua_ref("VOCAB_ID"));
     assert_eq!(
         protocol::manifest_id(&fixture::manifest(None)),
-        lua_ref("MANIFEST_ID")
+        MANIFEST_ID_BASELINE_489
     );
     assert_eq!(
         protocol::transcript_id(&fixture::messages()),
-        lua_ref("TRANSCRIPT_ID")
+        TRANSCRIPT_ID_BASELINE_489
     );
 }
 

@@ -309,4 +309,5 @@ pub mod rollback_events_bridge;
 pub mod rollback_playable_lab_bridge;
 pub mod session;
 pub mod tuning_bridge;
+pub mod wasm_native_corpus_bridge;
 pub mod wasm_transport;

@@ -179,7 +179,14 @@ fn preventable_goal_fixture() -> MatchSnapshot {
         carrier.vel = Vec2::new(0.0, 0.0);
         carrier.run_vel = Vec2::new(0.0, 0.0);
         carrier.facing = Vec2::new(1.0, 0.0);
-        carrier.windup_timer = 1.0 / 60.0;
+        // #489: a standing-poke tackle now charges and executes before it
+        // resolves (ACTION_TACKLE_FULL_CHARGE + ACTION_TACKLE_COMMIT, ~15
+        // ticks at the shipped defaults) instead of winning the ball the
+        // instant it is in reach. The old 1-tick wind-up gave the defender
+        // no way to ever beat the shot; widened so "preventable" stays true
+        // under the new timing -- see `allows_a_finished_predicted_timeline_
+        // to_reactivate_after_correction`'s re-derived `predicted_finish`.
+        carrier.windup_timer = 20.0 / 60.0;
         carrier.windup_shot = Some(WindupShot {
             dir: Vec2::new(1.0, 0.0),
             speed: 900.0,
@@ -1132,7 +1139,7 @@ fn allows_a_finished_predicted_timeline_to_reactivate_after_correction() {
         rollback_session::step(&mut delayed).expect("step succeeds");
     }
     let predicted_finish = rollback_session::diagnostics(&delayed).present_boundary;
-    assert_eq!(predicted_finish, 5);
+    assert_eq!(predicted_finish, 25);
     assert_eq!(
         rollback_session::current_snapshot(&delayed)
             .state

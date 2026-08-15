@@ -206,13 +206,13 @@ fn slot_sets(size: i64) -> Vec<Vec<SlotId>> {
 /// inserted, so appending must leave every one of these where it was.
 const SHIPPED_DIGESTS: &[(protocol::MessageKind, &str)] = &[
     (protocol::MessageKind::Handshake, "2722abf054051350"),
-    (protocol::MessageKind::ManifestProposal, "171c298f6eeb77e1"),
-    (protocol::MessageKind::ManifestAccept, "363c57d949586608"),
+    (protocol::MessageKind::ManifestProposal, "a16e66840b834469"),
+    (protocol::MessageKind::ManifestAccept, "61cf18d63e6076e9"),
     (protocol::MessageKind::PeerAssignment, "fa48b31571dfe543"),
-    (protocol::MessageKind::SlotAssignment, "db929e7cd34eab60"),
-    (protocol::MessageKind::Ready, "a89d1e1747464a51"),
-    (protocol::MessageKind::Countdown, "c26f26e05519c2c8"),
-    (protocol::MessageKind::Start, "3fdf9b6a442b6755"),
+    (protocol::MessageKind::SlotAssignment, "956e42e74b995ad9"),
+    (protocol::MessageKind::Ready, "ab1187cad581ee86"),
+    (protocol::MessageKind::Countdown, "12b32574af080ab9"),
+    (protocol::MessageKind::Start, "c1d8945760e1deae"),
     (protocol::MessageKind::MatchPhase, "1671940891b78f1f"),
     (protocol::MessageKind::HashReport, "4405d9323b1e5b0f"),
     (protocol::MessageKind::ResultAck, "5f466e6740c6d4cf"),
@@ -223,10 +223,13 @@ const SHIPPED_DIGESTS: &[(protocol::MessageKind, &str)] = &[
 #[test]
 fn keeps_every_digest_that_shipped_before_it_and_the_manifest_id() {
     let report = protocol_conformance::verify();
-    // Repinned by #268 (`max_goals` 5 -> 99). Pair preferences added no
-    // manifest field, so this id only ever moves when the manifest does.
+    // Repinned by #268 (`max_goals` 5 -> 99), and again by #489
+    // (`match_snapshot::COMBAT_VERSION` 13 -> 14 -- see
+    // `protocol_conformance::GOLDEN`'s doc comment). Pair preferences added
+    // no manifest field, so this id only ever moves when the manifest
+    // schema itself does.
     assert_eq!(
-        report.manifest_id, "eb59f113614c35b2",
+        report.manifest_id, "572bbff19cdfc603",
         "the manifest id moved"
     );
     for (kind, digest) in SHIPPED_DIGESTS {
@@ -244,14 +247,14 @@ fn keeps_every_digest_that_shipped_before_it_and_the_manifest_id() {
         .find(|(k, _)| *k == protocol::MessageKind::PairPreference)
         .map(|(_, d)| *d)
         .expect("pair_preference has a golden digest");
-    assert_eq!(pair_preference, "44cbe6dc14b4af77");
+    assert_eq!(pair_preference, "6ca49f34edf71a88");
     let pair_preference_result = protocol_conformance::GOLDEN
         .wire_digests
         .iter()
         .find(|(k, _)| *k == protocol::MessageKind::PairPreferenceResult)
         .map(|(_, d)| *d)
         .expect("pair_preference_result has a golden digest");
-    assert_eq!(pair_preference_result, "e9bc40f5818037f4");
+    assert_eq!(pair_preference_result, "c0de33146372fa77");
 }
 
 #[test]

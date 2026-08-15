@@ -34,6 +34,7 @@
 
 use crate::match_snapshot::MatchInput;
 use crate::tuning::Tuning;
+use gc_core::deterministic_math;
 use gc_core::rng;
 use gc_core::vec2::Vec2;
 
@@ -193,7 +194,7 @@ fn roll(b: &mut BotState) -> f64 {
 /// perfectly.
 fn noisy(b: &mut BotState, dir: Vec2) -> Vec2 {
     let a = (roll(b) * 2.0 - 1.0) * AIM_NOISE;
-    let (c, s) = (a.cos(), a.sin());
+    let (c, s) = deterministic_math::cos_sin(a);
     Vec2::new(dir.x * c - dir.y * s, dir.x * s + dir.y * c)
 }
 

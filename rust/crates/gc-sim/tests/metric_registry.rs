@@ -161,6 +161,9 @@ fn metric_registry_folds_in_the_authored_order() {
             // description.
             "pass_aim_error",
             "pass_lead_time",
+            // #489, appended after #491's two and in the order
+            // `gc_data::tunables::METRICS` authors it.
+            "whiff_rate",
         ]
     );
 }
@@ -184,6 +187,7 @@ fn metric_registry_is_the_only_band_table_left() {
     );
     assert_eq!(reg.band("pass_aim_error"), Some([0.0, 0.15, 0.75, 1.4]));
     assert_eq!(reg.band("pass_lead_time"), Some([0.0, 0.1, 0.6, 1.2]));
+    assert_eq!(reg.band("whiff_rate"), Some([0.0, 0.25, 0.55, 1.0]));
     assert_eq!(reg.band("not_a_metric"), None);
 
     // `lever_metrics` used to keep these eight widths by hand.
