@@ -49,6 +49,7 @@ import { loadOnlineWasmHost } from "./browser_online_wasm_host.ts";
 import { createOnlinePorts, browserStarEval } from "./online_ports.ts";
 import { forceRelayFromSearch, newIceConfig, type IceConfig } from "./ice_config.ts";
 import { fetchTurnCredentials } from "./turn_credentials.ts";
+import { connectRoomGuest, connectRoomHost } from "./room_signaling_port.ts";
 import { APP_CONTENT } from "./browser_content.ts";
 import { buildInfo } from "./build_info.ts";
 
@@ -323,6 +324,15 @@ async function main(): Promise<void> {
     keyboard,
     clipboard,
     onLobbyEntry: ensureTurnCredentialsFetch,
+    // Room-code signaling (#552): same-origin by default
+    // (`room_signaling_port.ts`'s own header). On a static host with no
+    // Worker behind `/signal/*`, every connection attempt simply fails as
+    // a "handshake_failed" lobby state, and the manual-signaling path
+    // (still fully present in the lobby screen) keeps working.
+    roomSignaling: {
+      openHost: () => connectRoomHost(),
+      openGuest: (code) => connectRoomGuest(code),
+    },
   });
 
   const app = bootstrap.new(APP_CONTENT, realMatchFactory, initialViewport.w, initialViewport.h, {
