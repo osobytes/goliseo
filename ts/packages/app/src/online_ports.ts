@@ -54,6 +54,7 @@
 
 import { ok, err, type Result } from "@gc/core";
 import type { KeyboardState } from "@gc/input";
+import { frameBuffer } from "@gc/render";
 import {
   LobbyLink,
   newFrameBuffer as newLobbyFrameBuffer,
@@ -727,11 +728,42 @@ function realMatchSessionPort(manifestJson: string): MatchSessionPort<OnlineMatc
   };
 }
 
+// Never silently discarded -- see `reportTransportEvent`'s own doc for why
+// a `star_error`/`peer_error`/`star_state` still has to reach *somewhere*
+// observable even though this port has no coordinator handle to route a
+// `netcode_failure` through.
+function reportTransportEvent(event: {
+  readonly kind: string;
+  readonly peer_id?: string;
+  readonly code?: string;
+  readonly message?: string;
+  readonly state?: string;
+}): void {
+  const detail =
+    event.kind === "star_state"
+      ? (event.state ?? "")
+      : [event.code, event.message].filter((part) => part !== undefined).join(": ");
+  console.error(
+    `online_ports: transport ${event.kind}${event.peer_id !== undefined ? ` (peer ${event.peer_id})` : ""}${detail ? `: ${detail}` : ""}`,
+  );
+}
+
 // Feeds every message currently queued on the real star (both channels)
 // into the bridge's own inbound queue, and mirrors peer connect/disconnect
 // events onto it -- the bridge's internal transport tracks its own peer
 // registry separately from the star's, so a state change on one has to be
 // told to the other explicitly (see this file's header).
+//
+// `star_error`/`peer_error`/`star_state` events used to be silently
+// dropped here (only `peer_state` was read) -- the dev harness
+// (`tools/browser_online_match/web/online_peer.ts`'s own inbound-drain
+// loop) treats exactly these three as worth reporting, and this mirrors
+// that intent. There is no coordinator handle at this layer to route a
+// real `netcodeFailure` call through (that lives on `OnlineCoordinatorHandle`,
+// owned by the session coordinator, not the match driver -- see this
+// file's header on the two being separate protocols over one star), so
+// `reportTransportEvent` is the seam: today it logs, and is the one place
+// a future coordinator-level failure report would hook in from.
 function drainStarIntoBridge(star: StarTransportAdapter, bridge: OnlineMatchDriverHandle): void {
   for (const received of star.pollBatch()) {
     bridge.enqueueInbound(
@@ -755,6 +787,12 @@ function drainStarIntoBridge(star: StarTransportAdapter, bridge: OnlineMatchDriv
       ) {
         bridge.setPeerDisconnected(event.peer_id, event.message ?? event.state);
       }
+    } else if (
+      event.kind === "star_error" ||
+      event.kind === "peer_error" ||
+      event.kind === "star_state"
+    ) {
+      reportTransportEvent(event);
     }
     event = star.pollEvent();
   }
@@ -795,7 +833,15 @@ interface InputSampleLike {
   readonly edges: number;
 }
 
-function realMatchDriverPort(
+// Exported for `online_ports.spec.ts`'s direct coverage -- the netcode
+// review that asked for it found this port (and `drainStarIntoBridge`/
+// `drainBridgeIntoStar` below) had zero automated coverage of its own;
+// every existing match-phase spec elsewhere in this tree drives a
+// hand-rolled fake `MatchDriverPort`, never this production one. Not part
+// of `OnlinePortsDeps`/`createOnlinePorts`'s own public contract -- a
+// production caller only ever reaches this indirectly, through
+// `OnlinePorts.newOnlineMatchScreen`.
+export function realMatchDriverPort(
   wasm: OnlineWasmHost,
   star: StarTransportAdapter,
 ): MatchDriverPort<RealOnlineDriver, RealOnlineBatch, unknown, RealOnlineCheckpoint> {
@@ -881,10 +927,21 @@ function realMatchDriverPort(
     batchControl: (b) => controlEntriesFromBatch(b.control),
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
-    frame: (d) =>
-      wasm.buildMatchDriverRenderFrame(d.bridge, 0) as unknown as ReturnType<
-        MatchDriverPort<RealOnlineDriver, RealOnlineBatch, unknown, RealOnlineCheckpoint>["frame"]
-      >,
+    // `wasm.buildMatchDriverRenderFrame` returns the raw flat wire (a
+    // `Float64Array`, `gc_render::frame_buffer::encode`'s layout) -- this
+    // used to be handed straight to `MatchScreen` as if it were already a
+    // decoded `RenderFrame`, which is why `frame.players`/`.control` came
+    // back `undefined` and `MatchScreen.onlineFrame` threw the moment
+    // `OnlineMatch`'s own constructor read `this.match.state`
+    // (`online_ports.spec.ts`'s match-phase continuation case is what
+    // caught this). `frameBuffer.decode` is the same decode step
+    // `browser_sim_host.ts`'s own `frame()` runs for the offline path.
+    // `toRenderFrame` is not needed here: `MatchScreen.onlineFrame` reads
+    // `frame.players`/`.control` directly and gets `roster` from a
+    // SEPARATE `.roster()` call, never from inside the frame object, and
+    // `DecodedRenderFrame` already carries `players`/`control` structurally
+    // matching `OnlineRenderFramePlayers`/`OnlineRenderFrameControl`.
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)),
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {
