@@ -564,6 +564,31 @@ fn identity_field(identity: &SessionIdentity, field: &str) -> String {
     }
 }
 
+/// `SessionIdentity::manifest_id` for the "2v2" fixture, recorded from THIS
+/// build rather than read off `desync_package_identity_vector.txt`.
+///
+/// Self-recorded, NOT the retired Lua value -- the same schema-coupled
+/// situation `tools/lua_reference/README.md`'s third axis documents (see
+/// `coordinator_conformance::Golden`'s doc comment in
+/// `gc-netcode/src/coordinator_conformance.rs`, and the
+/// `coordinator_desync_lua_reference.txt` row in that README's retirement
+/// table, both retired for the identical reason in the same PR):
+/// `protocol::manifest_id` hashes the whole canonical manifest, which
+/// carries `match_snapshot::COMBAT_VERSION` as its `snapshot_version` field,
+/// and #489 bumps that constant 13 -> 14. No other field in this vector
+/// depends on the manifest hash -- `assignment_id` hashes only
+/// `(assignments, epoch)` and `countdown_id` is an independent nonce, per
+/// `protocol::assignment_id`'s doc comment -- so only this one field is
+/// retired; the fixture file itself, and every other field's comparison
+/// against it, are unmodified and still gate.
+///
+/// Re-recorded by reading this assertion's own failure output -- a single
+/// value, so no separate `#[ignore]`d recorder is warranted (same reasoning
+/// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
+/// when a deliberate, reviewed wire-schema change moves it -- never to clear
+/// a check that surprised you.
+const MANIFEST_ID_BASELINE: &str = "808cb0936103c9eb";
+
 /// Cross-language identity agreement (`ARCHITECTURE.md` §1.2's shared-vector
 /// contract — see the module doc comment for how this assertion was adapted
 /// for this crate's `build` signature). Checks two things against the
@@ -584,6 +609,31 @@ fn keeps_the_export_and_the_package_agreeing_on_identity() {
 
     for (field, expected) in &vector {
         let actual = identity_field(&identity, field);
+        if field == "manifest_id" {
+            // #489: schema-coupled, retired to a Rust-recorded baseline.
+            // See `MANIFEST_ID_BASELINE`'s doc comment.
+            assert_eq!(
+                &actual, MANIFEST_ID_BASELINE,
+                "SessionIdentity field \"manifest_id\" no longer matches its \
+                 Rust-recorded baseline"
+            );
+            continue;
+        }
+        if field == "snapshot_version" {
+            // #489: a raw version integer, not a hash containing one -- the
+            // same sanctioned "a schema migration may update headers"
+            // exception `gc_data::omp1_determinism`'s module doc grants
+            // `identity.snapshot_version` specifically. Asserted directly
+            // against the live constant rather than a baked-in literal, so
+            // it never needs touching again on a future bump.
+            assert_eq!(
+                actual,
+                gc_sim::match_snapshot::COMBAT_VERSION.to_string(),
+                "SessionIdentity field \"snapshot_version\" no longer matches \
+                 match_snapshot::COMBAT_VERSION"
+            );
+            continue;
+        }
         assert_eq!(
             &actual, expected,
             "SessionIdentity field {field:?} drifted from the real Lua's \

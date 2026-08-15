@@ -759,6 +759,54 @@ fn the_shipped_passing_defaults_land_inside_their_proposed_bands() {
 }
 
 // ---------------------------------------------------------------------
+// #489 — committed actions: the standing-poke tackle
+// ---------------------------------------------------------------------
+
+/// `ACTION_TACKLE_COMMIT` against `whiff_rate`: the issue's own required
+/// pairing, and it holds. #489's design argument is that resolution checks
+/// the carrier's position ONCE, at the end of the executing phase (see
+/// `gc_sim::r#match::resolve_tackle`'s doc), so a longer commit window gives
+/// an actively-repositioning carrier more time to leave reach before that
+/// single check -- raising the window should raise the miss rate, not just
+/// change it.
+///
+/// Seed count sized from measurement, not a default (the rule this
+/// contract's own module doc and #537 both set): 24/48/96 seeds of 30s
+/// AI-vs-AI matches at the default perturbation fraction all reported
+/// WIRED, with the margin over threshold widening as n grows (delta/se
+/// stabilizing near +0.10, threshold shrinking as 1/sqrt(n)) rather than a
+/// borderline case that only clears at one lucky count:
+///
+/// | n  | delta   | se      | noise floor | threshold | verdict |
+/// | -- | ------- | ------- | ----------- | --------- | ------- |
+/// | 24 | +0.0919 | +/-0.0224 | 0.0250 | 0.0501 | WIRED |
+/// | 48 | +0.0755 | +/-0.0153 | 0.0159 | 0.0319 | WIRED |
+/// | 96 | +0.0817 | +/-0.0126 | 0.0118 | 0.0252 | WIRED |
+///
+/// 96 is used below: comfortably clear at every count tried, so the extra
+/// margin over 48 is headroom against exactly the kind of ordinary,
+/// unrelated gameplay drift that tipped two other contracts below their own
+/// margin this same week (#537).
+#[test]
+fn raising_tackle_commit_raises_whiff_rate() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "ACTION_TACKLE_COMMIT",
+        metric: "whiff_rate",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the committed tackle's resolve-once-at-the-end design is decoration: {}",
+        outcome.report
+    );
+}
+
+// ---------------------------------------------------------------------
 // #531 phase 4 — the post-seam PASS_* census, re-run against the same
 // methodology and the same metric the original #491 census used.
 // ---------------------------------------------------------------------
@@ -886,6 +934,95 @@ fn a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_produ
         "the receiver ceiling is decoration against completion: {}",
         outcome.report
     );
+}
+
+/// `whiff_rate` registers with real seed-to-seed spread on every AI-vs-AI
+/// match, the same property `the_passing_metrics_arm_on_every_match` checks
+/// for #491's two metrics -- a metric that is sometimes absent, or that
+/// never varies, cannot back a contract at all.
+#[test]
+fn whiff_rate_arms_on_every_ai_vs_ai_match() {
+    let seeds = seeds(48);
+    let floor = knob_contract::noise_floor("whiff_rate", &seeds, DURATION);
+    assert_eq!(
+        floor.n,
+        seeds.len(),
+        "whiff_rate was absent from some match in the seed set -- some seed attempted no \
+         standing-poke tackle at all in 30s of AI-vs-AI play"
+    );
+    assert!(
+        floor.mean > 0.0 && floor.mean < 1.0,
+        "measured a degenerate 0 or 1 everywhere"
+    );
+    assert!(
+        floor.sd > 0.0,
+        "no seed-to-seed spread at all, which means it is not measuring the match"
+    );
+}
+
+/// **`ACTION_TACKLE_MISS_RECOVERY` against `turnovers_per_min` -- #489's
+/// OTHER required pairing -- does NOT clear this measurement, at any
+/// seed count or perturbation tried.** Reported here rather than shipped
+/// as a passing contract, per this module's own rule: never lower a
+/// threshold, weaken the direction check, or change `NOISE_SIGMAS` to force
+/// a pass, and say so when a contract cannot clear its threshold.
+///
+/// `ACTION_RECOVERY_CONTROL` -- the movement-scale knob recovery actually
+/// gates through -- is genuinely wired: it was caught unwired during this
+/// same investigation (nothing in `gc_sim::r#match` read it at all; every
+/// recovering player kept moving at full speed) and fixed, and
+/// `tests/action_slot_integration.rs`'s
+/// `action_recovery_control_measurably_scales_a_recovering_players_displacement`
+/// proves the fix directly and deterministically: a recovering player
+/// measurably covers less ground than an identical control over the same
+/// window. What is NOT established is that this reaches `turnovers_per_min`
+/// specifically, at a seed count this gate can afford:
+///
+/// | knob                         | perturbation | duration    | n  | delta   | se      | verdict    |
+/// | ----------------------------- | ------------ | ----------- | -- | ------- | ------- | ---------- |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | default (0.35) | 30s       | 24 | +0.0000 | +/-0.0000 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | default (0.35) | 30s       | 48 | +0.0833 | +/-0.0583 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | 30s       | 24 | -0.4164 | +/-0.7217 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | 30s       | 48 | +0.0416 | +/-0.4961 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | full (120s) | 24 | -0.1875 | +/-0.3621 | DECORATION |
+/// | `ACTION_TACKLE_MISS_RECOVERY` | full range     | full (120s) | 48 | -0.0833 | +/-0.2647 | DECORATION |
+/// | `ACTION_RECOVERY_CONTROL` (down) | full range | 30s       | 48 | +0.2082 | +/-0.5162 | DECORATION (wrong sign, within noise) |
+///
+/// The sign flips across rows and every delta sits well inside its own
+/// standard error -- not an underpowered-but-real effect the braking
+/// contract's pattern would predict more seeds could resolve (#537), but a
+/// true effect indistinguishable from zero against this specific aggregate.
+/// `turnovers_per_min` is a whole-match SETTLED-possession count
+/// (`gc_sim::possession_transition::ESTABLISH_SECONDS` = 0.7s holds,
+/// `gc_sim::metrics::SETTLE_HOLD`); a single defender's brief post-whiff
+/// slowdown is exactly the kind of many-layers-removed effect #491 already
+/// found every one of its eleven passing knobs could not move on any of the
+/// nine outcome metrics that existed before it, for the same structural
+/// reason argued on `gc_sim::r#match::PassShadowTally`. #491's fix was to
+/// register a metric closer to the mechanism (`pass_aim_error`,
+/// `pass_lead_time`); the equivalent here would be a metric closer to
+/// "did a whiff's recovery window let the attacking side keep the spell
+/// alive" than a whole-match settled-turnover count. That metric does not
+/// exist yet and building one is out of this PR's scope -- flagged in the
+/// PR description as the concrete follow-up, not silently absorbed into a
+/// contract that does not actually hold.
+#[test]
+fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established() {
+    // This test intentionally asserts the STRUCTURAL claim only (the knob
+    // is registered, in range, and distinct from its neighbours) -- see the
+    // doc comment above for why no statistical assert_moves call is made
+    // here. The mechanical claim ("recovery gates movement") is asserted in
+    // tests/action_slot_integration.rs instead, deterministically.
+    let def = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "ACTION_TACKLE_MISS_RECOVERY")
+        .expect("registered");
+    assert!(def.min < def.default && def.default < def.max);
+    let control = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "ACTION_RECOVERY_CONTROL")
+        .expect("registered");
+    assert!((0.0..1.0).contains(&control.default));
 }
 
 /// Newly WIRED against `pass_completion` too, but NOT one of the three

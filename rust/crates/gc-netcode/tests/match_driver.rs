@@ -1173,7 +1173,11 @@ fn canonical_digest(digest: &str) -> bool {
 /// when a deliberate, reviewed change to `match_snapshot`'s canonical wire
 /// schema or `match_driver_fixture::initial_snapshot`'s kickoff scenario
 /// moves this value — never to clear a check that surprised you.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "fe17f286a4078703";
+///
+/// Re-recorded for #489: `match_snapshot::VERSION` bumps 12 -> 13 for the new
+/// `action` field on every serialized `MatchPlayer`, which is on the
+/// boundary-zero kickoff checkpoint like any other tick.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "89b63e968ec22b9e";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and

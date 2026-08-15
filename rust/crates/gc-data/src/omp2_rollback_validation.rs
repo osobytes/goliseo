@@ -164,17 +164,21 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     // change, which is the whole reason these three are being removed rather
     // than nudged.
     scenarios: &[
-        // #522: shifted +7 boundaries. These two windows both wrapped the
-        // OMP-1 tape's first tackle, which #488's locomotion rework moved
-        // from tick 24 to tick 31 -- it did not disappear, which is why these
-        // two could be re-authored while `shot`, `aerial` and `keeper_action`
-        // could not. The offsets around the subject tick are unchanged, so
-        // the scenarios still measure what they measured.
+        // #522: shifted +7 boundaries (24 -> 31) for #488. #489 shifts them
+        // again: a standing-poke tackle now charges and executes instead of
+        // resolving instantly (`gc_sim::action_slot`), which moves the OMP-1
+        // tape's first tackle again, tick 31 -> 40
+        // (`gc_sim::determinism_evidence::record`'s `event_ticks["tackle"]`,
+        // read directly off this build rather than assumed). Widened by a
+        // couple of boundaries either side of the #488 precedent's offsets
+        // to absorb the ambiguity between an event tick and the boundary
+        // index it lands on, verified by running these two scenarios rather
+        // than trusted from the arithmetic alone.
         Omp2RollbackScenario {
             id: "possession_change",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(29),
-            last_boundary: Some(34),
+            first_boundary: Some(37),
+            last_boundary: Some(44),
             event_kind: None,
             lifecycle_kind: None,
             minimum_rollbacks: None,
@@ -182,8 +186,8 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         Omp2RollbackScenario {
             id: "tackle",
             kind: Omp2RollbackScenarioKind::Window,
-            first_boundary: Some(30),
-            last_boundary: Some(33),
+            first_boundary: Some(38),
+            last_boundary: Some(43),
             event_kind: Some("tackle"),
             lifecycle_kind: None,
             minimum_rollbacks: None,
@@ -247,13 +251,18 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     // other -- not because any of these fixtures' constructed positions,
     // rosters or seeds changed. Re-derived the same way: run the failing
     // assertion and read the values it prints.
+    // #489: match_snapshot::VERSION 12 -> 13 (MatchPlayer::action), the
+    // second such bump since the #531 phase-2 note above and the same
+    // schema-only reason -- all five `initial_hash` values below moved
+    // alongside every `final_hash`/`tape_digest`, re-derived by running the
+    // failing assertion and reading the values it printed.
     combat_fixture: Omp2RollbackCombatFixture {
         id: "omp2-combat-rollback-v1",
         seed: 733,
         frame_count: 80,
-        initial_hash: "ddf0da488284e44f",
-        final_hash: "38715c3493979a2b",
-        tape_digest: "75c33db01472227e",
+        initial_hash: "a3af1df7ade9bf85",
+        final_hash: "430abfb73982f995",
+        tape_digest: "73dd7cb9be915884",
     },
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
@@ -265,9 +274,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: None,
-            initial_hash: "1f8243ca507dc976",
-            final_hash: "855c24e575f2fbca",
-            tape_digest: "dcc4d7bdb38f499c",
+            initial_hash: "d804ce13abe354a4",
+            final_hash: "1b53d3211ed6b6bc",
+            tape_digest: "4265eecc7be19aa4",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -278,9 +287,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: None,
-            initial_hash: "81fd57f5133de656",
-            final_hash: "c51dd78c1c31e1be",
-            tape_digest: "bbcdb7605ad3a961",
+            initial_hash: "ef884c273192cc79",
+            final_hash: "4f6d31c392063b93",
+            tape_digest: "6e66e87c1acab6fa",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -291,9 +300,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "1781700d0563190f",
-            final_hash: "4dab34204becaf7d",
-            tape_digest: "512b4250314c02f1",
+            initial_hash: "b9591af1e10be399",
+            final_hash: "8dda7fa08887540f",
+            tape_digest: "a3400749960a07f0",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -304,9 +313,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "c6f28e8d4958f336",
-            final_hash: "9549dc56469570c0",
-            tape_digest: "ad430b62820ff885",
+            initial_hash: "5fd8adc178eed949",
+            final_hash: "d7a08fd7b590d9b9",
+            tape_digest: "cda9ff329dbd9f40",
         },
     ],
     budgets: Omp2RollbackBudgets {

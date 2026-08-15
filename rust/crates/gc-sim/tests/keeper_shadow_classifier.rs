@@ -140,6 +140,22 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     let seeds = baseline::seeds();
     let (total, had_disagree, had_deferred) = classify(&seeds);
 
+    // Re-pinned by #489 (committed actions), in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v11 -> v12 re-freeze.
+    //
+    // candidates 9438 -> 9746: the standing-poke tackle now charges and
+    // executes instead of resolving the instant it is in reach
+    // (`gc_sim::action_slot`, `r#match::advance_tackle_actions`), so a
+    // carrier gets more chances to escape a committed defender than it did
+    // against the old instant-resolve check -- more possession sequences
+    // run longer and reach a keeper before the ball is lost. `disagree_height`
+    // 40 -> 25 falls (fewer resolved height disagreements) while
+    // `disagree_deferred` 159 -> 268 rises sharply (more one-tick-later
+    // resolutions, the RNG-stream-shifting signature this file's own module
+    // doc describes) -- `agree_true`/`agree_false` absorb the rest of the
+    // candidate-count rise. `new_only` stays structurally 0, which is the
+    // assertion that would have been a finding rather than a re-pin.
+    //
     // Re-pinned by #517's mechanical transcendental sweep (the dribble-touch
     // and AI-outfield-error cos/sin, the aerial-contact cos/sin, the bot
     // aim-noise cos/sin, and the support-triangle/combat-arc precomputed
@@ -197,11 +213,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9438);
-    assert_eq!(total.agree_true, 3117);
-    assert_eq!(total.agree_false, 6122);
-    assert_eq!(total.disagree_deferred, 159);
-    assert_eq!(total.disagree_height, 40);
+    assert_eq!(total.candidates, 9746);
+    assert_eq!(total.agree_true, 3364);
+    assert_eq!(total.agree_false, 6089);
+    assert_eq!(total.disagree_deferred, 268);
+    assert_eq!(total.disagree_height, 25);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -273,7 +289,14 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // reconciliation this paragraph exists to explain is unchanged in kind,
     // even though this re-pin has no historical byte-divergent split to
     // compare its own fraction against.
-    assert_eq!(matches_with_disagree, 11);
-    assert_eq!(matches_with_deferred, 25);
-    assert_eq!(matches_with_either, 33);
+    //
+    // Re-pinned by #489 alongside the counts above: `disagree_height` alone
+    // touches 13/60 matches (22%), and folding in `disagree_deferred` reaches
+    // 37/60 (62%) -- deferred episodes remain the larger and now dominant
+    // bucket by an even wider margin, consistent with `disagree_deferred`
+    // more than doubling above while `disagree_height` fell. No historical
+    // byte-divergent split to compare against here either.
+    assert_eq!(matches_with_disagree, 13);
+    assert_eq!(matches_with_deferred, 31);
+    assert_eq!(matches_with_either, 37);
 }

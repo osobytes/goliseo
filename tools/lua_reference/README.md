@@ -56,11 +56,19 @@ trusting "not trajectory-coupled" to mean "will survive a schema bump":
 > it under §2's procedure, not evidence the vector was miscategorized as
 > behavioral in the first place.
 
-The four vectors above are the ones known to be schema-coupled today,
-retired under #536 — see `gc-sim/tests/match_snapshot_differential.rs`,
+The four vectors above were the ones known to be schema-coupled when #536
+retired them — see `gc-sim/tests/match_snapshot_differential.rs`,
 `gc-netcode/tests/match_driver.rs`, and `gc-sim/tests/input_tape_differential.rs`
 for the per-file account, and the retirement table in §2 below for the
-paperwork. A future `*_lua_reference.txt` fixture should ask the question
+paperwork. A single #489 `match_snapshot::COMBAT_VERSION` bump then found
+three more, all in `gc-netcode`, none previously known to be schema-coupled:
+`coordinator_desync_lua_reference.txt`'s `transcript_id` line,
+`desync_package_identity_vector.txt`'s `manifest_id` field, and
+`protocol_lua_reference.txt`'s manifest-carrying values — see those rows in
+§2. That one bump reaching four separate frozen files this way is itself
+evidence worth flagging: every fixture that embeds a manifest, not only the
+ones already known to, is schema-coupled to this constant. A future
+`*_lua_reference.txt` fixture should ask the question
 above before its first schema bump, not after.
 
 ## Why any of this exists
@@ -196,6 +204,9 @@ red output, you are answering the wrong question in the wrong order.
 | `match_snapshot_case_a_lua_reference.txt`, `match_snapshot_case_b_lua_reference.txt` — **schema-coupled, see the third-axis note near the top of this file** | #536 (repository owner) | `0c94cee`, phase 1 of #531: bumps `match_snapshot::VERSION` 11 → 12 and adds `pass_intent` to every serialized `MatchPlayer` | `2ce0ca0` (verified green) | `match_snapshot_case_a_baseline.txt`/`..._case_b_baseline.txt`, recorded by the `#[ignore]`d `record_match_snapshot_case_a_baseline`/`..._case_b_baseline` in the same test file |
 | `match_driver_lua_reference.txt` — **the boundary-zero digest assertion only, schema-coupled** | #536 (repository owner) | `0c94cee`, as above | `2ce0ca0` (verified green) | `BOUNDARY_ZERO_BASELINE_HASH` in `gc-netcode/tests/match_driver.rs` — a single value, re-recorded by reading the assertion's own failure output; no separate recorder test |
 | `input_tape_lua_reference.txt` — **`identity.snapshot_version` and `boundary_hash[0]` only, schema-coupled** | #536 (repository owner), found during phase 2 of #531 and added to that issue's scope after its original audit | `0c94cee`, as above | `2ce0ca0` (verified green) | `input_tape_baseline.txt` — two fields re-recorded, `boundary_hash[1..5]` carried over unchanged from the already-recorded `STEPPED_BASELINE` in the same file so the fixture stays internally consistent with one build |
+| `coordinator_desync_lua_reference.txt` — **the `transcript_id` line only, schema-coupled** | #489, found by the implementing PR rather than pre-decided — **flagged for explicit reviewer confirmation**, the same class of call #536 made but not yet made by the repository owner for this instance | the committed-actions PR for #489: bumps `match_snapshot::COMBAT_VERSION` 13 → 14 for the new `action` field on every serialized `MatchPlayer`, which `protocol::validate_manifest` embeds in every session manifest, moving every session's `transcript_id` | `b53a5c0` (verified green: this branch's own merge base) | `TRANSCRIPT_ID_BASELINE` in `gc-netcode/tests/coordinator.rs` — a single value, re-recorded by reading the assertion's own failure output; no separate recorder test. `coordinator_conformance.rs`'s Rust-embedded `Golden` (same file class, not a separate fixture — see its own module doc) moved the same four transcript ids for the same reason, in the same commit |
+| `desync_package_identity_vector.txt` — **the `manifest_id` field only, schema-coupled; `snapshot_version` also moved but is a raw version integer, the same sanctioned header exception `gc_data::omp1_determinism`'s `identity.snapshot_version` already documents, not a retirement** | #489, same flag as the row above | the same #489 `COMBAT_VERSION` bump: `protocol::manifest_id` hashes the whole canonical manifest, which carries `snapshot_version` | `b53a5c0` (verified green: this branch's own merge base) | `MANIFEST_ID_BASELINE` in `gc-netcode/tests/desync_package.rs` — a single value, re-recorded the same way. `snapshot_version` itself is asserted directly against the live `match_snapshot::COMBAT_VERSION` constant instead of a baked-in literal, so it never needs touching again |
+| `protocol_lua_reference.txt` — **`MIN_WIRE(_LEN/_HASH)`, `MAXIMAL_MANIFEST_ID`, `MAXIMAL_WIRE(_LEN/_HASH)`, `MANIFEST_ID` and `TRANSCRIPT_ID` only, schema-coupled** | #489, same flag as the two rows above | the same #489 `COMBAT_VERSION` bump, reached this time through `gc-netcode/tests/protocol.rs`'s own differential suite | `b53a5c0` (verified green: this branch's own merge base) | Seven `*_BASELINE_489` constants in `gc-netcode/tests/protocol.rs`, next to the section doc comment explaining the split. `HANDSHAKE_WIRE` and `VOCAB_ID` carry no manifest content and are unaffected, still read from the frozen fixture unmodified |
 
 The last-green commit for the three original #520 rows was verified by
 checking out `3f8f4a3` and running all four affected tests there; the fourth

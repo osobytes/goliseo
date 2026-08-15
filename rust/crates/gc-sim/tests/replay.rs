@@ -46,11 +46,18 @@ use gc_sim::tuning::Tuning;
 // changes the canonical byte encoding of every captured snapshot including
 // boundary 0's zero-tick kickoff state -- so this one time all four values
 // below moved together, for the schema reason and no other.
+//
+// #489 EXCEPTION, same shape: `match_snapshot::VERSION` 12 -> 13 (the new
+// `action` field, see `gc_sim::action_slot`) moved boundary 0 again for the
+// schema reason alone, and the standing-poke tackle's charge/execute/
+// recover state machine can plausibly move boundaries 1..3 for real
+// (`r#match::advance_tackle_actions`) if this short fixture's three
+// stepped ticks touch a tackle -- re-derived from this build either way.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "9447e27f341cfaf9",
-    "e598a0f82e726e86",
-    "d1da2f62315fa218",
-    "a82ccba59631f487",
+    "0492d110f37e0e24",
+    "489b60a4bf410be9",
+    "84e842ded5fb94e5",
+    "e2745802185af012",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

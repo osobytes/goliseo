@@ -71,7 +71,12 @@ fn preventable_goal_snapshot() -> MatchSnapshot {
         carrier.vel = Vec2::new(0.0, 0.0);
         carrier.run_vel = Vec2::new(0.0, 0.0);
         carrier.facing = Vec2::new(1.0, 0.0);
-        carrier.windup_timer = fixed_clock::TICK_SECONDS;
+        // #489: see the identical note in tests/rollback_session.rs's
+        // `preventable_goal_fixture` -- a standing-poke tackle now takes
+        // ~15-20 ticks to charge and execute instead of resolving instantly,
+        // so the old 1-tick wind-up gave the bot-controlled defender no way
+        // to ever beat the shot. Widened to the same 20 ticks.
+        carrier.windup_timer = 20.0 * fixed_clock::TICK_SECONDS;
         carrier.windup_shot = Some(WindupShot {
             dir: Vec2::new(1.0, 0.0),
             speed: 900.0,
@@ -312,11 +317,21 @@ fn settles_transport_incrementally_without_post_finish_match_frames() {
 
 #[test]
 fn keeps_producing_reference_authority_after_a_predicted_early_finish() {
+    // #489: same two-bound reasoning as tests/rollback_lab.rs's
+    // `reactivates_a_predicted_early_finish_and_later_reaches_reference_full_time`
+    // -- the delay has to be long enough for the local, uncorrected guess
+    // (which does not yet know the bot-controlled defender is charging a
+    // tackle) to actually reach a false "finished" conclusion given the
+    // preceding fixture's now-20-tick `windup_timer` (25 ticks measured too
+    // short), and short enough to stay inside
+    // `rollback_input_history::ROLLBACK_WINDOW_TICKS` (30) or the run
+    // terminates as unrecoverable instead of predicting early. 28 sits in
+    // the middle of the working range (26-30 all pass).
     let mut lab = rollback_playable_lab::new(
         &preventable_goal_snapshot(),
         RollbackPlayableLabOptions {
             local_slot: Some(1),
-            profile: Some(fixed_profile(6, 0.0)),
+            profile: Some(fixed_profile(28, 0.0)),
             profile_name: Some("predicted_early_finish".to_string()),
             bot_seed: Some(rollback_playable_lab::DEFAULT_BOT_SEED),
             settlement_ticks: Some(64),
