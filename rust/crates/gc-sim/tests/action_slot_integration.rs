@@ -288,7 +288,11 @@ fn possession_change_clears_a_committed_action_from_every_phase_no_matter_the_ve
             }
             ActionPhase::None => unreachable!("None is not exercised by this loop"),
         };
-        assert_ne!(action.phase, ActionPhase::None, "test setup must commit a real action");
+        assert_ne!(
+            action.phase,
+            ActionPhase::None,
+            "test setup must commit a real action"
+        );
         players[carrier_idx - 1].action = action;
 
         let mut state = base_state(players, Some(carrier_idx as i64), Vec2::new(30.0, 270.0));
@@ -336,12 +340,8 @@ fn action_recovery_control_measurably_scales_a_recovering_players_displacement()
     players[subject_idx - 1].pos = Vec2::new(400.0, 270.0);
     players[subject_idx - 1].anchor = Vec2::new(700.0, 270.0);
     let mut recovering_players = players.clone();
-    let charging = action_slot::commit_charge(
-        &action_slot::new_state(),
-        ActionVerb::Tackle,
-        None,
-        0.0,
-    );
+    let charging =
+        action_slot::commit_charge(&action_slot::new_state(), ActionVerb::Tackle, None, 0.0);
     let executing = action_slot::release(&charging, 0.1, 1.0, 0.3);
     recovering_players[subject_idx - 1].action = action_slot::resolve_miss(&executing, 5.0);
 
@@ -358,7 +358,9 @@ fn action_recovery_control_measurably_scales_a_recovering_players_displacement()
         step_once(&mut recovering_state, &tune);
     }
 
-    let control_distance = control_state.players[subject_idx - 1].pos.dist(control_start);
+    let control_distance = control_state.players[subject_idx - 1]
+        .pos
+        .dist(control_start);
     let recovering_distance = recovering_state.players[subject_idx - 1]
         .pos
         .dist(recovering_start);

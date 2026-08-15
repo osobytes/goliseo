@@ -226,7 +226,12 @@ fn preventable_goal_initial() -> match_snapshot::MatchSnapshot {
         carrier.vel = Vec2::new(0.0, 0.0);
         carrier.run_vel = Vec2::new(0.0, 0.0);
         carrier.facing = Vec2::new(1.0, 0.0);
-        carrier.windup_timer = fixed_clock::TICK_SECONDS;
+        // #489: see the identical note in tests/rollback_session.rs's
+        // `preventable_goal_fixture` -- a standing-poke tackle now takes
+        // ~15 ticks to charge and execute instead of resolving instantly,
+        // so the old 1-tick wind-up gave the defender no way to ever beat
+        // the shot. Widened to the same 20 ticks.
+        carrier.windup_timer = 20.0 * fixed_clock::TICK_SECONDS;
         carrier.windup_shot = Some(match_snapshot::WindupShot {
             dir: Vec2::new(1.0, 0.0),
             speed: 900.0,
@@ -617,11 +622,27 @@ fn recovers_independent_loss_from_packet_history_and_the_final_row_drain() {
 #[test]
 fn reactivates_a_predicted_early_finish_and_later_reaches_reference_full_time() {
     let tape = early_finish_tape();
+    // #489: `base_delay_ticks` has to sit in a narrow window now that the
+    // preventing tackle is charge-and-execute rather than instant (see the
+    // note on `preventable_goal_initial`'s widened `windup_timer`). Two
+    // bounds, both measured directly against this fixture rather than
+    // assumed:
+    //   - it must be long enough that the LOCAL guess (no dash at all for
+    //     the missing remote slot 5) actually reaches its own false
+    //     "finished" conclusion before the real, dash-including row
+    //     corrects it -- at 25 ticks the correction still lands before the
+    //     local guess gets there and `predicted_early_finish` never fires.
+    //   - it must stay under `rollback_input_history::ROLLBACK_WINDOW_TICKS`
+    //     (30) or the delayed input is outside the rollback window entirely
+    //     and the session gives up as `LateInputUnrecoverable`, which fails
+    //     on `result.success` rather than on the prediction metrics -- 40
+    //     ticks demonstrated that failure mode directly.
+    // 26 through 30 all land in the working window; 28 is the middle of it.
     let result = rollback_lab::run(
         tape,
         RollbackLabOptions {
             profile_name: Some("early-finish-spec".to_string()),
-            profile: Some(profile(6, 0, 0, 0.0, 0.0)),
+            profile: Some(profile(28, 0, 0, 0.0, 0.0)),
             network_seed: Some(6),
             sources: Some(one_remote(5)),
             ..Default::default()

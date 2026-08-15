@@ -27,6 +27,27 @@ use gc_sim::input_frame;
 /// every ownership golden are unchanged — the trace records only
 /// "peer>peer kind" and seating never reads the goal limit — which is the
 /// evidence that no coordinator behaviour moved.
+///
+/// #489 moved the four transcript ids a second time, for the same
+/// mechanical reason as #268 rather than any coordinator behaviour change:
+/// `protocol::validate_manifest` embeds `match_snapshot::COMBAT_VERSION` as
+/// the manifest's `snapshot_version` field on every session, and #489 bumps
+/// that constant 13 -> 14 for the new `action` field on every serialized
+/// `MatchPlayer` (see `gc_sim::match_snapshot`'s module doc). This is the
+/// same schema-coupled situation `tools/lua_reference/README.md`'s third
+/// axis documents for `match_snapshot_case_a/b_lua_reference.txt`,
+/// `match_driver_lua_reference.txt` and `input_tape_lua_reference.txt`
+/// (all retired under #536) — a version word is on the wire, and the golden
+/// hash of anything containing it moves with it, with no coordinator logic
+/// change involved. This file's `GOLDEN` is a Rust-embedded copy of a
+/// `*_lua_reference.txt`-class golden rather than a separate fixture, but
+/// the same rule applies: only the four transcript ids below (which encode
+/// the whole manifest) moved; `full_trace_digest`, `full_message_count` and
+/// every `*_sources`/`*_owned` golden are unaffected, confirming no
+/// coordinator behaviour moved this time either. Verified by reverting only
+/// `gc-sim`/`gc-data` to `b53a5c0` (this branch's merge base, where this
+/// file's test passes) inside this same worktree and reproducing the four
+/// new values from a live `session()` call before writing them below.
 pub struct Golden {
     /// [`Driver::transcript_id`] of the canonical 4v4 (3 guests) session.
     pub full_transcript_id: &'static str,
@@ -58,22 +79,22 @@ pub struct Golden {
 
 /// The pinned golden values (see [`Golden`]).
 pub const GOLDEN: Golden = Golden {
-    full_transcript_id: "ff64c7d63513ef5f",
+    full_transcript_id: "c8fa3318d398f489",
     full_trace_digest: "2fa7235df619b00a",
     full_message_count: 51,
-    bot_transcript_id: "e2be1edb69c0a3bd",
+    bot_transcript_id: "8fb773cac2f39f98",
     bot_sources: "home_1=peer:host:nil|home_2=peer:guest.1:nil|home_3=peer:guest.2:nil|\
 home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|\
 away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
     solo_sources: "home_1=peer:host:nil|home_2=bot:bot.home_2:35839|home_3=bot:bot.home_3:43758|\
 home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|\
 away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
-    duo_transcript_id: "c0ba274fffec6509",
+    duo_transcript_id: "172c3bdd2c40b9ee",
     duo_sources: "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:host:nil|\
 home_4=peer:host:nil|away_1=peer:guest.1:nil|away_2=peer:guest.1:nil|\
 away_3=peer:guest.1:nil|away_4=peer:guest.1:nil",
     duo_owned: "host=[home_1,home_2,home_3,home_4]>home_1|guest.1=[away_1,away_2,away_3,away_4]>away_1",
-    pair_transcript_id: "271694acded4093a",
+    pair_transcript_id: "e26be62d8cdb3d5a",
     pair_sources: "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:guest.1:nil|\
 home_4=peer:guest.1:nil|away_1=peer:guest.2:nil|away_2=peer:guest.2:nil|\
 away_3=peer:guest.3:nil|away_4=peer:guest.3:nil",

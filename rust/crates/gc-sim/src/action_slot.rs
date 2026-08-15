@@ -151,34 +151,55 @@ pub struct ActionSlot {
 fn validate_state(state: &ActionSlot) {
     match state.phase {
         ActionPhase::None => {
-            assert!(state.verb.is_none(), "an idle action slot cannot retain a verb");
+            assert!(
+                state.verb.is_none(),
+                "an idle action slot cannot retain a verb"
+            );
             assert_eq!(
                 state.charge_elapsed, 0.0,
                 "an idle action slot cannot retain charge progress"
             );
-            assert_eq!(state.remaining, 0.0, "an idle action slot cannot retain a countdown");
+            assert_eq!(
+                state.remaining, 0.0,
+                "an idle action slot cannot retain a countdown"
+            );
             assert_eq!(state.power, 0.0, "an idle action slot cannot retain power");
-            assert!(state.target_player.is_none(), "an idle action slot cannot retain a target");
+            assert!(
+                state.target_player.is_none(),
+                "an idle action slot cannot retain a target"
+            );
             assert_eq!(
                 state.release_threshold, 0.0,
                 "an idle action slot cannot retain a release threshold"
             );
         }
         ActionPhase::Charging => {
-            assert!(state.verb.is_some(), "a charging action slot requires a verb");
+            assert!(
+                state.verb.is_some(),
+                "a charging action slot requires a verb"
+            );
             assert!(
                 state.charge_elapsed.is_finite() && state.charge_elapsed >= 0.0,
                 "charge progress must be non-negative and finite"
             );
-            assert_eq!(state.remaining, 0.0, "a charging action slot cannot retain a countdown");
-            assert_eq!(state.power, 0.0, "a charging action slot cannot retain released power");
+            assert_eq!(
+                state.remaining, 0.0,
+                "a charging action slot cannot retain a countdown"
+            );
+            assert_eq!(
+                state.power, 0.0,
+                "a charging action slot cannot retain released power"
+            );
             assert!(
                 state.release_threshold.is_finite(),
                 "release threshold must be finite"
             );
         }
         ActionPhase::Executing => {
-            assert!(state.verb.is_some(), "an executing action slot requires a verb");
+            assert!(
+                state.verb.is_some(),
+                "an executing action slot requires a verb"
+            );
             assert!(
                 state.charge_elapsed.is_finite() && state.charge_elapsed >= 0.0,
                 "charge progress must be non-negative and finite"
@@ -197,7 +218,10 @@ fn validate_state(state: &ActionSlot) {
             );
         }
         ActionPhase::Recovering => {
-            assert!(state.verb.is_some(), "a recovering action slot requires a verb");
+            assert!(
+                state.verb.is_some(),
+                "a recovering action slot requires a verb"
+            );
             assert_eq!(
                 state.charge_elapsed, 0.0,
                 "a recovering action slot cannot retain charge progress"
@@ -206,8 +230,14 @@ fn validate_state(state: &ActionSlot) {
                 state.remaining.is_finite() && state.remaining >= 0.0,
                 "a recovering action slot must have a non-negative countdown"
             );
-            assert_eq!(state.power, 0.0, "a recovering action slot cannot retain power");
-            assert!(state.target_player.is_none(), "a recovering action slot cannot retain a target");
+            assert_eq!(
+                state.power, 0.0,
+                "a recovering action slot cannot retain power"
+            );
+            assert!(
+                state.target_player.is_none(),
+                "a recovering action slot cannot retain a target"
+            );
             assert_eq!(
                 state.release_threshold, 0.0,
                 "a recovering action slot cannot retain a release threshold"
@@ -295,8 +325,15 @@ pub fn commit_charge(
 #[must_use]
 pub fn advance_charge(state: &ActionSlot, dt: f64) -> ActionSlot {
     let mut s = copy_state(state);
-    assert_eq!(s.phase, ActionPhase::Charging, "only a charging slot accumulates held time");
-    assert!(dt.is_finite() && dt >= 0.0, "charge dt must be non-negative");
+    assert_eq!(
+        s.phase,
+        ActionPhase::Charging,
+        "only a charging slot accumulates held time"
+    );
+    assert!(
+        dt.is_finite() && dt >= 0.0,
+        "charge dt must be non-negative"
+    );
     s.charge_elapsed += dt;
     copy_state(&s)
 }
@@ -345,7 +382,11 @@ pub fn release(
     commit_seconds: f64,
 ) -> ActionSlot {
     let s = copy_state(state);
-    assert_eq!(s.phase, ActionPhase::Charging, "only a charging slot can release");
+    assert_eq!(
+        s.phase,
+        ActionPhase::Charging,
+        "only a charging slot can release"
+    );
     assert!(
         commit_seconds.is_finite() && commit_seconds >= 0.0,
         "commit duration must be non-negative"
@@ -405,7 +446,11 @@ pub fn due(state: &ActionSlot) -> bool {
 #[must_use]
 pub fn resolve_success(state: &ActionSlot) -> ActionSlot {
     let s = copy_state(state);
-    assert_eq!(s.phase, ActionPhase::Executing, "only an executing slot resolves");
+    assert_eq!(
+        s.phase,
+        ActionPhase::Executing,
+        "only an executing slot resolves"
+    );
     new_state()
 }
 
@@ -419,7 +464,11 @@ pub fn resolve_success(state: &ActionSlot) -> ActionSlot {
 #[must_use]
 pub fn resolve_miss(state: &ActionSlot, recovery_seconds: f64) -> ActionSlot {
     let s = copy_state(state);
-    assert_eq!(s.phase, ActionPhase::Executing, "only an executing slot resolves");
+    assert_eq!(
+        s.phase,
+        ActionPhase::Executing,
+        "only an executing slot resolves"
+    );
     assert!(
         recovery_seconds.is_finite() && recovery_seconds > 0.0,
         "a miss must owe a positive recovery window"
@@ -449,7 +498,11 @@ pub fn resolve_miss(state: &ActionSlot, recovery_seconds: f64) -> ActionSlot {
 #[must_use]
 pub fn end_recovery(state: &ActionSlot) -> ActionSlot {
     let s = copy_state(state);
-    assert_eq!(s.phase, ActionPhase::Recovering, "only a recovering slot ends a recovery");
+    assert_eq!(
+        s.phase,
+        ActionPhase::Recovering,
+        "only a recovering slot ends a recovery"
+    );
     new_state()
 }
 
@@ -569,7 +622,10 @@ mod tests {
     fn commit_charge_requires_idle() {
         let charging = commit_charge(&new_state(), tackle(), None, 0.0);
         let result = std::panic::catch_unwind(|| commit_charge(&charging, tackle(), None, 0.0));
-        assert!(result.is_err(), "committing over an in-progress action must panic");
+        assert!(
+            result.is_err(),
+            "committing over an in-progress action must panic"
+        );
     }
 
     #[test]
@@ -577,19 +633,28 @@ mod tests {
         let full_charge = 0.2;
         let floor = 0.4;
         let tap = power_at_release(0.0, full_charge, floor);
-        assert_eq!(tap, floor, "a tap (zero hold) must release at exactly the floor");
+        assert_eq!(
+            tap, floor,
+            "a tap (zero hold) must release at exactly the floor"
+        );
 
         let capped = power_at_release(full_charge, full_charge, floor);
         assert_eq!(capped, 1.0, "reaching full_charge must cap power at 1.0");
 
         let overheld = power_at_release(full_charge * 10.0, full_charge, floor);
-        assert_eq!(overheld, 1.0, "overholding past full_charge must not exceed 1.0");
+        assert_eq!(
+            overheld, 1.0,
+            "overholding past full_charge must not exceed 1.0"
+        );
 
         let mut last = tap;
         for i in 1..=10 {
             let held = full_charge * f64::from(i) / 10.0;
             let p = power_at_release(held, full_charge, floor);
-            assert!(p >= last, "power must be monotone non-decreasing in held time");
+            assert!(
+                p >= last,
+                "power must be monotone non-decreasing in held time"
+            );
             last = p;
         }
     }
@@ -680,14 +745,20 @@ mod tests {
             ai_danger: Some(10.0),
             ai_threshold: 1.0,
         };
-        assert_eq!(evaluate_release(all), Some(ReleaseTriggerKind::InputRelease));
+        assert_eq!(
+            evaluate_release(all),
+            Some(ReleaseTriggerKind::InputRelease)
+        );
 
         // No input release: timer expiry beats arrival and AI threshold.
         let timer_and_below = ReleaseTriggerInputs {
             input_released: false,
             ..all
         };
-        assert_eq!(evaluate_release(timer_and_below), Some(ReleaseTriggerKind::TimerExpiry));
+        assert_eq!(
+            evaluate_release(timer_and_below),
+            Some(ReleaseTriggerKind::TimerExpiry)
+        );
 
         // No input release, held below full_charge: arrival beats AI threshold.
         let arrival_and_below = ReleaseTriggerInputs {
@@ -695,7 +766,10 @@ mod tests {
             held_seconds: 0.05,
             ..all
         };
-        assert_eq!(evaluate_release(arrival_and_below), Some(ReleaseTriggerKind::Arrival));
+        assert_eq!(
+            evaluate_release(arrival_and_below),
+            Some(ReleaseTriggerKind::Arrival)
+        );
 
         // Only the AI threshold clears.
         let ai_only = ReleaseTriggerInputs {
@@ -706,7 +780,10 @@ mod tests {
             ai_threshold: 1.0,
             full_charge: 0.2,
         };
-        assert_eq!(evaluate_release(ai_only), Some(ReleaseTriggerKind::AiThreshold));
+        assert_eq!(
+            evaluate_release(ai_only),
+            Some(ReleaseTriggerKind::AiThreshold)
+        );
 
         // Nothing fires: keep holding.
         let none_fire = ReleaseTriggerInputs {

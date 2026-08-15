@@ -758,7 +758,6 @@ fn the_shipped_passing_defaults_land_inside_their_proposed_bands() {
     }
 }
 
-
 // ---------------------------------------------------------------------
 // #489 — committed actions: the standing-poke tackle
 // ---------------------------------------------------------------------
@@ -821,7 +820,10 @@ fn whiff_rate_arms_on_every_ai_vs_ai_match() {
         "whiff_rate was absent from some match in the seed set -- some seed attempted no \
          standing-poke tackle at all in 30s of AI-vs-AI play"
     );
-    assert!(floor.mean > 0.0 && floor.mean < 1.0, "measured a degenerate 0 or 1 everywhere");
+    assert!(
+        floor.mean > 0.0 && floor.mean < 1.0,
+        "measured a degenerate 0 or 1 everywhere"
+    );
     assert!(
         floor.sd > 0.0,
         "no seed-to-seed spread at all, which means it is not measuring the match"

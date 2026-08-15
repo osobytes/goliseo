@@ -2104,8 +2104,8 @@ fn tackle_distance_and_reach(
     let challenger = &s.players[(challenger_idx - 1) as usize];
     let target = &s.players[(target_idx - 1) as usize];
     let mut d = challenger.pos.dist(s.ball);
-    let species_reach =
-        species::collision_reach(challenger.owned_verb) - species::dribble_protection(target.owned_verb);
+    let species_reach = species::collision_reach(challenger.owned_verb)
+        - species::dribble_protection(target.owned_verb);
     // The human's poke also works at body-contact range from ANY angle (a
     // toe through the legs): chasing a carrier is the default defensive
     // situation and must be winnable.
@@ -2189,11 +2189,14 @@ fn win_ball(s: &mut MatchState, owner_idx: i64, challenger_idx: i64, sliding: bo
 fn tackle_target_is_live(s: &MatchState, challenger_idx: i64, target_idx: i64) -> bool {
     s.owner == Some(target_idx)
         && target_idx != challenger_idx
-        && s.players[(target_idx - 1) as usize].team != s.players[(challenger_idx - 1) as usize].team
+        && s.players[(target_idx - 1) as usize].team
+            != s.players[(challenger_idx - 1) as usize].team
 }
 
 fn resolve_tackle(s: &mut MatchState, challenger_idx: i64, miss_recovery: f64) {
-    let target = s.players[(challenger_idx - 1) as usize].action.target_player;
+    let target = s.players[(challenger_idx - 1) as usize]
+        .action
+        .target_player;
     let human = is_human_player(s, challenger_idx);
     let hit = target.is_some_and(|t| {
         tackle_target_is_live(s, challenger_idx, t) && {
@@ -3933,7 +3936,9 @@ fn move_human_player(
     // their own action slot (see `advance_tackle_actions`'s matching guard
     // on the AI side, and this PR's description on the crash this closes).
     let team = s.players[i].team;
-    let opposing_owner = s.owner.filter(|&o| o != idx && s.players[(o - 1) as usize].team != team);
+    let opposing_owner = s
+        .owner
+        .filter(|&o| o != idx && s.players[(o - 1) as usize].team != team);
     let p = &mut s.players[i];
     // Tackle button: a committed slide while SPRINTING, else a standing
     // poke — one legible rule (sprint + tackle = the big slide). Slide
@@ -3961,7 +3966,8 @@ fn move_human_player(
             p.facing = d;
             p.tackle_cd = SLIDE_CD;
         } else {
-            p.action = action_slot::commit_charge(&p.action, ActionVerb::Tackle, opposing_owner, 0.0);
+            p.action =
+                action_slot::commit_charge(&p.action, ActionVerb::Tackle, opposing_owner, 0.0);
             p.tackle_cd = STAND_CD;
         }
     }
