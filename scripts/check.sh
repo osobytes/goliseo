@@ -214,6 +214,27 @@
 #      vitest's test runner and reporter entirely) and comparing the result
 #      against the two hard-coded constants below in plain bash. A weakened or
 #      deleted assertion in determinism.spec.ts would not silence this step.
+#  9b. node scripts/check_wasm_native_corpus.mjs (#517)
+#      -- step 9 above proves the wasm build reproduces ONE frozen scenario
+#      (OMP-1, an IDLE match). #517 found that native and the compiled wasm
+#      module can disagree on OTHER scenarios that reach the thirteen
+#      `sin`/`cos`/`exp`/`ln` sites OMP-1 structurally never exercises
+#      (shooting, dashing, passing, dribbling, aerial contests, combat), and
+#      that this is TRAJECTORY-DEPENDENT -- which transcendental calls fire,
+#      with which arguments, moves with the exact match, so a single scenario
+#      can pass for months while the sites it never happens to reach stay
+#      silently unconverted. This step runs gc_sim::wasm_native_corpus::CORPUS
+#      (eight independently seeded AI-driven scenarios, chosen to reach every
+#      one of the thirteen sites) through a fresh native `cargo test`
+#      invocation AND the freshly built wasm module from step 6, and diffs
+#      their per-tick hashes -- unlike step 9, nothing here is pinned; both
+#      sides are computed fresh on every run. With 13 sites unconverted this
+#      DOES currently find two real divergences, tracked in that script's
+#      KNOWN_DIVERGENCES and reported loudly rather than either failing the
+#      gate or being silently absorbed -- see that script's own header for the
+#      allowlist rule (a NEW divergence, or a KNOWN one that stops
+#      reproducing, both fail hard). See self_test()'s
+#      wasm_native_corpus_scenario.
 #  10. pnpm exec vite build, then a BYTE comparison between the wasm asset in
 #      dist-app/assets and the freshly built dist/pkg-web/gc_wasm_bg.wasm.
 #      -- Steps 7-9 all exercise the `--target nodejs` artifact. The browser
@@ -387,6 +408,14 @@ MIN_NETWORK_PROFILE_COMPARISONS=61
 # (`git ls-files -- 'rust/**/*.rs' | grep -v /target/ | wc -l`); this floor is
 # comfortably below that, the same margin every other floor here keeps.
 MIN_UNSTATED_KNOB_RUST_FILES=250
+
+# #517's native-vs-wasm corpus differential (gate 9b): the corpus has 8
+# scenarios today (gc_sim::wasm_native_corpus::CORPUS). A parse that silently
+# matched nothing would compare zero scenarios and print an empty "OK (0
+# agree...)" summary, indistinguishable from a genuinely clean run -- this
+# floor is the same "never trust one signal" guard every other gate here
+# keeps. Raise it in the same change that grows the corpus.
+MIN_WASM_NATIVE_CORPUS_SCENARIOS=8
 
 # The same shape of floor for gates 5b and 7b (#471), and the reason they are
 # not just "run the tool and read its exit code".
@@ -1737,6 +1766,67 @@ gate_determinism() {
     check_determinism_terminator "$terminator"
 }
 
+# Parses scripts/check_wasm_native_corpus.mjs's summary line ("wasm native
+# corpus differential: OK|FAILED (N agree, M known...)") from $2 (the tool's
+# combined stdout/stderr) given its own exit status $1, and enforces the
+# scenario-count floor. Pure logic, no node involved -- shared by
+# gate_wasm_native_corpus() and wasm_native_corpus_scenario()'s self-test, so
+# the check the gate performs and the check the self-test proves can go red
+# are the same code rather than two copies that could drift (AGENTS.md §9).
+check_wasm_native_corpus_summary() {
+    local status="$1"
+    local output="$2"
+
+    local agree known
+    agree="$(strip_ansi <<<"$output" | sed -n 's/^wasm native corpus differential: \(OK\|FAILED\) (\([0-9]\+\) agree.*/\2/p' | tail -n 1)"
+    known="$(strip_ansi <<<"$output" | sed -n 's/^wasm native corpus differential: \(OK\|FAILED\) ([0-9]\+ agree, \([0-9]\+\) known.*/\2/p' | tail -n 1)"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "native-vs-wasm corpus differential exited $status -- see the per-scenario report above. A FAIL entry is either a NEW divergence (not in check_wasm_native_corpus.mjs's KNOWN_DIVERGENCES) or a STALE allowlist entry (a tracked divergence that no longer reproduces); the report above names which."
+        return 1
+    fi
+    if ! all_integers "$agree" "$known"; then
+        fail_msg "native-vs-wasm corpus differential exited 0 but printed no parseable 'wasm native corpus differential: OK (N agree, M known...)' summary -- treating that as a failure, not a pass"
+        return 1
+    fi
+    local total=$((agree + known))
+    if [ "$total" -lt "$MIN_WASM_NATIVE_CORPUS_SCENARIOS" ]; then
+        fail_msg "native-vs-wasm corpus differential compared only $total scenario(s) (want >= $MIN_WASM_NATIVE_CORPUS_SCENARIOS) -- the corpus has been narrowed or the parity check silenced"
+        return 1
+    fi
+    echo "    $agree scenario(s) agree tick for tick, $known known divergence(s) tracked against #517"
+    return 0
+}
+
+# Gate 9b (#517): the seeded native-vs-wasm differential corpus. Runs
+# scripts/check_wasm_native_corpus.mjs, which drives
+# gc_sim::wasm_native_corpus::CORPUS through a fresh native `cargo test`
+# invocation AND the freshly built wasm module, and diffs their per-tick
+# hashes -- see that script's own header for what it compares and why the
+# comparison is live rather than pinned, and gate_determinism's comment above
+# for the contrasting (pinned, single-scenario) shape this complements rather
+# than replaces. Runs after gate_wasm_build (6), which is what makes
+# dist/pkg/gc_wasm.cjs exist.
+gate_wasm_native_corpus() {
+    step "native-vs-wasm corpus differential (#517): gc_sim::wasm_native_corpus vs the compiled wasm module"
+
+    local checker="$project_root/scripts/check_wasm_native_corpus.mjs"
+    if [ ! -f "$checker" ]; then
+        fail_msg "$checker is missing"
+        return 1
+    fi
+
+    local log
+    log="$(mktemp)"
+    run_in "$project_root" node "$checker" 2>&1 | tee "$log"
+    local status=$?
+    local output
+    output="$(cat "$log")"
+    rm -f "$log"
+
+    check_wasm_native_corpus_summary "$status" "$output"
+}
+
 # ---------------------------------------------------------------------------
 # Self-test: proves this gate can go red, per AGENTS.md §9's second rule.
 #
@@ -2168,6 +2258,62 @@ digest_drift_scenario() {
         printf '%s\n' "$coverage_output" | sed 's/^/      /'
         failures=1
     fi
+
+    return "$failures"
+}
+
+# Scenario: gate 9b (#517). Two tracks, the same split AGENTS.md §9 asks for
+# in its "harness self-test is not a harness run" rule:
+#
+#   (a) scripts/check_wasm_native_corpus.mjs's OWN --self-test, which proves
+#       the comparison/allowlist classification logic (agree / known / new /
+#       stale) can go red, entirely in memory -- no cargo, no wasm module;
+#   (b) check_wasm_native_corpus_summary(), fed FABRICATED tool output, which
+#       proves THIS SCRIPT's parsing of that tool's summary line -- the floor
+#       check, the malformed-summary rejection, the nonzero-exit rejection --
+#       can go red on its own, independently of whether the checker script
+#       itself is currently broken.
+#
+# Neither of these actually runs cargo or drives the compiled wasm module, so
+# neither proves the real gate currently passes -- only that ./scripts/
+# check.sh's own run of gate_wasm_native_corpus (which this self-test does not
+# invoke) does that, same as every other scenario in this file.
+wasm_native_corpus_scenario() {
+    local failures=0
+    local checker="$project_root/scripts/check_wasm_native_corpus.mjs"
+
+    if node "$checker" --self-test >/dev/null 2>&1; then
+        echo "ok  check_wasm_native_corpus.mjs's own self-test passes (it goes red on every divergence classification it claims to make)"
+    else
+        echo "SELF-TEST FAIL: node scripts/check_wasm_native_corpus.mjs --self-test failed:"
+        node "$checker" --self-test 2>&1 | sed 's/^/      /'
+        failures=1
+    fi
+
+    local ok_output="corpus/a: agree
+wasm native corpus differential: OK (7 agree, 1 known and tracked (#517), 0 unallowed, 0 stale)"
+    expect_pass "a real-shaped OK summary at/above the scenario floor is accepted" \
+        check_wasm_native_corpus_summary 0 "$ok_output" \
+        || failures=1
+
+    expect_fail "a nonzero exit status is rejected even if a summary line is present" \
+        check_wasm_native_corpus_summary 1 "$ok_output" \
+        || failures=1
+
+    expect_fail "output with no parseable summary line is rejected, not read as zero-is-fine" \
+        check_wasm_native_corpus_summary 0 "some unrelated output, no terminator" \
+        || failures=1
+
+    local narrow_output="wasm native corpus differential: OK (1 agree, 0 known and tracked (#517), 0 unallowed, 0 stale)"
+    expect_fail "a scenario count under MIN_WASM_NATIVE_CORPUS_SCENARIOS is rejected (the corpus narrowed, or the check was silenced)" \
+        check_wasm_native_corpus_summary 0 "$narrow_output" \
+        || failures=1
+
+    local failed_output="corpus/x: FAIL diverges at tick 4, and this scenario is not in KNOWN_DIVERGENCES
+wasm native corpus differential: FAILED (7 agree, 0 known and tracked (#517), 1 unallowed, 0 stale)"
+    expect_fail "a FAILED summary (a NEW or STALE divergence) is rejected even though it names a scenario count" \
+        check_wasm_native_corpus_summary 1 "$failed_output" \
+        || failures=1
 
     return "$failures"
 }
@@ -3162,6 +3308,9 @@ self_test() {
     echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
 
+    echo "==> self-test: native-vs-wasm corpus differential (gate 9b, #517)"
+    wasm_native_corpus_scenario || failures=1
+
     if command -v wasm-bindgen >/dev/null 2>&1; then
         echo "==> self-test: wasm-only clippy lint (gate 4)"
         mkdir -p "$work/wasm_clippy"
@@ -3268,6 +3417,7 @@ main() {
     run_stage "7b ts: eslint --max-warnings 0" gate_ts_lint || fail=1
     run_stage "8  ts: vitest run" gate_ts_test || fail=1
     run_stage "9  determinism digest terminator" gate_determinism || fail=1
+    run_stage "9b native-vs-wasm corpus differential (#517)" gate_wasm_native_corpus || fail=1
     run_stage "10 ts: vite build + web wasm byte compare" gate_app_bundle || fail=1
 
     report_stage_timings
