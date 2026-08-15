@@ -112,6 +112,7 @@ import {
   type ProtocolFixturePort,
   type LobbyProtocolPort,
   type RenderPort,
+  type RoomSignalingFactory,
   type SessionManifest,
   type SessionMatchMode,
   type SessionMatchModeShape,
@@ -1076,6 +1077,15 @@ export interface OnlinePortsDeps {
    * manual select/copy, it does not break it). `browser_main.ts` supplies
    * a real one; a spec typically omits this entirely. */
   readonly clipboard?: LobbyClipboard;
+  /** The room-code signaling channel (#552) -- `room_signaling_port.ts`'s
+   * real, WebSocket-backed factory in production (`browser_main.ts`), a
+   * fake in a spec. Defaults to `OnlineLobby`'s own inert fallback (its
+   * `room_open_host`/`room_open_guest` effects simply do nothing), so a
+   * spec that never drives the room-code path can omit this entirely --
+   * and so can a static-host deploy with no such Worker, which is exactly
+   * the "manual signaling still works" fallback this issue's acceptance
+   * criteria ask for. */
+  readonly roomSignaling?: RoomSignalingFactory;
 }
 
 type RealOnlineMatchModel = OnlineMatchModel<RealCoordinatorState, OnlineMatchRequest>;
@@ -1137,6 +1147,7 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
         starFactory: (role: LobbyRole, peerId: string) => deps.starFactory(role, peerId),
         newLink: (star: StarTransportAdapter) => realLobbyLink(star),
         ...(deps.clipboard !== undefined ? { clipboard: deps.clipboard } : {}),
+        ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
         modelPorts,
         modelOptions: { seed: Math.floor(Date.now() % 1_000_000), ...modelOptions },
       });

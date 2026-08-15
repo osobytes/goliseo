@@ -93,6 +93,7 @@ export {
   TERMINAL_TEXT as LOBBY_TERMINAL_TEXT,
   DEPARTURE_TEXT as LOBBY_DEPARTURE_TEXT,
   PREFERENCE_TEXT as LOBBY_PREFERENCE_TEXT,
+  ROOM_FAILURE_TEXT as LOBBY_ROOM_FAILURE_TEXT,
 } from "./lobby_model.ts";
 export type {
   CoordinatorAction,
@@ -128,6 +129,8 @@ export type {
   ProtocolFixturePort,
   ProtocolMessage,
   ProtocolPort as LobbyProtocolPort,
+  RoomCodeEntry,
+  RoomSignalingStatus,
   SessionLifecyclePhase,
   SessionManifest,
   SessionManifestTeam,
@@ -160,6 +163,9 @@ export type {
   LobbyLinkInstance,
   OnlineLobbyAction,
   OnlineLobbyOptions,
+  RoomSignalingEvent,
+  RoomSignalingFactory,
+  RoomSignalingHandle,
 } from "./online_lobby.ts";
 
 export {
