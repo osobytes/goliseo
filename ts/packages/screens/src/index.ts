@@ -128,6 +128,8 @@ export type {
   ProtocolFixturePort,
   ProtocolMessage,
   ProtocolPort as LobbyProtocolPort,
+  RoomCodeEntry,
+  RoomSignalingStatus,
   SessionLifecyclePhase,
   SessionManifest,
   SessionManifestTeam,
@@ -160,6 +162,9 @@ export type {
   LobbyLinkInstance,
   OnlineLobbyAction,
   OnlineLobbyOptions,
+  RoomSignalingEvent,
+  RoomSignalingFactory,
+  RoomSignalingHandle,
 } from "./online_lobby.ts";
 
 export {

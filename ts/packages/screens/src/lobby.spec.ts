@@ -754,6 +754,15 @@ describe("online lobby screen", () => {
     expect(view(state).phase).toBe("role");
   });
 
+  it("offers a room-code path alongside the manual one, on the pre-role screen", () => {
+    const state = newState(VP, ports());
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "role_host")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_guest")).not.toBeNull();
+    expect(hit.find(currentLayout, "room_code_host")).not.toBeNull();
+    expect(hit.find(currentLayout, "room_code_join")).not.toBeNull();
+  });
+
   it("cycles the guest identity that answers the host's Nth invitation", () => {
     let state = newState(VP, ports());
     expect(view(state).peer_id).toBe("guest_1");
@@ -1026,5 +1035,224 @@ describe("online lobby screen", () => {
         expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Room-code signaling (#552) -- UI-logic coverage per AGENTS.md §9: layout
+// and update, headless, plus the "update does not mutate its input state"
+// assertion `formation.spec.ts`'s own header names as the pattern. The
+// end-to-end handshake (two real peers, offer/answer traveling over a fake
+// room-code channel with no copy/paste) is `@gc/app`'s
+// `room_code_lobby.spec.ts`, mirroring `online_ports.spec.ts`'s two-peer
+// pattern -- this file stays about `lobby.ts`/`lobby_model.ts`'s own
+// control flow, the same split every other describe block above draws.
+// ---------------------------------------------------------------------------
+
+describe("room-code entry (#552)", () => {
+  function joining(): LobbyScreenState {
+    return click(newState(VP, ports()), "room_code_join");
+  }
+
+  it("enters a composer sub-view instead of the manual role buttons", () => {
+    const state = joining();
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "room_code_slots")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_host")).toBeNull();
+    expect(hit.find(currentLayout, "role_guest")).toBeNull();
+    expect(hit.find(currentLayout, "room_code_join")).toBeNull();
+    expect(view(state).room_entry?.chars).toEqual(["", "", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(0);
+  });
+
+  it("types a character, advances the cursor, and renders the cursor slot bracketed", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "a", pressed: true });
+    expect(view(state).room_entry?.chars).toEqual(["A", "", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(1);
+    const slots = hit.find(lobbyLayout(state), "room_code_slots");
+    expect(slots?.text).toBe("A [_] _ _ _ _");
+  });
+
+  it("ignores a character outside the room-code alphabet", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "!", pressed: true });
+    expect(view(state).room_entry?.chars).toEqual(["", "", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(0);
+  });
+
+  it("ignores a key release (pressed: false)", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "a", pressed: false });
+    expect(view(state).room_entry?.chars).toEqual(["", "", "", "", "", ""]);
+  });
+
+  it("backspace clears the current slot, or steps back and clears the previous one", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "a", pressed: true });
+    state = dispatch(state, { kind: "key", key: "b", pressed: true });
+    expect(view(state).room_entry?.chars).toEqual(["A", "B", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(2);
+    // Cursor sits on an empty slot -- backspace steps back and clears "B".
+    state = dispatch(state, { kind: "key", key: "Backspace", pressed: true });
+    expect(view(state).room_entry?.chars).toEqual(["A", "", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(1);
+    // Cursor now sits on the just-cleared slot -- backspace clears "A" in place.
+    state = dispatch(state, { kind: "key", key: "Backspace", pressed: true });
+    expect(view(state).room_entry?.chars).toEqual(["", "", "", "", "", ""]);
+    expect(view(state).room_entry?.cursor).toBe(0);
+  });
+
+  it("cycles the character at the cursor with up/down, for a gamepad with no keyboard", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "action", action: "up" });
+    expect(view(state).room_entry?.chars[0]).toBe("0"); // first alphabet symbol
+    state = dispatch(state, { kind: "action", action: "up" });
+    expect(view(state).room_entry?.chars[0]).toBe("1");
+    state = dispatch(state, { kind: "action", action: "down" });
+    expect(view(state).room_entry?.chars[0]).toBe("0");
+    // Wraps at the bottom of the alphabet.
+    state = dispatch(state, { kind: "action", action: "down" });
+    expect(view(state).room_entry?.chars[0]).toBe("Z");
+  });
+
+  it("moves the cursor with left/right instead of the usual focus navigation", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "a", pressed: true });
+    expect(view(state).room_entry?.cursor).toBe(1);
+    state = dispatch(state, { kind: "action", action: "left" });
+    expect(view(state).room_entry?.cursor).toBe(0);
+    // Clamped, not wrapped.
+    state = dispatch(state, { kind: "action", action: "left" });
+    expect(view(state).room_entry?.cursor).toBe(0);
+    state = dispatch(state, { kind: "action", action: "right" });
+    state = dispatch(state, { kind: "action", action: "right" });
+    expect(view(state).room_entry?.cursor).toBe(2);
+  });
+
+  it("refuses to submit an incomplete code, and does not open a connection", () => {
+    let state = joining();
+    state = dispatch(state, { kind: "key", key: "a", pressed: true });
+    const nextState = click(state, "room_code_slots");
+    expect(view(nextState).error).toBeDefined();
+    expect(nextState.effects.some((effect) => effect.kind === "room_open_guest")).toBe(false);
+    expect(view(nextState).room_entry).toBeDefined();
+  });
+
+  it("submits a complete code, opening a guest room-code connection with it", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    const nextState = click(state, "room_code_slots");
+    expect(nextState.effects).toEqual([{ kind: "room_open_guest", code: "A3F9K2" }]);
+    expect(view(nextState).room_active).toBe(true);
+    expect(view(nextState).room_entry).toBeUndefined();
+    expect(view(nextState).error).toBeUndefined();
+  });
+
+  it("update does not mutate its input state", () => {
+    const state = joining();
+    const before = { ...state.model };
+    dispatch(state, { kind: "key", key: "a", pressed: true });
+    expect(state.model).toEqual(before);
+  });
+
+  it("update does not mutate its input state on submit, even when it fails", () => {
+    const state = joining();
+    const before = { ...state.model };
+    dispatch(state, { kind: "lobby", command: { kind: "room_submit" } });
+    expect(state.model).toEqual(before);
+  });
+
+  it("hosting with a room code requests a connection and disables the button meanwhile", () => {
+    const state = click(newState(VP, ports()), "room_code_host");
+    expect(state.effects).toEqual([{ kind: "room_open_host" }]);
+    expect(view(state).room_status).toBe("connecting");
+    // Still pre-role: `room_created` (fed in by the impure `roomSignaling`
+    // port once the Worker answers) is what actually picks the host role.
+    expect(view(state).role).toBeUndefined();
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "room_code_host")?.data?.disabled).toBe(true);
+  });
+
+  it("room_created picks the host role, shows the code, and hides the manual signal controls", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    expect(view(state).role).toBe("host");
+    expect(view(state).room_code).toBe("A3F9K2");
+    expect(view(state).room_active).toBe(true);
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("ROOM CODE  A3F9K2");
+    expect(hit.find(currentLayout, "copy_signal")).toBeNull();
+    expect(hit.find(currentLayout, "paste_signal")).toBeNull();
+  });
+
+  it("room_joined picks the guest role and hides the manual signal controls too", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_joined" } });
+    expect(view(state).role).toBe("guest");
+    expect(view(state).room_active).toBe(true);
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "copy_signal")).toBeNull();
+    expect(hit.find(currentLayout, "room_code_active")).not.toBeNull();
+  });
+
+  it("surfaces a handshake failure as a readable error, not a hang", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "handshake_failed" },
+    });
+    expect(view(state).error).toBe("handshake_failed");
+    expect(view(state).role).toBeUndefined();
+  });
+
+  // `online_lobby.ts`'s `update(dt)` dispatches a `signal`/`room_*` command
+  // from a polled event and then a `tick` in the SAME call, every frame --
+  // and `command()`'s own top strips `model.error` on every dispatch,
+  // `tick` included. A failure surfaced only through `error` would be
+  // visible for under one frame before its own trailing tick erased it;
+  // `room_error` is the dedicated field that does not (`@gc/app`'s
+  // `room_code_lobby.spec.ts` caught this for real, in its own
+  // failure-state case, driving the whole stack through `OnlineLobby`).
+  it("keeps a room-code failure readable across the tick that follows it in the same frame", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "handshake_failed" },
+    });
+    state = dispatch(state, { kind: "lobby", command: { kind: "tick" } });
+    expect(view(state).error).toBeUndefined(); // cleared, as every command clears it
+    expect(view(state).room_error).toBe("handshake_failed"); // still readable
+    const trouble = hit.find(lobbyLayout(state), "trouble");
+    expect(trouble?.text).toBe("HANDSHAKE_FAILED");
+  });
+
+  it("leaving a room-code connection in progress closes it", () => {
+    const state = click(newState(VP, ports()), "room_code_host");
+    const nextState = click(state, "leave");
+    expect(nextState.effects.some((effect) => effect.kind === "room_close")).toBe(true);
+    expect(view(nextState).room_active).toBe(false);
+  });
+
+  it("keeps the manual signaling controls fully reachable outside room-code mode", () => {
+    const state = hosting();
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
+    expect(hit.find(currentLayout, "paste_signal")).not.toBeNull();
+    expect(view(state).room_active).toBe(false);
   });
 });

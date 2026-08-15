@@ -32,10 +32,15 @@ import {
   type LobbySignalRecord,
   type LobbySlotView,
   type LobbyView,
+  type RoomCodeEntry,
   type SessionMatchMode,
 } from "./lobby_model.ts";
 
 export type { LobbyEffect } from "./lobby_model.ts";
+
+/** The single focusable widget in the room-code composer sub-view -- see
+ * `update()`'s own special-casing right below `layout()`. */
+const ROOM_CODE_ENTRY_WIDGET = "room_code_slots";
 
 export interface LobbyScreenContext {
   readonly model?: LobbyModel;
@@ -157,15 +162,32 @@ export function layout(state: LobbyScreenState): Layout {
     }
   };
 
-  if (!view.role) {
+  if (view.room_entry) {
+    const entry: RoomCodeEntry = view.room_entry;
+    const text = entry.chars
+      .map((ch, index) => (index === entry.cursor ? `[${ch || "_"}]` : ch || "_"))
+      .join(" ");
+    left(ROOM_CODE_ENTRY_WIDGET, text, 40);
+    left(
+      "room_hint",
+      "TYPE THE CODE, OR CYCLE A CHARACTER WITH UP/DOWN AND MOVE WITH LEFT/RIGHT. CONFIRM TO JOIN.",
+      34,
+      { kind: "label", tone: "muted", focusable: false },
+    );
+  } else if (!view.role) {
     left("role_host", "HOST A SESSION", 40);
     left("identity", `JOIN AS  ${view.peer_id.toUpperCase()}`, ROW_H);
     left("role_guest", "JOIN WITH AN OFFER", 40);
-    left("hint", "MANUAL SIGNALING: BLOBS ARE EXCHANGED BY HAND.", 34, {
-      kind: "label",
-      tone: "muted",
-      focusable: false,
+    left("room_code_host", "HOST WITH A ROOM CODE", 40, {
+      disabled: view.room_status === "connecting",
     });
+    left("room_code_join", "JOIN WITH A ROOM CODE", 40);
+    left(
+      "hint",
+      "MANUAL SIGNALING: BLOBS ARE EXCHANGED BY HAND. A ROOM CODE CONNECTS AUTOMATICALLY.",
+      34,
+      { kind: "label", tone: "muted", focusable: false },
+    );
   } else if (view.role === "host") {
     const modeW = 76;
     MODES.forEach((mode, index) => {
@@ -188,15 +210,28 @@ export function layout(state: LobbyScreenState): Layout {
     );
     left("invite", "INVITE A PEER", ROW_H, { disabled: !view.can_invite });
     left("lock", "LOCK CONFIGURATION", ROW_H, { disabled: !view.can_lock });
+    if (view.room_code) {
+      left("room_code_display", `ROOM CODE  ${view.room_code}`, ROW_H, {
+        kind: "label",
+        focusable: false,
+      });
+    }
   } else {
     left("mode_label", `MODE  ${view.mode_known ? view.mode.toUpperCase() : "PENDING"}`, 22, {
       kind: "label",
       tone: "muted",
       focusable: false,
     });
+    if (view.room_active) {
+      left("room_code_active", "CONNECTED VIA ROOM CODE", 20, {
+        kind: "label",
+        tone: "muted",
+        focusable: false,
+      });
+    }
   }
 
-  if (view.role) {
+  if (view.role && !view.room_active) {
     const half = (LEFT_W - 10) / 2;
     left("copy_signal", "COPY SIGNAL", ROW_H, {
       w: half,
@@ -214,6 +249,8 @@ export function layout(state: LobbyScreenState): Layout {
       tone: "muted",
       focusable: false,
     });
+  }
+  if (view.role) {
     left(
       "peer_count",
       `PEERS  ${view.connected} / ${view.mode_known ? String(view.required) : "?"}`,
@@ -318,8 +355,12 @@ export function layout(state: LobbyScreenState): Layout {
     data: { align: "left", focusable: false },
   });
   // A terminated session outranks a dropped guest: once the lobby is over,
-  // which seat emptied first is no longer the line to read.
-  let trouble = view.error ?? view.terminal_text;
+  // which seat emptied first is no longer the line to read. `room_error`
+  // sits between `error` and `terminal_text`: it is what is left once
+  // `error` itself has been cleared by a later `tick` command (see that
+  // field's own doc on `LobbyModel`) -- a room-code failure this widget
+  // must keep showing, not something a coordinator terminal ever outranks.
+  let trouble = view.error ?? view.room_error ?? view.terminal_text;
   let detail = view.terminal?.detail;
   if (!trouble && view.departure) {
     trouble = view.departure_text;
@@ -391,6 +432,12 @@ function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
       return { kind: "start" };
     case "leave":
       return { kind: "leave" };
+    case "room_code_host":
+      return { kind: "room_pick", role: "host" };
+    case "room_code_join":
+      return { kind: "room_pick", role: "guest" };
+    case ROOM_CODE_ENTRY_WIDGET:
+      return { kind: "room_submit" };
     default:
       break;
   }
@@ -435,13 +482,46 @@ function advance(
 export type LobbyScreenEvent =
   FocusEvent | { readonly kind: "lobby"; readonly command: LobbyCommand };
 
+function dispatchCommand(
+  state: LobbyScreenState,
+  cmd: LobbyCommand,
+): readonly [LobbyScreenState, LobbyAction | undefined] {
+  const [model, effects] = lobbyCommand(state.model, state.ports, cmd);
+  return [advance(state, model, state.focus, effects), actionFor(effects)];
+}
+
 export function update(
   state: LobbyScreenState,
   event: LobbyScreenEvent,
 ): readonly [LobbyScreenState, LobbyAction | undefined] {
   if (event.kind === "lobby") {
-    const [model, effects] = lobbyCommand(state.model, state.ports, event.command);
-    return [advance(state, model, state.focus, effects), actionFor(effects)];
+    return dispatchCommand(state, event.command);
+  }
+  // The room-code composer is a single focused widget with its own
+  // up/down/left/right meaning (cycle/move the character under the
+  // cursor) instead of the general focus-navigation those actions
+  // otherwise carry -- see `ROOM_CODE_ENTRY_WIDGET`'s own doc. "confirm"
+  // and "back" fall through to the normal paths below (confirm submits
+  // via `commandFor`'s `ROOM_CODE_ENTRY_WIDGET` case; back/leave is
+  // universal).
+  if (state.model.room_entry !== undefined && state.focus === ROOM_CODE_ENTRY_WIDGET) {
+    if (event.kind === "key" && event.pressed !== false) {
+      return dispatchCommand(state, { kind: "room_key", key: event.key });
+    }
+    if (event.kind === "action") {
+      if (event.action === "up") {
+        return dispatchCommand(state, { kind: "room_cycle", delta: 1 });
+      }
+      if (event.action === "down") {
+        return dispatchCommand(state, { kind: "room_cycle", delta: -1 });
+      }
+      if (event.action === "left") {
+        return dispatchCommand(state, { kind: "room_cursor", delta: -1 });
+      }
+      if (event.action === "right") {
+        return dispatchCommand(state, { kind: "room_cursor", delta: 1 });
+      }
+    }
   }
   const currentLayout = layout(state);
   const nextFocus = focus.navigate(currentLayout, state.focus, event) ?? state.focus;

@@ -1,7 +1,8 @@
 // The impure half of the online lobby: it owns the star transport, the
-// clipboard, and the fixed-rate lobby clock, and it draws. Every decision
-// it makes is delegated to the pure screen in `lobby.ts`; this file only
-// translates input, executes effects, and feeds transport facts back in.
+// room-code signaling channel, the clipboard, and the fixed-rate lobby
+// clock, and it draws. Every decision it makes is delegated to the pure
+// screen in `lobby.ts`; this file only translates input, executes effects,
+// and feeds transport/signaling facts back in.
 //
 // `@gc/online`'s `lobby_link.ts` (see ARCHITECTURE.md's directory table) and
 // the star transport (`@gc/transport`) are both TypeScript-owned, but
@@ -12,6 +13,12 @@
 // Rust-owned dependency elsewhere in this package. `@gc/ui`'s `draw` and
 // `motion` *are* a declared dependency, so `draw()` and the transition wipe
 // use the real modules.
+//
+// `@gc/online`'s `room_signaling.ts` (#552) is threaded through the exact
+// same way, as `RoomSignalingFactory`/`RoomSignalingHandle` -- structural
+// types this file declares itself, never imported. `@gc/app`'s
+// `room_signaling_port.ts` supplies the real, WebSocket-backed
+// implementation; a spec supplies a fake one, mirroring `starFactory`.
 
 import { draw, motion, type GraphicsBackend } from "@gc/ui";
 import { lobby, type LobbyEffect, type LobbyScreenEvent, type LobbyScreenState } from "./lobby.ts";
@@ -30,10 +37,46 @@ export interface LobbyLinkInstance<TStar, TEvent extends LobbyCommand> {
   poll(): readonly TEvent[];
 }
 
+/** One fact the room-code signaling channel reports back -- structurally
+ * `@gc/app`'s `room_signaling_port.ts`'s `RoomSignalingEvent` (and a fake's,
+ * in a spec), never imported. `kind` names which `lobby_model.ts` command
+ * this becomes (`roomCommandFor` below is the exhaustive mapping); the
+ * other fields are populated according to which. */
+export interface RoomSignalingEvent {
+  readonly kind:
+    "created" | "joined" | "guest_joined" | "guest_left" | "signal" | "failed" | "dropped";
+  readonly code?: string;
+  readonly guest_id?: string;
+  readonly signal?: string;
+  readonly reason?: string;
+}
+
+/** A live room-code connection -- structurally `@gc/app`'s
+ * `RoomSignalingHandle`, never imported. `send`'s shape mirrors
+ * `lobby_model.ts`'s own `room_send` effect (`to` omitted means "the only
+ * possible recipient", i.e. a guest addressing its host). */
+export interface RoomSignalingHandle {
+  poll(): readonly RoomSignalingEvent[];
+  send(effect: { readonly to?: string; readonly signal: string }): void;
+  close(): void;
+}
+
+/** Opens the room-code signaling channel for either role -- injected, the
+ * same pattern `starFactory` establishes for the star transport. Omitted
+ * entirely (e.g. in a spec that never drives the room-code path), the
+ * `room_open_host`/`room_open_guest` effects below simply do nothing: the
+ * lobby stays on "connecting" until the player backs out, which is a safe,
+ * inert default rather than a crash. */
+export interface RoomSignalingFactory {
+  openHost(): RoomSignalingHandle;
+  openGuest(code: string): RoomSignalingHandle;
+}
+
 export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly starFactory: (role: LobbyRole, peerId: string) => TStar | undefined;
   readonly newLink: (star: TStar) => LobbyLinkInstance<TStar, TEvent>;
   readonly clipboard?: LobbyClipboard;
+  readonly roomSignaling?: RoomSignalingFactory;
   readonly modelPorts: LobbyModelPorts;
   readonly modelOptions?: LobbyModelOptions;
 }
@@ -42,15 +85,45 @@ export type OnlineLobbyAction = { readonly go: string; readonly [key: string]: u
 
 const TICK_SECONDS = 1 / 60;
 
+/** Maps one `RoomSignalingEvent` to the `lobby_model.ts` command it becomes
+ * -- exhaustive over `RoomSignalingEvent.kind`, mirroring `lobby_link.ts`'s
+ * own `LobbyLinkEvent` -> `LobbyCommand` structural compatibility, except
+ * here the shapes genuinely differ (`guestId` vs `guest_id`, ...) so an
+ * explicit mapping earns its keep. */
+function roomCommandFor(event: RoomSignalingEvent): LobbyCommand {
+  switch (event.kind) {
+    case "created":
+      return { kind: "room_created", code: event.code ?? "" };
+    case "joined":
+      return { kind: "room_joined" };
+    case "guest_joined":
+      return { kind: "room_guest_joined", guest_id: event.guest_id ?? "" };
+    case "guest_left":
+      return { kind: "room_guest_left", guest_id: event.guest_id ?? "" };
+    case "signal":
+      return {
+        kind: "room_peer_signal",
+        signal: event.signal ?? "",
+        ...(event.guest_id !== undefined ? { guest_id: event.guest_id } : {}),
+      };
+    case "failed":
+      return { kind: "room_failed", reason: event.reason ?? "unknown" };
+    case "dropped":
+      return { kind: "room_dropped" };
+  }
+}
+
 export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   state: LobbyScreenState;
   link: LobbyLinkInstance<TStar, TEvent> | undefined;
   transition = 0;
   private accumulator = 0;
+  private roomLink: RoomSignalingHandle | undefined;
   private readonly onAction: ((action: OnlineLobbyAction) => void) | undefined;
   private readonly clipboard: LobbyClipboard;
   private readonly starFactory: (role: LobbyRole, peerId: string) => TStar | undefined;
   private readonly newLink: (star: TStar) => LobbyLinkInstance<TStar, TEvent>;
+  private readonly roomSignaling: RoomSignalingFactory | undefined;
 
   constructor(
     viewport: { readonly w: number; readonly h: number },
@@ -64,6 +137,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     this.clipboard = options.clipboard ?? { read: () => undefined, write: () => undefined };
     this.starFactory = options.starFactory;
     this.newLink = options.newLink;
+    this.roomSignaling = options.roomSignaling;
   }
 
   dispatch(command: LobbyCommand): void {
@@ -93,6 +167,18 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
           this.link.apply(effect);
           this.link = undefined;
         }
+      } else if (effect.kind === "room_open_host") {
+        this.roomLink = this.roomSignaling?.openHost();
+      } else if (effect.kind === "room_open_guest") {
+        this.roomLink = this.roomSignaling?.openGuest(effect.code);
+      } else if (effect.kind === "room_send") {
+        this.roomLink?.send({
+          ...(effect.to !== undefined ? { to: effect.to } : {}),
+          signal: effect.signal,
+        });
+      } else if (effect.kind === "room_close") {
+        this.roomLink?.close();
+        this.roomLink = undefined;
       } else if (effect.kind !== "leave" && effect.kind !== "start_match") {
         if (this.link) {
           const [ok, err] = this.link.apply(effect);
@@ -109,6 +195,11 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     if (this.link) {
       for (const event of this.link.poll()) {
         this.dispatch(event);
+      }
+    }
+    if (this.roomLink) {
+      for (const event of this.roomLink.poll()) {
+        this.dispatch(roomCommandFor(event));
       }
     }
     this.accumulator += dt;
@@ -135,6 +226,10 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     if (this.link) {
       this.link.apply({ kind: "shutdown" });
       this.link = undefined;
+    }
+    if (this.roomLink) {
+      this.roomLink.close();
+      this.roomLink = undefined;
     }
   }
 }
