@@ -46,7 +46,7 @@ function layout(state: TitleScreenState): Layout {
     ["help", "HOW TO PLAY"],
     ["settings", "SETTINGS"],
     ["credits", "CREDITS"],
-    ["online_lobby", "ONLINE LOBBY (DEV)"],
+    ["online_lobby", "ONLINE LOBBY"],
     ["quit", "QUIT"],
   ];
   labels.forEach(([id, text], i) => {
