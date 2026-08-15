@@ -179,10 +179,35 @@ export interface GoliseoStarTransportBridge {
   diagnostics(): string;
 }
 
+/** One `RTCPeerConnection`'s ICE configuration -- `iceServers` (STUN/TURN,
+ * #550) and an optional `iceTransportPolicy` (the "relay" force toggle,
+ * #248's "config path only" scope). */
+export interface StarBridgeIceConfig {
+  readonly iceServers: readonly RTCIceServer[];
+  readonly iceTransportPolicy?: RTCIceTransportPolicy;
+}
+
+/** Construction options for {@link newGoliseoStarTransportBridge}/
+ * {@link installGoliseoStarTransport}. */
+export interface StarBridgeOptions {
+  /** Read fresh every time a peer connection is opened (not snapshotted at
+   * install time), so a caller can update ICE servers/policy after a TURN
+   * credential fetch resolves without reinstalling the bridge -- see
+   * `@gc/app`'s `online_ports.ts`/`browser_main.ts`. Defaults to STUN-only
+   * with no forced policy, matching this bridge's behavior before this
+   * option existed. */
+  readonly iceConfig?: () => StarBridgeIceConfig;
+}
+
+const NO_ICE_SERVERS: StarBridgeIceConfig = { iceServers: [] };
+
 /** Builds one fresh bridge instance — never a `window` singleton on its
  * own; see {@link installGoliseoStarTransport} for that. Kept separate so a
  * test can build one without touching global state. */
-export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
+export function newGoliseoStarTransportBridge(
+  options: StarBridgeOptions = {},
+): GoliseoStarTransportBridge {
+  const iceConfig = options.iceConfig ?? ((): StarBridgeIceConfig => NO_ICE_SERVERS);
   const star: StarState = {
     role: "host",
     state: "new",
@@ -555,9 +580,18 @@ export function newGoliseoStarTransportBridge(): GoliseoStarTransportBridge {
       peerError(peer, null, "bridge_unavailable", "RTCPeerConnection is not available");
       return null;
     }
-    // OMP-3 stays on manual signaling with no configured ICE servers.
-    // Production STUN/TURN selection belongs to OMP-4.
-    const pc = new RTCPeerConnectionCtor({ iceServers: [] });
+    // Manual signaling (offer/answer) stays as-is; only the ICE server
+    // list/policy is configurable -- see `StarBridgeOptions.iceConfig`'s
+    // doc. Read fresh per connection, so a TURN credential fetch that
+    // resolves after this bridge was installed still reaches the NEXT
+    // peer connection this bridge opens.
+    const config = iceConfig();
+    const pc = new RTCPeerConnectionCtor({
+      iceServers: [...config.iceServers],
+      ...(config.iceTransportPolicy !== undefined
+        ? { iceTransportPolicy: config.iceTransportPolicy }
+        : {}),
+    });
     peer.pc = pc;
     // These handlers close over `pc`, never `peer.pc`. `RTCPeerConnection
     // .close()` fires the state-change callbacks on a later task, by which
@@ -1113,10 +1147,11 @@ declare global {
  * window.GoliseoStarTransport || (...)` guard. */
 export function installGoliseoStarTransport(
   target: typeof globalThis = globalThis,
+  options: StarBridgeOptions = {},
 ): GoliseoStarTransportBridge {
   const host = target as unknown as Window;
   if (!host.GoliseoStarTransport) {
-    host.GoliseoStarTransport = newGoliseoStarTransportBridge();
+    host.GoliseoStarTransport = newGoliseoStarTransportBridge(options);
   }
   return host.GoliseoStarTransport;
 }

@@ -201,8 +201,16 @@ export type {
   MatchPresentationPort,
   MatchSessionPort,
   OnlineMatchDispatchEvent,
+  // Both already existed in `online_match.ts` (its own constructor takes an
+  // `OnlineMatchModelPort`, and `OnlineMatchOptions.request`/`.coordinator`
+  // are typed in terms of `OnlineMatchState`) but were not re-exported --
+  // #550's `@gc/app` `online_ports.ts` (the production wiring `app.ts`'s
+  // own header says was the missing piece all along) is the first caller
+  // outside this package that needs to name either type directly.
+  OnlineMatchModelPort,
   OnlineMatchOptions,
   OnlineMatchRequest,
+  OnlineMatchState,
 } from "./online_match.ts";
 
 export { RealMatchScreen } from "./real_match.ts";

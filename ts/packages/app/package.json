@@ -15,6 +15,7 @@
     "@gc/screens": "workspace:*",
     "@gc/render": "workspace:*",
     "@gc/online": "workspace:*",
+    "@gc/transport": "workspace:*",
     "@gc/input": "workspace:*",
     "@gc/ui": "workspace:*",
     "@gc/presentation": "workspace:*",
