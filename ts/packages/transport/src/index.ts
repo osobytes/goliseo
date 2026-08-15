@@ -55,6 +55,8 @@ export {
   newGoliseoStarTransportBridge,
   browserStarEval,
   type GoliseoStarTransportBridge,
+  type StarBridgeIceConfig,
+  type StarBridgeOptions,
 } from "./browser_star_bridge.ts";
 
 import { FakeTransport, type FakeTransportOptions } from "./fake.ts";
