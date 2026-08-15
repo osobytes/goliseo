@@ -5153,7 +5153,9 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
                 // stretch usually gets pushed away.
                 let p_catch = 1.0
                     / (1.0
-                        + (-(quality - tune.value("CATCH_EVEN_QUALITY")) / CATCH_SOFTNESS).exp());
+                        + deterministic_math::exp(
+                            -(quality - tune.value("CATCH_EVEN_QUALITY")) / CATCH_SOFTNESS,
+                        ));
                 let (next_rng, sample) = rng::roll(s.rng);
                 s.rng = next_rng;
                 let keeper = &mut s.players[ki];

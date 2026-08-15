@@ -5,6 +5,7 @@
 //! indices are ordinary 0-based Rust collection indices, not the 1-based
 //! player identity `sim::r#match` uses elsewhere (ARCHITECTURE.md §3 rule 3).
 
+use gc_core::deterministic_math;
 use gc_core::vec2::Vec2;
 use indexmap::IndexMap;
 
@@ -95,7 +96,7 @@ pub fn separation(pos: Vec2, others: &[Vec2], radius: f64) -> Vec2 {
 }
 
 fn sigmoid(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
+    1.0 / (1.0 + deterministic_math::exp(-x))
 }
 
 /// Shortest distance from point `p` to segment `a`-`b`.
@@ -153,7 +154,7 @@ pub fn support_spot(
         };
         let imp_x = sigmoid(IMPORTANCE_K * (depth - 0.5));
         let cy = (c.y - field.h / 2.0) / (field.h * CENTER_SIGMA);
-        let imp_y = (-cy * cy).exp();
+        let imp_y = deterministic_math::exp(-cy * cy);
         let mut lane = 1.0;
         for o in opponents {
             if point_seg_dist(*o, carrier_pos, *c) < LANE_WIDTH {
@@ -259,7 +260,7 @@ pub fn pass_intercept(
             return Some(f);
         }
         if v < max_collect_speed {
-            let t_ball = (launch_speed / v).ln() / friction;
+            let t_ball = deterministic_math::ln_ratio(launch_speed / v) / friction;
             let point = from.add(dir.scale(d));
             for th in threats {
                 let t_threat = INTERCEPT_REACT + (point.dist(th.pos) - reach).max(0.0) / th.speed;
