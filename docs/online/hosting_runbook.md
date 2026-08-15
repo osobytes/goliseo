@@ -20,10 +20,18 @@ issue and in `docs/online/relay_topology_decision.md`.
 - **Room-code signaling.** `RoomDurableObject`
   (`infra/src/room_durable_object.ts`), one instance per room code. A host
   opens a WebSocket at `/signal/host` and gets a short, human-friendly,
-  single-use code; a guest opens one at `/signal/join?code=…`. The DO
-  relays opaque signaling blobs between them -- it never parses SDP/ICE
-  content, only the small routing envelope a host uses to address a
-  specific guest (see `room_durable_object.ts`'s module doc). Rooms expire
+  single-use code; a guest opens one at `/signal/join?code=…`. Both routes
+  are guarded by the `SIGNAL_RATE_LIMITER` binding (`wrangler.jsonc`'s
+  `ratelimits`, 10 requests/60s per client IP), checked in `index.ts`
+  **before** either handler addresses a Durable Object -- each attempt
+  provisions or addresses a billed DO, and the room's own per-room
+  join-attempt limit (`JOIN_RATE_LIMIT` in `room_durable_object.ts`) only
+  throttles repeats against one already-known code, not a fresh code
+  minted on every call. The DO relays opaque signaling blobs between host
+  and guest(s) -- it never parses SDP/ICE content, only the small routing
+  envelope a host uses to address a specific guest, and the exact wire
+  shape (including a documented body-encoding asymmetry between the two
+  directions) is in `room_durable_object.ts`'s module doc. Rooms expire
   (`ROOM_TTL_MS` in `room_state.ts`) and cap at one host plus
   `MAX_GUESTS` (7) guests.
 - **TURN credentials.** `GET /api/turn-credentials` calls Cloudflare
@@ -38,10 +46,10 @@ issue and in `docs/online/relay_topology_decision.md`.
 
 ## One-time owner setup
 
-Three repository secrets and one dashboard action are everything left to do
-by hand. Nothing else here is manual -- the Durable Object's
-`[[migrations]]` block (`wrangler.jsonc`) ships automatically with the
-first deploy, exactly like any other config change.
+One or two required repository secrets, one optional one, and one dashboard
+action are everything left to do by hand. Nothing else here is manual --
+the Durable Object's `[[migrations]]` block (`wrangler.jsonc`) ships
+automatically with the first deploy, exactly like any other config change.
 
 ### 1. Add the zone and point nameservers
 
@@ -50,16 +58,17 @@ assigns two nameservers → update them at the domain's registrar. This is
 the only step that happens outside Cloudflare, and the only one with
 propagation delay (minutes to hours).
 
-### 2. Create the three GitHub repository secrets
+### 2. Create the GitHub repository secrets
 
-`.github/workflows/deploy.yml` reads exactly these three secret names --
+`.github/workflows/deploy.yml` reads these secret names --
 **Settings → Secrets and variables → Actions** on the GitHub repo:
 
-| Secret name           | What it is                                                     | Where to get it |
-| ---------------------- | --------------------------------------------------------------- | ---------------- |
-| `CLOUDFLARE_API_TOKEN` | A Workers deploy token                                          | Cloudflare dashboard → **My Profile → API Tokens → Create Token** → template **"Edit Cloudflare Workers"** (or a custom token scoped to Workers Scripts:Edit, Workers Routes:Edit, and Durable Objects:Edit for the target account/zone) |
-| `TURN_KEY_ID`          | A Cloudflare Realtime TURN key's ID                              | Cloudflare dashboard → **Realtime → TURN → Create a TURN key** |
-| `TURN_API_TOKEN`       | That TURN key's API token                                       | Same screen, shown once at creation -- store it now |
+| Secret name              | Required? | What it is                                                     | Where to get it |
+| -------------------------- | --------- | --------------------------------------------------------------- | ---------------- |
+| `CLOUDFLARE_API_TOKEN`     | yes       | A Workers deploy token                                          | Cloudflare dashboard → **My Profile → API Tokens → Create Token** → template **"Edit Cloudflare Workers"** (or a custom token scoped to Workers Scripts:Edit, Workers Routes:Edit, and Durable Objects:Edit for the target account/zone) |
+| `TURN_KEY_ID`              | no        | A Cloudflare Realtime TURN key's ID                              | Cloudflare dashboard → **Realtime → TURN → Create a TURN key** |
+| `TURN_API_TOKEN`           | no        | That TURN key's API token                                       | Same screen, shown once at creation -- store it now |
+| `CLOUDFLARE_ACCOUNT_ID`    | no*       | The target Cloudflare account's ID                               | Cloudflare dashboard → any zone/Workers overview page, right sidebar |
 
 `CLOUDFLARE_API_TOKEN` is **required**: `deploy.yml`'s first step fails the
 workflow immediately, with an explicit message, if it is absent. The
@@ -71,6 +80,19 @@ via `cloudflare/wrangler-action`'s `secrets:` input (which runs
 `wrangler secret put` from the same-named environment variables on every
 deploy) -- there is no separate local `wrangler secret put` step to
 remember.
+
+`CLOUDFLARE_ACCOUNT_ID` is optional **only if the API token from the row
+above is scoped to a single Cloudflare account.** If that token can see
+more than one account, `wrangler deploy` resolves the account to deploy to
+non-interactively by picking whichever one sorts first alphabetically --
+silently, with no error -- which is the wrong account exactly as often as
+it is the right one. Do one of the two:
+
+- Create `CLOUDFLARE_API_TOKEN` scoped to one account (the token creation
+  screen lets you pick "Specific account" instead of "All accounts"), or
+- Add `CLOUDFLARE_ACCOUNT_ID` as a fourth repository secret, which
+  `deploy.yml` passes to `wrangler-action` as `accountId` whenever it is
+  set.
 
 ### 3. First deploy
 

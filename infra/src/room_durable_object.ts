@@ -15,7 +15,32 @@
 //! `docs/online/relay_topology_decision.md`'s "dumb relay" principle: read
 //! the CONTENTS of a signaling message. `webSocketMessage` below reads
 //! exactly one field from a host's message (`to`, the routing envelope)
-//! and forwards `body` untouched in both directions.
+//! and forwards `body` untouched in both directions -- but "untouched" is
+//! NOT the same shape both ways; a client (the #552 issue this note is
+//! for) needs to know the wire protocol exactly:
+//!
+//! - **Guest -> DO**: any text frame, sent as-is -- this is the guest's
+//!   own signaling payload (e.g. a JSON-stringified `RTCSessionDescription`
+//!   or ICE candidate), and the DO never parses it at all.
+//! - **DO -> host** (relaying that guest message):
+//!   `{ "type": "signal", "from": "<guestConnectionId>", "body": "<the
+//!   guest's exact text> }`. Because `body` is embedded as a JSON STRING
+//!   value inside this envelope, and the guest's own text is very likely
+//!   already JSON, the host receives `body` **double-encoded**: parse the
+//!   envelope first, then `body` is the guest's original string, to parse
+//!   again if it was JSON.
+//! - **Host -> DO**: `{ "to": "<guestConnectionId>", "body": <anything> }`
+//!   -- `body` may be a string OR any other JSON value; the DO only reads
+//!   `to`, never `body`.
+//! - **DO -> guest** (relaying that host message):
+//!   `{ "type": "signal", "from": "host", "body": <exactly what the host
+//!   put there> }` -- NOT re-stringified, so a guest's `body` is whatever
+//!   type the host sent (commonly a string, to keep both directions
+//!   symmetric, but the DO does not enforce that).
+//!
+//! Binary (`ArrayBuffer`) frames are rejected outright, from either role
+//! -- see `webSocketMessage`'s own comment for why forwarding one would be
+//! silent data loss rather than a relay.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -231,8 +256,19 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
 
-    const byteLength =
-      typeof message === "string" ? new TextEncoder().encode(message).length : message.byteLength;
+    // Neither role may send a binary frame: a host's message must be JSON
+    // (the { to, body } envelope below), and a guest's message is
+    // forwarded to the host completely unparsed -- as a STRING, always
+    // (see this file's module doc, "wire protocol"). An ArrayBuffer
+    // handed to JSON.stringify serializes as "{}", which would silently
+    // drop a guest's payload rather than relay it; reject it instead of
+    // forwarding garbage.
+    if (typeof message !== "string") {
+      ws.send(JSON.stringify({ type: "error", error: "binary_not_supported" }));
+      return;
+    }
+
+    const byteLength = new TextEncoder().encode(message).length;
 
     // Routing metadata only. `body` is forwarded exactly as received in
     // both directions -- this is the one place this file reads any part of
@@ -240,10 +276,6 @@ export class RoomDurableObject extends DurableObject<Env> {
     let toId: ConnectionId | undefined;
     let outgoingBody: unknown = message;
     if (attachment.role === "host") {
-      if (typeof message !== "string") {
-        ws.send(JSON.stringify({ type: "error", error: "binary_not_supported" }));
-        return;
-      }
       let envelope: unknown;
       try {
         envelope = JSON.parse(message);

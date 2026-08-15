@@ -24,7 +24,24 @@ export { RoomDurableObject } from "./room_durable_object.ts";
 /** Bounded retries against a code collision (or a still-live prior room on that code). */
 const MAX_CODE_ATTEMPTS = 5;
 
-async function handleHostSignal(request: Request, env: Env): Promise<Response> {
+/** The client-IP key every rate limiter binding in this Worker keys on. */
+function rateLimitKeyFor(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+
+/** Exported for index.spec.ts -- AGENTS.md §4: everything a test touches is reachable. */
+export async function handleHostSignal(request: Request, env: Env): Promise<Response> {
+  // Checked BEFORE anything touches env.ROOM.getByName(): each attempt
+  // below provisions or addresses a Durable Object, which is billed, and
+  // room_state.ts's own per-room JOIN_RATE_LIMIT cannot help here -- it
+  // only throttles repeated attempts against ONE already-known code, and
+  // a fresh code (hence a fresh DO) is generated on every call to this
+  // handler.
+  const { success } = await env.SIGNAL_RATE_LIMITER.limit({ key: rateLimitKeyFor(request) });
+  if (!success) {
+    return new Response("too many requests", { status: 429 });
+  }
+
   const forwarded = new Headers(request.headers);
   forwarded.set("Room-Role", "host");
 
@@ -43,7 +60,16 @@ async function handleHostSignal(request: Request, env: Env): Promise<Response> {
   return new Response("could not allocate a room code, try again", { status: 503 });
 }
 
-async function handleJoinSignal(request: Request, env: Env): Promise<Response> {
+/** Exported for index.spec.ts -- AGENTS.md §4: everything a test touches is reachable. */
+export async function handleJoinSignal(request: Request, env: Env): Promise<Response> {
+  // Same reasoning as handleHostSignal: this addresses (and, via the DO's
+  // own claim logic, may create the SQLite row for) a Durable Object
+  // before any per-room check runs.
+  const { success } = await env.SIGNAL_RATE_LIMITER.limit({ key: rateLimitKeyFor(request) });
+  if (!success) {
+    return new Response("too many requests", { status: 429 });
+  }
+
   const url = new URL(request.url);
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
   if (!isValidRoomCode(code)) {
@@ -61,8 +87,7 @@ async function handleTurnCredentials(request: Request, env: Env): Promise<Respon
     return new Response("forbidden", { status: 403 });
   }
 
-  const rateLimitKey = request.headers.get("CF-Connecting-IP") ?? "unknown";
-  const { success } = await env.TURN_RATE_LIMITER.limit({ key: rateLimitKey });
+  const { success } = await env.TURN_RATE_LIMITER.limit({ key: rateLimitKeyFor(request) });
   if (!success) {
     return new Response("too many requests", { status: 429 });
   }

@@ -192,10 +192,20 @@ jobs:
             # TURN_API_TOKEN are not both set -- an empty `secrets:` input
             # sets nothing, so the Worker simply keeps whatever TURN
             # secrets (if any) were set by a previous run, or none.
+            #
+            # accountId: OPTIONAL, and empty (unset secret) is fine --
+            # wrangler-action only sets CLOUDFLARE_ACCOUNT_ID when this is
+            # non-empty. Without it, a token scoped to a SINGLE account
+            # resolves unambiguously; a multi-account token instead
+            # resolves silently to whichever account sorts first
+            # alphabetically, which is exactly the footgun this exists to
+            # avoid. docs/online/hosting_runbook.md tells the owner to
+            # either scope the token to one account or set this secret.
             - name: Deploy to Cloudflare Workers
               uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
               with:
                   apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+                  accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
                   workingDirectory: infra
                   packageManager: pnpm
                   secrets: ${{ steps.secrets_check.outputs.worker_secrets }}
