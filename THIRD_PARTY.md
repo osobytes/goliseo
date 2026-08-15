@@ -101,6 +101,13 @@ hook). Nothing about the notice list is hand-maintained:
 
 - **three.js** — the script reads the version and full `LICENSE` text straight
   out of `@gc/app`'s own resolved `node_modules/three`.
+- **Vite's module-preload polyfill** — `build.modulePreload.polyfill` defaults to
+  `true`, and Vite injects this small snippet into every bundle it emits (the
+  `relList.supports("modulepreload")` / `MutationObserver` code visible in
+  `dist-app/assets/index-<hash>.js`). The script reads the version and the "Vite
+  core license" section of `node_modules/vite/LICENSE.md` — not that file's later
+  "Licenses of bundled dependencies" section, which covers Vite's own build-time
+  tooling and is never part of the shipped polyfill.
 - **The wasm-linked Rust crates** — the script runs
   `cargo tree -p gc-wasm --target wasm32-unknown-unknown -e no-dev,no-build,no-proc-macro`
   (the same target-scoped, proc-macro-excluding query this file's own
@@ -111,11 +118,16 @@ hook). Nothing about the notice list is hand-maintained:
   used to say — the simpler path, and the one that does not require reproducing
   an upstream `NOTICE` file. `unicode-ident`'s separate Unicode-3.0 component is
   read from its own `LICENSE-UNICODE` and appended as its own notice, not folded
-  into the MIT text.
+  into the MIT text. The wasm-bindgen-generated JS glue this file's ["In the
+  JavaScript bundle"](#in-the-javascript-bundle) table lists separately is not a
+  distinct notice: it is wasm-bindgen's own code, and the `wasm-bindgen` crate
+  section in the generated file covers it.
 - A build fails loudly (not silently) if `cargo` is unavailable, if a crate
-  `cargo tree` reports is missing from `cargo metadata`, or if a crate has no
-  `license` field — so this list cannot drift from what is actually linked
-  without the build itself saying so.
+  `cargo tree` reports is missing from `cargo metadata`, if a crate has no
+  `license` field, or if a crate's license is taken under MIT but no
+  `LICENSE-MIT`/`LICENSE` file can be found to read — so this list cannot drift
+  from what is actually linked, or quietly go incomplete, without the build
+  itself saying so.
 
 `ts/index.html` references `./THIRD_PARTY_NOTICES.txt` in a `<head>` comment.
 Re-derive the file locally with `node scripts/generate_third_party_notices.ts`
