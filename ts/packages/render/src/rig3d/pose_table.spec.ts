@@ -232,6 +232,18 @@ describe("rig3d/pose_table.locomotionBlend", () => {
   // parity suite relies on quietly becomes an approximation. This test is the
   // only thing standing between that edit and a silent accuracy loss, so it
   // asserts the precondition explicitly before sweeping the consequence.
+  // Regression for the bug class this retune fixed: `RUN_SPEED` used to sit
+  // above every speed gc-sim can actually produce (a full sprint tops out
+  // around 297-351 u/s), so `runMix` never saturated and a sprinting player
+  // permanently read as a brisk walk. 300 u/s is inside that reachable
+  // envelope and must fully commit to the run action.
+  it("saturates the run weight at a sprint speed inside the sim's reachable envelope", () => {
+    const SIM_SPRINT_SPEED = 300;
+    expect(SIM_SPRINT_SPEED).toBeGreaterThan(viewState.RUN_SPEED);
+    expect(locomotionBlend(SIM_SPRINT_SPEED)).toEqual({ idle: 0, walk: 0, run: 1 });
+    expect(strideFor(SIM_SPRINT_SPEED)).toBe(viewState.RUN_STRIDE);
+  });
+
   it("is never a genuine three-way blend", () => {
     // The precondition the two-way property depends on, stated rather than
     // assumed -- see this test's comment.

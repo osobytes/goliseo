@@ -895,10 +895,123 @@ function drawLooseBallCommands(dl: DrawList, project: Project, ball: RenderFrame
   dl.circle("fill", sx, sy - (z + 4) * scale, 5 * scale, [1, 0.95, 0.7]);
 }
 
+// CONTROLLED-PLAYER MARKER. docs/design/broadcast_presentation.md's
+// onboarding section names "identify the double-ringed controlled player" as
+// the FIRST thing a new player is taught -- a marker that, until now, was
+// never actually drawn (the doc's promise had no implementation). Follows
+// the pass-target preview's own implementation pattern immediately below
+// (two `dl.circle("line", ...)` rings at a player's projected feet) but
+// stays visually distinct from it on purpose: a dedicated warm hue instead
+// of a team colour, and different steady-state radii, so the two markers
+// never read as the same thing on a frame where both happen to be visible
+// (a controlled player standing near, or even briefly holding pass toward,
+// a nearby teammate).
+//
+// Radii/colour chosen after a survey of this file's own palette (no
+// existing constant fit without risking visual collision with what it
+// already means): RETICLE_COLOR-family ambers are the landing reticle,
+// DEFAULT_ARENA.highlight_color/the "shot" charge colour are both a similar
+// orange already reserved for other HUD reads, and the ball's own lit
+// colour would visually merge with the loose ball sitting at a controlled
+// player's feet. CONTROLLED_MARKER_COLOR keeps this file's established
+// "warm, bright, non-team" register (see the ball/goal-frame colours above)
+// while staying far enough from all of them to read as its own thing.
+const CONTROLLED_MARKER_INNER_R = 9;
+const CONTROLLED_MARKER_OUTER_R = 13;
+const CONTROLLED_MARKER_COLOR: RGB = [1, 0.92, 0.6];
+
+// Switch-pulse timing: a brief (~0.3s) flourish when the controlled slot
+// changes, decaying back to the steady-state ring. `CONTROLLED_SWITCH_PULSE_S`
+// is the task's own brief; the scale/alpha boosts are how much bigger/
+// brighter the ring reads at the INSTANT of a switch, linearly decaying to 0
+// (i.e. the plain steady-state ring) by the time `CONTROLLED_SWITCH_PULSE_S`
+// has elapsed.
+const CONTROLLED_SWITCH_PULSE_S = 0.3;
+const CONTROLLED_SWITCH_PULSE_SCALE = 0.8;
+const CONTROLLED_SWITCH_PULSE_ALPHA = 0.2;
+
+// Persistent, module-level memory of the controlled slot across DRAW CALLS --
+// the same pattern `staticSceneCache` above already uses, and for the same
+// reason: a single `RenderFrame` plus `now` tells a draw call the CURRENT
+// controlled slot and the CURRENT time, never whether the slot just changed
+// since the previous call. Detecting a change needs one call's answer
+// remembered into the next.
+//
+// THIS IS NOT A LATCH ON THE MARKER ITSELF -- contrast #491/#529's fix for
+// `pass_target` (see "pitch.ts's pass-target marker has no memory across
+// independent draws" in pitch.spec.ts), which exists precisely because a
+// marker's POSITION must never be carried from a stale previous frame. This
+// marker's position and presence are still fully re-derived from
+// `frame.control.controlled` on every single call, with zero dependency on
+// this state -- a frame with no valid controlled slot draws nothing,
+// regardless of what this remembers. What this state adds is purely
+// cosmetic and transient (how large/bright the ring is drawn THIS instant),
+// and it always converges back to the exact same steady-state look no
+// matter what it remembers, unlike a latched target that could keep
+// showing a stale player forever.
+let controlledMarkerLastIndex: number | undefined;
+let controlledMarkerSwitchedAt: number | undefined;
+
+/** Drop the controlled-marker pulse's memory. Test-only, mirroring `resetStaticSceneCache`. */
+export function resetControlledMarkerPulse(): void {
+  controlledMarkerLastIndex = undefined;
+  controlledMarkerSwitchedAt = undefined;
+}
+
+// Persistent double-ring marker under the controlled player's feet, drawn
+// EVERY frame (unlike the pass-target preview, which only shows while a
+// pass button is held) so the controlled character always reads at a
+// glance. See the block comment above for geometry/colour rationale and the
+// switch-pulse state's relationship to #491/#529.
+function drawControlledMarker(
+  dl: DrawList,
+  frame: RenderFrame,
+  project: Project,
+  now: number,
+): void {
+  const players = frame.players;
+  // ONE-BASED, same wire convention as `pass_target`/the charge meter's
+  // `controlled` below -- see those comments for why the `-1` is required.
+  const controlledIndex = frame.control.controlled - 1;
+  if (controlledIndex < 0 || controlledIndex >= players.count) {
+    // No valid controlled player this frame -- draw nothing. Deliberately
+    // leaves the pulse memory untouched rather than clearing it, so a frame
+    // that transiently loses control data does not erase a pulse already in
+    // flight only for it to jump back in from nothing on the next real frame.
+    return;
+  }
+
+  if (controlledMarkerLastIndex !== controlledIndex) {
+    controlledMarkerLastIndex = controlledIndex;
+    controlledMarkerSwitchedAt = now;
+  }
+  // `switchedAt` is always assigned by the branch above before this reads
+  // it, on every reachable path; the `?? now` fallback only satisfies
+  // strict-null typing and is equivalent to "just switched" if ever hit.
+  const switchedAt = controlledMarkerSwitchedAt ?? now;
+  const elapsed = now - switchedAt;
+  const pulseT = Math.min(1, Math.max(0, elapsed / CONTROLLED_SWITCH_PULSE_S));
+  const pulse = 1 - pulseT; // 1 at the instant of a switch, 0 by CONTROLLED_SWITCH_PULSE_S
+
+  const px = players.x[controlledIndex] ?? 0;
+  const py = players.y[controlledIndex] ?? 0;
+  const [sx, sy, scale] = project(px, py);
+  const sizeMul = 1 + pulse * CONTROLLED_SWITCH_PULSE_SCALE;
+
+  dl.circle("line", sx, sy, CONTROLLED_MARKER_INNER_R * scale * sizeMul, CONTROLLED_MARKER_COLOR, {
+    alpha: Math.min(1, 0.8 + pulse * CONTROLLED_SWITCH_PULSE_ALPHA),
+    lineWidth: Math.max(1, 1.5 * scale),
+  });
+  dl.circle("line", sx, sy, CONTROLLED_MARKER_OUTER_R * scale * sizeMul, CONTROLLED_MARKER_COLOR, {
+    alpha: Math.min(1, 0.45 + pulse * CONTROLLED_SWITCH_PULSE_ALPHA),
+    lineWidth: Math.max(1, 1.5 * scale),
+  });
+}
+
 // Everything drawn AFTER the depth-sorted players/ball: combat's "over"
-// layer, the landing reticle, the pass-target preview, the charge meter and
-// the effects "over" layer (flashes/sparks). Shared for the same reason
-// `drawPitchBeforeItems` is.
+// layer, the landing reticle, the persistent controlled-player marker, the
+// pass-target preview, the charge meter and the effects "over" layer
+// (flashes/sparks). Shared for the same reason `drawPitchBeforeItems` is.
 function drawPitchAfterItems(
   dl: DrawList,
   frame: RenderFrame,
@@ -928,6 +1041,12 @@ function drawPitchAfterItems(
       lineWidth: Math.max(1, 1.5 * scale),
     });
   }
+
+  // Persistent controlled-player marker: see `drawControlledMarker`'s own
+  // doc comment. Drawn before the pass-target preview so a pass-target ring
+  // on the SAME player (impossible mid-pass, but the two can sit close on
+  // neighbouring teammates) still reads on top.
+  drawControlledMarker(dl, frame, project, now);
 
   // Pass-target preview: a small pulsing double-ring at the intended
   // receiver's feet while the pass button is held.
