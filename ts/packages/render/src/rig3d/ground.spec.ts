@@ -22,7 +22,7 @@
 // section 9: a gate must be able to go red, and it must go red for a reason
 // and not for a busy CI machine).
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mat4 } from "@gc/core";
 
 // `skeleton.apply`, counted. The factory is hoisted above the imports, so the
@@ -113,7 +113,7 @@ describe("rig3d/ground: the pruned scan is exact", () => {
     let checked = 0;
     for (const id of ids) {
       for (const dive of [0, 0.5, 1]) {
-        for (const speed of [0, 150, 400]) {
+        for (const speed of [0, 90, 260]) {
           for (let i = 0; i < 8; i += 1) {
             posed(
               rig,
@@ -201,6 +201,16 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
   // pass by measuring nothing.
   const raised = (): skeleton.Rig => skeleton.raised(skeleton.newRig(RIG), PROBES.restLift);
 
+  // #564's hit-reaction envelope makes `combat_knockback`/`combat_stagger`'s
+  // magnitude depend on a per-slot latch (`action_pose.ts`'s
+  // `hitReactionStates`), keyed by the slot id `appliesFor` mints fresh every
+  // call. A stale latch from one test's slot id could never leak into
+  // another's (`seq` only grows), but reset anyway so this describe block's
+  // behaviour does not depend on that being true forever.
+  beforeEach(() => {
+    actionPose.resetHitReactions();
+  });
+
   function appliesFor(
     rig: skeleton.Rig,
     id: string | undefined,
@@ -219,6 +229,43 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
     return { applies: applies.count, lift };
   }
 
+  // Lands a forced reaction pose (`combat_knockback`/`combat_stagger`)
+  // exactly on its hit-reaction HOLD plateau (elapsed ticks ==
+  // HIT_ATTACK_TICKS + HIT_SETTLE_TICKS, comfortably short of the recovery
+  // tail at HIT_RECOVER_TICKS) instead of a single call's elapsed-ZERO
+  // instant, which is all `appliesFor` above can ever sample for one of
+  // these two pose ids (see `action_pose.ts`'s own latch doc: the FIRST
+  // frame a slot observes a forced window is always elapsed 0, whatever
+  // `forced_ticks` value it is handed). This suite's whole point is a
+  // DETERMINISTIC "this pose id genuinely penetrates" claim, and elapsed 0
+  // is a multiplier of exactly zero -- no tilt, no penetration, no claim
+  // left to test. Reached by threading the SAME slot id through several
+  // consecutive `forced_ticks` values, the exact path `appliesFor` never
+  // exercises, so this is deliberately its own helper rather than a mode of
+  // `appliesFor`.
+  function forcedReactionPoseAtHold(
+    id: "combat_knockback" | "combat_stagger",
+  ): actionPose.MutablePose {
+    seq += 1;
+    const slotId = `c_${String(seq)}`;
+    const opts = { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 } };
+    const holdElapsedTicks = 7; // HIT_ATTACK_TICKS (4) + HIT_SETTLE_TICKS (3)
+    const total = 20; // comfortably past holdElapsedTicks + HIT_RECOVER_TICKS (8)
+    let pose: actionPose.MutablePose | undefined;
+    for (let elapsed = 0; elapsed <= holdElapsedTicks; elapsed += 1) {
+      pose = animator.poseFor(
+        slotId,
+        { speed: 0, gait: 0 },
+        { ...opts, forced_ticks: total - elapsed },
+        elapsed / 60,
+      );
+    }
+    if (pose === undefined) {
+      throw new Error("ground.spec.ts: forcedReactionPoseAtHold produced no pose");
+    }
+    return pose;
+  }
+
   it("evaluates once for an idle character, at every phase of the stride", () => {
     const rig = raised();
     for (let i = 0; i < 24; i += 1) {
@@ -230,7 +277,7 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
 
   it("evaluates once for a walking and a running character", () => {
     const rig = raised();
-    for (const speed of [150, 400]) {
+    for (const speed of [90, 260]) {
       for (let i = 0; i < 24; i += 1) {
         const r = appliesFor(rig, undefined, {}, speed, i / 24);
         expect(r.applies, `speed ${String(speed)} phase ${String(i)}`).toBe(1);
@@ -245,12 +292,21 @@ describe("rig3d/ground: how many times poseAndGround evaluates the skeleton", ()
       ["keeper_dive", 1],
       ["keeper_tip", 1],
       ["contain", 0],
-      ["combat_stagger", 0],
     ] as const) {
       const r = appliesFor(rig, id, { dive }, 0, 0);
       expect(r.applies, `${id} penetrates, so it costs the correction`).toBe(2);
       expect(r.lift, `${id} really is lifted`).toBeGreaterThan(0);
     }
+
+    // `combat_stagger`, landed at its hit-reaction HOLD plateau rather than
+    // through `appliesFor` -- see `forcedReactionPoseAtHold`'s own doc on
+    // why a single fresh-slot call can never sample anything but elapsed 0
+    // (no tilt at all) for a forced reaction pose.
+    const staggerPose = forcedReactionPoseAtHold("combat_stagger");
+    applies.count = 0;
+    const staggerLift = ground.poseAndGround(rig, staggerPose, PROBES);
+    expect(applies.count, "combat_stagger penetrates, so it costs the correction").toBe(2);
+    expect(staggerLift, "combat_stagger really is lifted").toBeGreaterThan(0);
   });
 
   // The other direction, which is what makes the three above non-vacuous: with
