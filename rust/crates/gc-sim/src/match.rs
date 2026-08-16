@@ -5332,7 +5332,17 @@ fn human_outfield_actions(
         owner.pass_charge = 0.0;
         owner.pass_target = None;
     } else if !(input.shoot_held || input.pass_held) {
-        s.players[(owner_idx - 1) as usize].charge = 0.0;
+        let owner = &mut s.players[(owner_idx - 1) as usize];
+        owner.charge = 0.0;
+        // Belt and braces alongside `charge`: `pass_target` is already
+        // cleared above whenever `pass_held` is false, but `pass_charge`
+        // had no neutral-tick reset at all, so any edge that lost its
+        // release (see `combat::prepare_inputs`'s suppression path) left it
+        // latched forever with possession retained. A fully neutral tick —
+        // no press, no hold, on either button — is the one moment with no
+        // charge in flight to protect, so it is always safe to clear here.
+        owner.pass_charge = 0.0;
+        owner.pass_target = None;
     }
 }
 
