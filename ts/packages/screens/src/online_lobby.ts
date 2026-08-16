@@ -22,7 +22,13 @@
 
 import { draw, motion, type GraphicsBackend } from "@gc/ui";
 import { lobby, type LobbyEffect, type LobbyScreenEvent, type LobbyScreenState } from "./lobby.ts";
-import type { LobbyCommand, LobbyModelOptions, LobbyModelPorts, LobbyRole } from "./lobby_model.ts";
+import type {
+  LobbyCommand,
+  LobbyModelOptions,
+  LobbyModelPorts,
+  LobbyRole,
+  SessionMatchMode,
+} from "./lobby_model.ts";
 
 export interface LobbyClipboard {
   read(): string | undefined;
@@ -79,6 +85,17 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly roomSignaling?: RoomSignalingFactory;
   readonly modelPorts: LobbyModelPorts;
   readonly modelOptions?: LobbyModelOptions;
+  /**
+   * Decided on the multiplayer front door and applied here as the lobby's
+   * opening commands, so a player who already chose Host does not choose it
+   * twice. Dispatched rather than baked into `newLobbyModel` so the role's
+   * effects (opening the star, in particular) run through `run()` exactly as
+   * they do when the button is clicked — the model needs no new option, and
+   * the lobby's own role step stays the fallback when nothing was preset.
+   */
+  readonly role?: LobbyRole;
+  /** Host-side only; a guest is told the mode by the host. */
+  readonly mode?: SessionMatchMode;
 }
 
 export type OnlineLobbyAction = { readonly go: string; readonly [key: string]: unknown };
@@ -138,6 +155,14 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     this.starFactory = options.starFactory;
     this.newLink = options.newLink;
     this.roomSignaling = options.roomSignaling;
+    // Last, and only once every field above is set: `dispatch` runs effects,
+    // and `run()` reads `starFactory`/`newLink`/`roomSignaling`.
+    if (options.role !== undefined) {
+      this.dispatch({ kind: "role", role: options.role });
+      if (options.role === "host" && options.mode !== undefined) {
+        this.dispatch({ kind: "mode", mode: options.mode });
+      }
+    }
   }
 
   dispatch(command: LobbyCommand): void {

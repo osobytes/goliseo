@@ -28,7 +28,7 @@ const layout: MatchHudLayout = {
 
 const theme: MatchHudTheme = {
   colors: {
-    void: [0.015, 0.022, 0.055],
+    zenith: [0.01, 0.008, 0.03],
     cyan: [0.25, 0.88, 1.0],
     amber: [1.0, 0.66, 0.24],
     text: [0.91, 0.96, 1.0],

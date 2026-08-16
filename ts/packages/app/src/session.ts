@@ -10,14 +10,12 @@ import {
 } from "./match_contract.ts";
 import type { MatchContractContent, TeamData } from "./content.ts";
 
-export type SetupStep = "squad" | "formation" | "tactic";
-export type ResultAction = "rematch" | "change_plan" | "change_lineup" | "main_menu";
+export type ResultAction = "rematch" | "change_plan" | "main_menu";
 
 export interface GameSession {
   starterIds: string[];
   formationId: string;
   tacticId: string;
-  setupStep: SetupStep;
   lastResult?: ProductMatchResult;
   firstMatch: boolean;
   matchNumber: number;
@@ -29,10 +27,11 @@ function newState(homeTeam: TeamData): GameSession {
     starterIds: [...homeTeam.roster],
     formationId: homeTeam.formation,
     tacticId: "balanced",
-    setupStep: "squad",
     firstMatch: true,
     matchNumber: 0,
-    combatEnabled: false,
+    // Combat ships on. It stopped being a hidden prototype behind a second
+    // Play button and became a visible toggle on the team sheet.
+    combatEnabled: true,
   };
 }
 
@@ -86,13 +85,11 @@ function recordResult(state: GameSession, result: ProductMatchResult): void {
   state.matchNumber += 1;
 }
 
-function routeForResult(action: ResultAction): "match" | "formation" | "squad" | "title" {
+function routeForResult(action: ResultAction): "match" | "team_sheet" | "title" {
   if (action === "rematch") {
     return "match";
   } else if (action === "change_plan") {
-    return "formation";
-  } else if (action === "change_lineup") {
-    return "squad";
+    return "team_sheet";
   }
   return "title";
 }

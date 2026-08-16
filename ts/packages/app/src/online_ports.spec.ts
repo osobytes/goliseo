@@ -118,13 +118,19 @@ describe("online_ports: production App wiring", () => {
     const app = new App(APP_CONTENT, { online: onlinePorts });
     expect(app.currentRoute()).toBe("title");
 
-    clickWidget(app, "online_lobby");
+    // Through the multiplayer front door, which is what the title offers now.
+    clickWidget(app, "multiplayer");
+    expect(app.currentRoute()).toBe("multiplayer");
+    clickWidget(app, "host");
 
     expect(app.currentRoute()).toBe("lobby");
     // A real `LobbyScreenState`, not a stub -- the model actually
-    // constructed, at the "role" phase (neither host nor guest chosen yet).
-    const lobby = app.stack.current() as OnlineLobbyScreen;
-    expect(lobby.state.model.coordinator).toBeUndefined();
+    // constructed, and the front door's Host choice actually applied rather
+    // than dropped on the way through `newLobbyScreen`'s options bag.
+    const lobby = app.stack.current() as OnlineLobbyScreen & {
+      readonly state: { readonly model: { readonly role?: string } };
+    };
+    expect(lobby.state.model.role).toBe("host");
 
     app.event({ kind: "key", key: "escape" });
     expect(app.currentRoute()).toBe("title");
@@ -146,7 +152,8 @@ describe("online_ports: production App wiring", () => {
       return star.initialize().ok ? star : undefined;
     });
     const app = new App(APP_CONTENT, { online: onlinePorts });
-    clickWidget(app, "online_lobby");
+    clickWidget(app, "multiplayer");
+    clickWidget(app, "host");
     expect(() => {
       app.update(1 / 60);
     }).not.toThrow();
