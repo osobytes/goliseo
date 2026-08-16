@@ -19,10 +19,8 @@ import type {
   RenderPort,
   SimHostFactory,
   SimHostPort,
-  SquadContentData,
-  FormationContentData,
-  TacticContentData,
   TacticData,
+  TeamSheetContentData,
 } from "@gc/screens";
 import type { KeyboardState } from "@gc/input";
 import type { MatchContractContent, PlayerData, TeamData } from "../content.ts";
@@ -291,29 +289,20 @@ const SCREENS_NEBULA_PLAYERS: Readonly<Record<string, ScreensPlayerData>> = {
   },
 };
 
-export const SQUAD_CONTENT: SquadContentData = {
+export const TEAM_SHEET_CONTENT: TeamSheetContentData = {
   players: SCREENS_NEBULA_PLAYERS,
   identities: IDENTITIES,
   squadIds: NEBULA.squad ?? NEBULA.roster,
   defaultStarterIds: NEBULA.roster,
-};
-
-export const FORMATION_CONTENT: FormationContentData = {
   formations: FULL_FORMATIONS,
-  players: NEBULA_PLAYERS,
-  identities: IDENTITIES,
-};
-
-export const TACTIC_CONTENT: TacticContentData = {
   tactics: FULL_TACTICS,
+  teamName: NEBULA.name,
 };
 
 export const APP_CONTENT: AppContent = {
   matchContract: MATCH_CONTRACT_CONTENT,
   homeTeam: NEBULA,
-  squad: SQUAD_CONTENT,
-  formation: FORMATION_CONTENT,
-  tactic: TACTIC_CONTENT,
+  teamSheet: TEAM_SHEET_CONTENT,
   buildInfo: { name: "GOLISEO", version: "0.1.0-dev", channel: "development" },
 };
 

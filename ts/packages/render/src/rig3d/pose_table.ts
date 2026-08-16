@@ -449,10 +449,10 @@ export interface LocomotionBlend {
 // Mirrors `view_state.ts`'s own constants. Declared here rather than imported
 // so this module stays free of `view_state.ts`'s mutable module-level `state`
 // map; the two are pinned equal by `pose_table.spec.ts`.
-const WALK_SPEED = 150;
-const RUN_SPEED = 400;
-const WALK_STRIDE = 130;
-const RUN_STRIDE = 285;
+const WALK_SPEED = 90;
+const RUN_SPEED = 260;
+const WALK_STRIDE = 100;
+const RUN_STRIDE = 185;
 
 function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));

@@ -1140,14 +1140,22 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
 
     newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen {
       deps.onLobbyEntry?.();
-      const modelOptions = options as {
+      // `role`/`mode` are the multiplayer front door's decision, not model
+      // options -- `OnlineLobby` applies them as its opening commands. They are
+      // split out here rather than spread into `modelOptions`, where they would
+      // be silently ignored and the player would pick Host twice.
+      const { role, mode, ...modelOptions } = options as {
         readonly template?: (mode: SessionMatchMode) => SessionManifest;
+        readonly role?: LobbyRole;
+        readonly mode?: SessionMatchMode;
       };
       const screen = new OnlineLobby({ w: 960, h: 540 }, onAction, {
-        starFactory: (role: LobbyRole, peerId: string) => deps.starFactory(role, peerId),
+        starFactory: (lobbyRole: LobbyRole, peerId: string) => deps.starFactory(lobbyRole, peerId),
         newLink: (star: StarTransportAdapter) => realLobbyLink(star),
         ...(deps.clipboard !== undefined ? { clipboard: deps.clipboard } : {}),
         ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
+        ...(role !== undefined ? { role } : {}),
+        ...(mode !== undefined ? { mode } : {}),
         modelPorts,
         modelOptions: { seed: Math.floor(Date.now() % 1_000_000), ...modelOptions },
       });

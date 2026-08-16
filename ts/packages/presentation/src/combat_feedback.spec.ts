@@ -121,6 +121,46 @@ describe("combat feedback presentation contract", () => {
     expect(combatFeedback.notice(state, 2)).toBeNull();
   });
 
+  it("holds the camera impulse for a forced hit noticeably longer than an ordinary contact", () => {
+    // Mirrors the module's own private constants (IMPULSE_SECONDS = 0.16,
+    // FORCED_IMPULSE_SECONDS = 0.35) rather than importing them, since
+    // neither is exported -- the contract this test pins is observable
+    // behaviour (how long the camera keeps moving), not the numbers
+    // themselves.
+    const pastShortImpulse = 0.16 + 0.01;
+
+    const forcedState = combatFeedback.new();
+    const forcedLink = combatFeedback.accepted(event("forced"), "impulse/forced");
+    expect(forcedLink.disposition.camera_strength).toBeGreaterThan(0);
+    combatFeedback.confirm(forcedState, forcedLink);
+    combatFeedback.tick(forcedState, pastShortImpulse);
+    const forcedOffset = combatFeedback.cameraOffset(forcedState);
+    expect(
+      Math.abs(forcedOffset.x) > 0 || Math.abs(forcedOffset.y) > 0,
+      "a forced hit's camera impulse must still be decaying past the short impulse's own duration",
+    ).toBe(true);
+
+    const hitState = combatFeedback.new();
+    const hitLink = combatFeedback.accepted(event("contact", "hit"), "impulse/hit");
+    expect(hitLink.disposition.camera_strength).toBeGreaterThan(0);
+    combatFeedback.confirm(hitState, hitLink);
+    combatFeedback.tick(hitState, pastShortImpulse);
+    expect(
+      combatFeedback.cameraOffset(hitState),
+      "an ordinary contact keeps the short impulse and must have finished decaying by now",
+    ).toEqual({ x: 0, y: 0 });
+  });
+
+  it("keeps a guard recoil on the short impulse, not the forced one", () => {
+    const pastShortImpulse = 0.16 + 0.01;
+    const state = combatFeedback.new();
+    const link = combatFeedback.accepted(event("guard_recoil"), "impulse/guard");
+    expect(link.disposition.camera_strength).toBeGreaterThan(0);
+    combatFeedback.confirm(state, link);
+    combatFeedback.tick(state, pastShortImpulse);
+    expect(combatFeedback.cameraOffset(state)).toEqual({ x: 0, y: 0 });
+  });
+
   it("never mutates simulation truth while projecting feedback", () => {
     // See file header: this module's functions never take sim state as an
     // argument, so a structural snapshot substitutes for a hash comparison

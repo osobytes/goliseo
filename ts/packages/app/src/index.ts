@@ -1,4 +1,4 @@
-// App shell: bootstrap, flow, screen stack, settings.
+// App shell: bootstrap, routing, screen stack, settings.
 
 export { App } from "./app.ts";
 export type {
@@ -15,9 +15,6 @@ export type {
 export { bootstrap } from "./bootstrap.ts";
 export type { BootstrapOptions } from "./bootstrap.ts";
 
-export { Flow } from "./flow.ts";
-export type { FlowChoice, FlowContent, MatchScreenFactory } from "./flow.ts";
-
 export { ScreenStack } from "./screen_stack.ts";
 export type { Screen } from "./screen_stack.ts";
 
@@ -25,7 +22,7 @@ export { settings } from "./settings.ts";
 export type { GameSettings, SettingsStorage } from "./settings.ts";
 
 export { session } from "./session.ts";
-export type { GameSession, ResultAction, SetupStep } from "./session.ts";
+export type { GameSession, ResultAction } from "./session.ts";
 
 export { matchContract } from "./match_contract.ts";
 export type {
