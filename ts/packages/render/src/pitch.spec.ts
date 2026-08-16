@@ -1,12 +1,13 @@
 // Tests for pitch.ts's pure path (`pitchDrawCommands`).
 
-import { describe, expect, it, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import * as THREE from "three";
 import {
   pitchDrawCommands,
   playerAnchors,
   pitch,
   depthToZ,
+  resetControlledMarkerPulse,
   BACKDROP_Z,
   ENTITY_Z_NEAR,
   ENTITY_Z_FAR,
@@ -959,12 +960,17 @@ describe("pitch.pitchDrawCommands differential against the real Lua game.render.
     expect(tsReticle.length).toBeGreaterThan(0);
   });
 
-  it("draws the same NUMBER of overlay commands as the Lua capture (pass-target preview + charge meter) -- their POSITIONS are pinned separately by the KNOWN BUG tests further down, since both currently diverge from Lua", () => {
+  it("draws the same NUMBER of overlay commands as the Lua capture (pass-target preview + charge meter), plus the persistent controlled-player marker the Lua reference never had -- their POSITIONS are pinned separately by the KNOWN BUG tests further down, since both currently diverge from Lua", () => {
     const commands = drawWithoutPlayers();
     const luaOverlayCount = LUA_GEOM_RECORDS.length - overlayStart(LUA_GEOM_RECORDS);
     const tsOverlayCount = commands.length - overlayStart(commands);
 
-    expect(tsOverlayCount).toBe(luaOverlayCount);
+    // +2: the controlled-player double ring (`drawControlledMarker`), a
+    // genuinely new feature with no Lua-reference equivalent to diverge
+    // from -- `luaDifferentialFrame()`'s `control.controlled: 1` is a valid
+    // one-based slot (roster index 0, "home-1"), so the marker draws on
+    // every call against this fixture.
+    expect(tsOverlayCount).toBe(luaOverlayCount + 2);
   });
 
   // KNOWN BUG, found by this differential: the original arena renderer's
@@ -1224,6 +1230,112 @@ describe("pitch.ts's pass-target marker has no memory across independent draws",
       ringAtHome1?.kind === "circle" ? ringAtHome1.y : NaN,
       6,
     );
+  });
+});
+
+// PERSISTENT CONTROLLED-PLAYER MARKER (docs/design/broadcast_presentation.md's
+// "double-ringed controlled player", never previously implemented -- see
+// pitch.ts's own CONTROLLED-PLAYER MARKER comment above `drawControlledMarker`).
+// Unlike the pass-target preview above, this marker has no Lua reference to
+// diverge from -- it is a genuinely new feature -- so these tests are pinned
+// against pitch.ts's own behaviour rather than a captured fixture.
+describe("pitch.ts's controlled-player marker", () => {
+  // Mirrors pitch.ts's own (not exported) `CONTROLLED_MARKER_COLOR` -- same
+  // convention as this file's `FLOOR_COLOR`/`RETICLE_COLOR` local mirrors.
+  const CONTROLLED_MARKER_COLOR = [1, 0.92, 0.6] as const;
+
+  function isControlledMarkerRing(c: DrawCommand): boolean {
+    return (
+      c.kind === "circle" && c.mode === "line" && colorCloseTo(c.color, CONTROLLED_MARKER_COLOR)
+    );
+  }
+
+  // The marker's pulse is module-level state (see pitch.ts's own comment on
+  // why) -- reset before every test in this block so none of them depend on
+  // execution order or leak into any other suite in this file.
+  beforeEach(() => {
+    resetControlledMarkerPulse();
+  });
+  afterEach(() => {
+    resetControlledMarkerPulse();
+  });
+
+  it("(a) draws a double ring at the controlled slot's position and nowhere else", () => {
+    const f = frame({
+      players: { ...emptyPlayers(2), x: [100, 700], y: [100, 400] },
+      control: { charge: 0, controlled: 1 }, // one-based: roster index 0 ("home-1")
+    });
+    const commands = pitchDrawCommands(f, viewport, opts, 0);
+    const rings = commands.filter(isControlledMarkerRing);
+    expect(rings).toHaveLength(2); // the double ring
+
+    const anchors = playerAnchors(f, viewport, opts);
+    const anchor0 = anchors.find((a) => a.index === 0);
+    const anchor1 = anchors.find((a) => a.index === 1);
+    if (anchor0 === undefined || anchor1 === undefined) {
+      throw new Error("expected anchors for both roster slots");
+    }
+    // home-1 (100, 100) and away-1 (700, 400) project to clearly distinct
+    // screen points at this viewport -- a real position check, not sub-pixel
+    // noise (same margin the pass-target "no memory" test above uses).
+    expect(Math.hypot(anchor0.sx - anchor1.sx, anchor0.sy - anchor1.sy)).toBeGreaterThan(50);
+
+    for (const ring of rings) {
+      if (ring.kind !== "circle") {
+        throw new Error("expected a circle command");
+      }
+      expect(ring.x).toBeCloseTo(anchor0.sx, 6);
+      expect(ring.y).toBeCloseTo(anchor0.sy, 6);
+      expect(Math.hypot(ring.x - anchor1.sx, ring.y - anchor1.sy)).toBeGreaterThan(50);
+    }
+  });
+
+  it("(a) draws nothing when the controlled slot is out of range (e.g. the test-fixture default of 0, an invalid one-based slot)", () => {
+    const f = frame({ control: { charge: 0, controlled: 0 } });
+    const commands = pitchDrawCommands(f, viewport, opts, 0);
+    expect(commands.some(isControlledMarkerRing)).toBe(false);
+  });
+
+  it("(b) persists when no charge is active, unlike the charge meter it sits near", () => {
+    const f = frame({ control: { charge: 0, controlled: 1 } }); // no charge_kind at all
+    const commands = pitchDrawCommands(f, viewport, opts, 0);
+
+    expect(commands.some(isControlledMarkerRing)).toBe(true);
+    const hasChargeMeter = commands.some(
+      (c) =>
+        c.kind === "rect" &&
+        c.mode === "fill" &&
+        (colorCloseTo(c.color, [1, 0.72, 0.3]) || colorCloseTo(c.color, [0.45, 0.85, 1])),
+    );
+    expect(hasChargeMeter).toBe(false);
+  });
+
+  it("(c) activates a brief pulse on a controlled-index change and decays back to the steady-state ring", () => {
+    const innerRingR = (commands: readonly DrawCommand[]): number => {
+      const ring = commands.find(isControlledMarkerRing);
+      if (ring === undefined || ring.kind !== "circle") {
+        throw new Error("expected a controlled-marker ring");
+      }
+      return ring.r;
+    };
+
+    // Both roster slots sit at the SAME world position in the default
+    // fixture (`emptyPlayers`), so the projected `scale` is identical across
+    // the switch below -- radius differences below are the pulse, not a
+    // change in the player's own screen depth.
+    const f1 = frame({ control: { charge: 0, controlled: 1 } }); // index 0
+    const atSwitch = innerRingR(pitchDrawCommands(f1, viewport, opts, 0));
+    const afterDecay = innerRingR(pitchDrawCommands(f1, viewport, opts, 1.0)); // >> 0.3s later, same index
+    expect(atSwitch).toBeGreaterThan(afterDecay);
+
+    const f2 = frame({ control: { charge: 0, controlled: 2 } }); // switch to index 1
+    const atNewSwitch = innerRingR(pitchDrawCommands(f2, viewport, opts, 1.0));
+    expect(atNewSwitch).toBeGreaterThan(afterDecay);
+
+    const afterNewDecay = innerRingR(pitchDrawCommands(f2, viewport, opts, 1.3)); // +0.3s
+    expect(atNewSwitch).toBeGreaterThan(afterNewDecay);
+    // Decays back to the SAME steady-state radius, not a new baseline.
+    expect(afterNewDecay).toBeCloseTo(afterDecay, 6);
   });
 });
 
