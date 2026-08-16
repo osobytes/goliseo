@@ -7,7 +7,7 @@
 // Boundary notes (ARCHITECTURE.md §4 rule 6 and this package's package.json):
 //   - `ArenaData` comes from Rust `crates/gc-data`. Only the three color
 //     fields this module reads are declared locally.
-//   - `theme.colors.void`/`theme.colors.text` would be `@gc/ui`, but
+//   - `theme.colors.zenith`/`theme.colors.text` would be `@gc/ui`, but
 //     `@gc/render`'s package.json does not depend on `@gc/ui` (only
 //     `@gc/core`/`@gc/presentation`/`three`), so the two colors this module
 //     needs are threaded through as an explicit parameter instead, the same
@@ -25,7 +25,7 @@ export interface ArenaColors {
 
 /** The slice of `theme.colors` this module reads. */
 export interface ArenaThemeColors {
-  readonly void: RGB;
+  readonly zenith: RGB;
   readonly text: RGB;
 }
 
@@ -69,7 +69,7 @@ export function backdropCommands(
 ): DrawCommand[] {
   const dl = new DrawList();
 
-  dl.rect("fill", 0, 0, viewport.w, viewport.h, theme.void);
+  dl.rect("fill", 0, 0, viewport.w, viewport.h, theme.zenith);
 
   for (const star of STARS) {
     dl.circle("fill", viewport.w * star[0], viewport.h * star[1], star[2], theme.text, {

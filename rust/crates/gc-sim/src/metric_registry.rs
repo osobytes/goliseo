@@ -194,6 +194,14 @@ pub fn assemble() -> MetricRegistry {
                 def: def("pass_lead_time"),
                 extract: |m| m.pass_lead_time,
             },
+            // #489, appended last matching `gc_data::tunables::METRICS`'s
+            // authored order. `None` when the match attempted no standing-poke
+            // tackle at all (the fold skips it rather than scoring a perfect
+            // or catastrophic value nobody observed).
+            Metric {
+                def: def("whiff_rate"),
+                extract: |m| m.whiff_rate,
+            },
         ],
     );
     b.build()

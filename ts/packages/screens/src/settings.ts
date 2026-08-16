@@ -28,6 +28,7 @@ export interface SettingsScreenState {
 
 export type SettingsAction =
   | { readonly go: "back"; readonly settings: GameSettings }
+  | { readonly go: "credits" }
   | { readonly go: "settings_changed"; readonly settings: GameSettings };
 
 type AdjustableKey =
@@ -95,6 +96,14 @@ function layout(state: SettingsScreenState): Layout {
       rect: { x: 300, y: 120 + i * 48, w: 360, h: 38 },
     });
   });
+  // Build info and attribution live here now, not on the front door.
+  widgets.push({
+    id: "credits",
+    kind: "button",
+    text: "ABOUT & CREDITS",
+    focused: state.focus === "credits",
+    rect: { x: 300, y: 120 + values.length * 48, w: 360, h: 38 },
+  });
   widgets.push({
     id: "back",
     kind: "button",
@@ -137,6 +146,8 @@ function update(
   const id = focus.activated(currentLayout, next.focus, event);
   if (id === "back") {
     return [next, { go: "back", settings: next.settings }];
+  } else if (id === "credits") {
+    return [{ ...next, focus: id }, { go: "credits" }];
   } else if (id !== null) {
     // `adjust` is called (and no-ops) even for an activated id that is not
     // one of the six adjustable rows — none exist in this screen's layout

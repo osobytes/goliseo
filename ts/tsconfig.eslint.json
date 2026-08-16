@@ -1,12 +1,12 @@
 {
   // The TypeScript project the linter uses for the handful of files that
   // `tsc --build` never sees: ts/vite.config.ts, ts/vitest.config.ts,
-  // packages/wasm/scripts/*.mjs, this tree's eslint.config.mjs, and
-  // tools/lint/tseslint.mjs. None of them are under any package's
-  // `rootDir: "src"`, so without this they would either be skipped entirely or
-  // linted with type-aware rules silently switched off -- and packages/wasm's
-  // build scripts are exactly the shape (`await`-heavy Node scripts) that
-  // no-floating-promises exists for.
+  // packages/wasm/scripts/*.mjs, ts/scripts/generate_third_party_notices.ts,
+  // this tree's eslint.config.mjs, and tools/lint/tseslint.mjs. None of them
+  // are under any package's `rootDir: "src"`, so without this they would
+  // either be skipped entirely or linted with type-aware rules silently
+  // switched off -- and packages/wasm's build scripts are exactly the shape
+  // (`await`-heavy Node scripts) that no-floating-promises exists for.
   //
   // It matches NO files of its own, deliberately: typescript-eslint's project
   // service only routes a file here when `allowDefaultProject` in

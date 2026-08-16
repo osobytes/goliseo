@@ -281,10 +281,15 @@ const DEFAULT_ARENA: ArenaColors = {
   highlight_color: [1.0, 0.66, 0.24],
 };
 
-// Mirrors `@gc/ui`'s `theme.colors.void`/`text`. See `arena.ts`'s
-// header note on why `@gc/ui` cannot be imported here.
+// These were `@gc/ui`'s `theme.colors.void`/`text` when the Lua differential
+// capture was taken, and pitch.spec.ts compares this module's draw commands
+// against that frozen capture — so these two values are pinned to it, not to
+// the live theme. The menu palette has since moved to the arena colours
+// (`@gc/ui`'s theme.ts) and `void` was renamed `zenith`; the name follows,
+// the numbers deliberately do not. See `arena.ts`'s header note on why
+// `@gc/ui` cannot be imported here.
 const DEFAULT_UI_THEME: ArenaThemeColors = {
-  void: [0.015, 0.022, 0.055],
+  zenith: [0.015, 0.022, 0.055],
   text: [0.91, 0.96, 1.0],
 };
 

@@ -121,6 +121,36 @@ host_tracks_guest_mismatches={}|guest_tracks_host_mismatches={}",
 
 const FIXTURE: &str = include_str!("fixtures/coordinator_desync_lua_reference.txt");
 
+/// The `transcript_id=...` line's zero-based index in [`FIXTURE`] (and in
+/// this test's own `log`) — the one line asserted against
+/// [`TRANSCRIPT_ID_BASELINE`] instead of the frozen fixture. See that
+/// constant's doc comment for why.
+const TRANSCRIPT_ID_LINE: usize = 13;
+
+/// `session.transcript_id()` for this test's desync scenario, recorded from
+/// THIS build rather than read off [`FIXTURE`].
+///
+/// Self-recorded, NOT the retired Lua value — this is the same
+/// schema-coupled situation `tools/lua_reference/README.md`'s third axis
+/// documents (see the note on `coordinator_conformance::Golden` in
+/// `gc-netcode/src/coordinator_conformance.rs`, retired for the identical
+/// reason in the same PR): `protocol::validate_manifest` embeds
+/// `match_snapshot::COMBAT_VERSION` in every manifest, #489 bumps that
+/// constant 13 -> 14, and `transcript_id` digests the full wire bytes of
+/// every message including the manifest. No other line in [`FIXTURE`]
+/// depends on a version word — `message_count` counts messages regardless of
+/// their content, and every phase/terminal/mismatch-counter line records
+/// reducer *decisions*, not wire bytes — so only this one line is retired;
+/// the fixture file itself, and every other line's comparison against it,
+/// are unmodified and still gate.
+///
+/// Re-recorded by reading this assertion's own failure output — a single
+/// value, so no separate `#[ignore]`d recorder is warranted (same reasoning
+/// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
+/// when a deliberate, reviewed wire-schema change moves it — never to clear
+/// a check that surprised you.
+const TRANSCRIPT_ID_BASELINE: &str = "transcript_id=a44ebac2fc25d349";
+
 #[test]
 fn coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths() {
     let reference: Vec<&str> = FIXTURE.lines().collect();
@@ -241,6 +271,15 @@ fn coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths()
         "reference/port line count differs:\n{log:#?}\nvs\n{reference:#?}"
     );
     for (index, (ours, theirs)) in log.iter().zip(reference.iter()).enumerate() {
+        if index == TRANSCRIPT_ID_LINE {
+            // #489: schema-coupled, retired to a Rust-recorded baseline.
+            // See `TRANSCRIPT_ID_BASELINE`'s doc comment.
+            assert_eq!(
+                ours, TRANSCRIPT_ID_BASELINE,
+                "transcript_id no longer matches its Rust-recorded baseline"
+            );
+            continue;
+        }
         assert_eq!(ours, theirs, "line {index} diverges from the Lua reference");
     }
 }

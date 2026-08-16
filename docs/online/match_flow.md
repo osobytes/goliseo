@@ -343,9 +343,10 @@ coordinator.
 
 ### Routing out
 
-- **completed** goes to the product result screen on its own `online_result`
-  route, so the offline rematch — which replays the local session — cannot be
-  reached from a session that no longer exists;
+- **completed** goes to the product result screen on the shared `result` route,
+  flagged as online, so the offline rematch — which replays a local session an
+  online match does not have — is not offered. (This was a second route,
+  `online_result`, until #562 collapsed it into a context flag on one screen.)
 - **rematch** opens a *fresh lobby*. The manifest is immutable per session and
   the freeze is spent, so the honest rematch is a new session rather than a
   silent reuse of an incompatible manifest;

@@ -11,11 +11,11 @@ const colors: ArenaColors = {
   rail_color: [0.25, 0.88, 1.0],
   highlight_color: [1.0, 0.66, 0.24],
 };
-const theme: ArenaThemeColors = { void: [0.015, 0.022, 0.055], text: [0.91, 0.96, 1.0] };
+const theme: ArenaThemeColors = { zenith: [0.01, 0.008, 0.03], text: [0.91, 0.96, 1.0] };
 const viewport = { w: 1280, h: 720 };
 
 describe("arena.backdropCommands", () => {
-  it("fills the whole viewport with the void colour first", () => {
+  it("fills the whole viewport with the zenith colour first", () => {
     const commands = backdropCommands(colors, viewport, theme);
     const first = commands[0];
     if (first === undefined || first.kind !== "rect") {
@@ -24,7 +24,7 @@ describe("arena.backdropCommands", () => {
     expect(first.mode).toBe("fill");
     expect(first.w).toBe(viewport.w);
     expect(first.h).toBe(viewport.h);
-    expect(first.color).toEqual(theme.void);
+    expect(first.color).toEqual(theme.zenith);
   });
 
   it("draws exactly twelve stars, matching the fixed constellation", () => {

@@ -61,4 +61,54 @@ describe("product result screen", () => {
     expect(text).toMatch(/SHOTS\s+0/);
     expect(text).toContain("0%");
   });
+
+  // One screen, two contexts. This replaced a second route (`online_result`)
+  // that existed only to make one button unreachable.
+  it("offers an offline rematch and a route back into the pre-match screen", () => {
+    const layout = result.layout(result.newState(VP, CONTENT, { result: makeResult(3, 2) }));
+    expect(hit.find(layout, "rematch")).not.toBeNull();
+    expect(hit.find(layout, "change_plan")).not.toBeNull();
+    expect(hit.find(layout, "main_menu")).not.toBeNull();
+    expect(hit.find(layout, "back_to_lobby"), "offline has no lobby to return to").toBeNull();
+  });
+
+  it("swaps that route for the lobby when the session was online", () => {
+    const layout = result.layout(
+      result.newState(VP, CONTENT, { result: makeResult(3, 2), online: true }),
+    );
+    expect(hit.find(layout, "back_to_lobby")).not.toBeNull();
+    expect(
+      hit.find(layout, "change_plan"),
+      "an online session has no local pre-match state to change",
+    ).toBeNull();
+    expect(hit.find(layout, "rematch")).not.toBeNull();
+  });
+
+  it("emits whichever action was actually offered", () => {
+    const online = result.newState(VP, CONTENT, { result: makeResult(1, 1), online: true });
+    const target = hit.find(result.layout(online), "back_to_lobby")?.rect;
+    expect(target).toBeDefined();
+    const [, action] = result.update(online, {
+      kind: "click",
+      x: (target?.x ?? 0) + (target?.w ?? 0) / 2,
+      y: (target?.y ?? 0) + (target?.h ?? 0) / 2,
+      button: 1,
+    });
+    expect(action?.go).toBe("back_to_lobby");
+  });
+
+  it("keeps every footer button inside the virtual canvas in both contexts", () => {
+    for (const online of [false, true]) {
+      const layout = result.layout(
+        result.newState(VP, CONTENT, { result: makeResult(1, 0), online }),
+      );
+      for (const widget of layout) {
+        const rect = widget.rect;
+        expect(rect, `widget ${widget.id} has no rect`).toBeDefined();
+        expect(rect?.x ?? -1).toBeGreaterThanOrEqual(0);
+        expect((rect?.x ?? 0) + (rect?.w ?? 0)).toBeLessThanOrEqual(VP.w);
+        expect((rect?.y ?? 0) + (rect?.h ?? 0)).toBeLessThanOrEqual(VP.h);
+      }
+    }
+  });
 });

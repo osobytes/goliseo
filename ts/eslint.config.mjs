@@ -53,9 +53,9 @@ export default tseslint.config(
         // file to the tsconfig that actually owns it, which is what makes the
         // ten package projects work without restating them here.
         projectService: {
-          // The six files no package's `rootDir: "src"` covers. They are
+          // The seven files no package's `rootDir: "src"` covers. They are
           // routed to tsconfig.eslint.json (whose `include` is empty, as the
-          // project service requires). Adding a seventh tooling file to the
+          // project service requires). Adding an eighth tooling file to the
           // tree fails LOUDLY here rather than silently dropping its type
           // information.
           allowDefaultProject: [
@@ -65,6 +65,7 @@ export default tseslint.config(
             "tools/lint/tseslint.mjs",
             "packages/wasm/scripts/build.mjs",
             "packages/wasm/scripts/build_web.mjs",
+            "scripts/generate_third_party_notices.ts",
           ],
           defaultProject: "tsconfig.eslint.json",
         },

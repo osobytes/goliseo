@@ -50,6 +50,9 @@ importers:
       '@gc/screens':
         specifier: workspace:*
         version: link:../screens
+      '@gc/transport':
+        specifier: workspace:*
+        version: link:../transport
       '@gc/ui':
         specifier: workspace:*
         version: link:../ui

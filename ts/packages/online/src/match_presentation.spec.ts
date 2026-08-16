@@ -502,8 +502,23 @@ describe("online match presentation (real wasm bridges, no combat-phase fixture 
 // ids/snapshots/JSON, exactly like every other wasm-bridge call in this
 // file.
 //
-// `PHASE_DELIVER_PERIOD` is 12: long enough to force a real correction,
-// short enough to stay inside the ~30-tick unconfirmed window.
+// `PHASE_DELIVER_PERIOD` was 12 -- long enough to force a real correction,
+// short enough to stay inside the ~30-tick unconfirmed window -- until #489
+// moved it to 14, same reasoning as `PHASE_STEPS`'s note just below: a
+// run-length/timing adjustment, not a weakened assertion. #489's charge-based
+// standing-poke tackle changes what a defending AI does near a crowded
+// scrum -- exactly the "contact" scenario "never publishes a combat cue a
+// correction took away" is built around -- and at 12 the scrum stopped
+// producing ANY revoked combat cue at all, confirmed not a run-length issue
+// first (retried at up to 2000 steps, ~4x `PHASE_STEPS`'s own precedent,
+// still zero). The working value is narrow: 13, 16, 17 and 18 all
+// reproducibly fail again and only 14 passed cleanly (5/5) both alone and
+// across three full `pnpm exec vitest run` passes -- run the whole suite,
+// not just this file, before trusting a candidate value, since an earlier
+// choice (15) looked stable in isolation and then failed once other spec
+// files ran first in the same process. 14 stays comfortably inside the
+// same ~30-tick window the original comment names, and every other phase
+// in this describe block still passes there.
 //
 // `PHASE_STEPS` needed more thought: 240 steps was the working assumption
 // for every phase, on the theory that it reliably produces at least one
@@ -534,7 +549,7 @@ const PHASE_IDS = [
 ] as const;
 type PhaseId = (typeof PHASE_IDS)[number];
 
-const PHASE_DELIVER_PERIOD = 12;
+const PHASE_DELIVER_PERIOD = 14;
 const PHASE_STEPS = 480;
 
 // Bursts delivery while scripting the phase's live input, and -- inside

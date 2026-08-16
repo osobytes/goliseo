@@ -79,7 +79,7 @@ export interface MatchHudLayout {
 /** The slice of `@gc/ui`'s theme this module reads. */
 export interface MatchHudTheme {
   readonly colors: {
-    readonly void: RGB;
+    readonly zenith: RGB;
     readonly cyan: RGB;
     readonly amber: RGB;
     readonly text: RGB;
@@ -156,7 +156,7 @@ function stamina(
   const y = rect.y + 46 * scale;
   const w = rect.w - 78 * scale;
   const h = Math.max(6, 7 * scale);
-  dl.rect("fill", x, y, w, h, theme.colors.void, { alpha: 0.9 });
+  dl.rect("fill", x, y, w, h, theme.colors.zenith, { alpha: 0.9 });
   dl.rect("fill", x, y, w * amount, h, amount <= 0.2 ? theme.colors.amber : theme.colors.cyan, {
     alpha: 0.95,
   });
@@ -417,7 +417,7 @@ export function matchHudCommands(
 
   if (model.announcement_title !== undefined) {
     if (model.announcement_kind === "full_time") {
-      dl.rect("fill", 0, 0, viewport.w, viewport.h, C.void, { alpha: 0.78 });
+      dl.rect("fill", 0, 0, viewport.w, viewport.h, C.zenith, { alpha: 0.78 });
     }
     const highlight = model.announcement_kind === "replay" ? C.cyan : C.amber;
     panel(dl, layout.announcement, theme, C.panel_raised, highlight, 0.96);

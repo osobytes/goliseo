@@ -98,11 +98,27 @@ const POST_TICKS: i64 = 30;
 
 /// Confirms the checked-in rollback fixture that backs the rest of the
 /// nine-scenario matrix cannot measure this metric -- the claim this file's
-/// module doc makes. Discriminating: this must FAIL the moment
-/// `determinism_evidence::fixture_tape` (or the bot fill behind it) starts
-/// exercising a deliberate pass, which is exactly the day this file's
-/// hand-scripted tape stops being the only option and its module doc goes
-/// stale.
+/// module doc makes, scoped to the OUTFIELD soft cone `select_pass_target`
+/// this file exists to measure (a keeper's own throw/punt targeting is a
+/// separate code path with a separate `pass_target` write, and briefly
+/// arming it is not the "deliberate outfield pass" this discriminating
+/// check means to catch -- see the #489 note below). Discriminating: this
+/// must FAIL the moment `determinism_evidence::fixture_tape` (or the bot
+/// fill behind it) starts exercising a deliberate OUTFIELD pass, which is
+/// exactly the day this file's hand-scripted tape stops being the only
+/// option and its module doc goes stale.
+///
+/// #489 update: this fixture's keeper (`ozzo`) now briefly holds
+/// `pass_target` for four ticks near full time (6964-6967) that it did not
+/// before -- the standing-poke tackle's charge/execute/recover timing
+/// (`gc_sim::action_slot`) shifts exactly when a scramble near full time
+/// resolves, and the keeper ends up gathering and charging a distribution
+/// a few ticks earlier or later than the pre-#489 trajectory. Confirmed by
+/// direct inspection (the player id and `is_keeper: true`) rather than
+/// assumed. No OUTFIELD player's `pass_target` arms anywhere in the tape,
+/// so the claim this test exists to prove is unmoved; the check below is
+/// narrowed to outfielders to say so precisely instead of masking a keeper
+/// false-positive with a broader exclusion.
 #[test]
 fn the_existing_bot_driven_fixture_never_exercises_the_soft_cone() {
     let tune = Tuning::new();
@@ -117,16 +133,20 @@ fn the_existing_bot_driven_fixture_never_exercises_the_soft_cone() {
             combat.as_mut(),
             &tune,
         );
-        if state.players.iter().any(|p| p.pass_target.is_some()) {
+        if state
+            .players
+            .iter()
+            .any(|p| !p.is_keeper && p.pass_target.is_some())
+        {
             any_preview = true;
             break;
         }
     }
     assert!(
         !any_preview,
-        "the checked-in bot-driven fixture now exercises pass_target -- this file's \
-         hand-scripted tape may no longer be the only fixture that can measure preview \
-         accuracy; update the module doc accordingly"
+        "the checked-in bot-driven fixture now exercises an OUTFIELD pass_target -- this \
+         file's hand-scripted tape may no longer be the only fixture that can measure \
+         preview accuracy; update the module doc accordingly"
     );
 }
 

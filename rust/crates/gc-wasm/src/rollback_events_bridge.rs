@@ -447,13 +447,14 @@ fn match_event_kind_from_wire(text: &str) -> Result<MatchEventKind, String> {
         CombatCommitLooseBallContest, CombatCommitPassingLaneOrShotDenial,
         CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, Header, Juke, Parry, Pass,
         PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall, PressCommitHeavyTouch,
-        PressCommitLowDiscipline, Reception, Shot, Tackle, Tip, Touch, Volley,
+        PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip, Touch, Volley,
     };
     Ok(match text {
         "shot" => Shot,
         "pass" => Pass,
         "touch" => Touch,
         "tackle" => Tackle,
+        "tackle_miss" => TackleMiss,
         "press_commit_heavy_touch" => PressCommitHeavyTouch,
         "press_commit_exposed_ball" => PressCommitExposedBall,
         "press_commit_cover" => PressCommitCover,

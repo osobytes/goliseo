@@ -31,6 +31,40 @@
 // genuinely reads their fields to build its view -- the same choice
 // `match_presentation.ts` makes for `RollbackConfirmedStateView` versus the
 // truly-opaque `MatchSnapshot`.
+//
+// # Room-code signaling (#552)
+//
+// The manual flow above (`invite`/`copy`/`paste_request`/`paste`) still
+// carries every WebRTC offer/answer blob -- room codes are a SECOND way for
+// that same blob to travel between two peers, not a replacement mechanism.
+// `@gc/online`'s `room_signaling.ts` owns the pure wire protocol against
+// the room-code Worker (`infra/src/room_durable_object.ts`'s module doc is
+// the source of truth for it); `@gc/screens` cannot depend on `@gc/online`
+// (ARCHITECTURE.md §2), so the room-code effects below (`room_open_host`,
+// `room_open_guest`, `room_send`, `room_close`) and the events fed back in
+// (`room_created`, `room_joined`, `room_guest_joined`, `room_guest_left`,
+// `room_peer_signal`, `room_failed`, `room_dropped`) are this module's own
+// structurally-typed seam, executed by `online_lobby.ts`'s impure
+// `roomSignaling` port -- the same injected-port pattern `open_star`/
+// `LobbyLinkInstance` already establish for the star transport.
+//
+// Once a room-code connection is active (`model.room_active`), `onSignal`
+// sends a local offer/answer blob over it automatically instead of waiting
+// for a `copy` command, and `room_peer_signal` feeds an incoming blob
+// straight into `importSignal` instead of waiting for `paste_request` --
+// the whole point of a room code is that a player never clicks "copy" or
+// "paste". The manual flow is untouched: `model.room_active` starts and
+// stays `false` unless a room-code path was chosen, so nothing here changes
+// behavior for it.
+//
+// A host's room-code guest connection ids (issued by the Durable Object,
+// `crypto.randomUUID()`) are a different identifier space from this
+// module's own link ids (`guest_N`, chosen by `invite()`). `model.room_guest_map`
+// records the 1:1 mapping this module assigns at invite time (host-only);
+// `model.room_queue` holds guest ids still waiting their turn, because
+// `invite()` only ever has one invitation in flight
+// (`model.pending_link`) -- exactly the constraint the manual flow already
+// enforces, room codes do not relax it.
 
 export type LobbyRole = "host" | "guest";
 export type LobbySignalDirection = "offer" | "answer";
@@ -75,7 +109,12 @@ export type LobbyEffect =
   | { readonly kind: "paste_request" }
   | { readonly kind: "start_match"; readonly freeze: unknown }
   | { readonly kind: "shutdown" }
-  | { readonly kind: "leave" };
+  | { readonly kind: "leave" }
+  // Room-code signaling (#552) -- see this module's header.
+  | { readonly kind: "room_open_host" }
+  | { readonly kind: "room_open_guest"; readonly code: string }
+  | { readonly kind: "room_send"; readonly to?: string; readonly signal: string }
+  | { readonly kind: "room_close" };
 
 // --- game.online.protocol / protocol_fixture / coordinator, injected -------
 
@@ -325,7 +364,61 @@ export interface LobbyModel {
   /** A synchronized start action has been observed. */
   readonly started: boolean;
   readonly template: (mode: SessionMatchMode) => SessionManifest;
+
+  // --- Room-code signaling (#552) -- see this module's header. ---------
+
+  /** The composer for a guest's not-yet-submitted code, present only while
+   * choosing "join with a room code" and before the room-code connection
+   * has been requested. */
+  readonly room_entry?: RoomCodeEntry;
+  /** Set once the room-code Worker confirms this room (host: `created`;
+   * guest: `joined`). */
+  readonly room_code?: string;
+  readonly room_status?: RoomSignalingStatus;
+  /** Why the room-code connection failed, when `room_status === "failed"`.
+   * A SEPARATE field from `model.error` on purpose: `command()`'s own top
+   * strips `error` on every dispatch, including the automatic `tick` this
+   * screen's owner fires every frame (`online_lobby.ts`'s `update()`), so a
+   * failure surfaced only through `error` would be visible for under one
+   * frame before its own trailing tick erased it. `room_error` persists
+   * until the next room-code attempt starts or the failure is left behind
+   * (`roomPick`/`roomCreated`/`roomJoined`/`roomCancel`/`leave` all clear
+   * it); `layout()` reads it as a fallback once `error` itself is gone. */
+  readonly room_error?: string;
+  /** A room-code connection is in progress or established -- gates the
+   * auto-send/auto-import behavior described in this module's header.
+   * `false` for the entire manual-signaling flow. */
+  readonly room_active: boolean;
+  /** Host-only: room-code guest id -> this module's own link id
+   * (`guest_N`), assigned at invite time. */
+  readonly room_guest_map: Readonly<Record<string, string>>;
+  /** Host-only: room-code guest ids still waiting their turn to be invited,
+   * in arrival order. */
+  readonly room_queue: readonly string[];
 }
+
+/** A guest's in-progress room-code composer: `ROOM_CODE_LENGTH` character
+ * slots (empty string until typed) plus the cursor position being edited.
+ * Keyboard input types a character and advances the cursor; a controller
+ * cycles the character at the cursor (up/down) and moves it (left/right) --
+ * `lobby.ts`'s `update()` is where both are wired. */
+export interface RoomCodeEntry {
+  readonly chars: readonly string[];
+  readonly cursor: number;
+}
+
+export type RoomSignalingStatus = "connecting" | "connected" | "failed";
+
+// Mirrors `infra/src/room_code.ts`'s own alphabet and length exactly --
+// see `@gc/online`'s `room_signaling.ts` for the identical, independently
+// disclosed duplication on the wire-protocol side. `infra/` must stay
+// outside the game's dependency graph (AGENTS.md §8/§11) and `@gc/screens`
+// must stay outside `@gc/online`'s (this module's header), so the same
+// constant is duplicated a second time here, for the code composer's
+// character-cycling UI alone -- if the Worker's alphabet or length ever
+// changes, this needs a matching update too.
+export const ROOM_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+export const ROOM_CODE_LENGTH = 6;
 
 export const DEFAULT_MODE: SessionMatchMode = "4v4";
 export const COUNTDOWN_ID = "countdown.1";
@@ -393,6 +486,40 @@ export const PREFERENCE_TEXT: Readonly<Record<string, string>> = {
   reseated: "Ownership changed and your pair had to be seated again. Ask again.",
 };
 
+// Plain-language equivalents of a room-code signaling failure -- the raw
+// tokens `room_signaling_port.ts` (`@gc/app`) reports, either its own
+// classification (`handshake_failed`, `malformed_frame`, `connection_lost`)
+// or the room-code Worker's own error code, forwarded verbatim
+// (`infra/src/room_durable_object.ts`'s `{type:"error", error}` frame /
+// `infra/src/room_state.ts`'s own error strings). A browser `WebSocket`
+// cannot read the HTTP status of a failed upgrade (`room_signaling.ts`'s
+// own header), so a bad code, an expired room, a full room, and a rate
+// limit are indistinguishable there and all collapse to
+// `handshake_failed` -- `room_not_open`/`room_expired`/`room_full`/... are
+// listed anyway, defensively, for the in-band `{type:"error"}` frame a
+// live connection can still receive after connecting (e.g. the room
+// closing out from under it). Unmapped tokens fall back to the raw token
+// itself (mirrors `PREFERENCE_TEXT`'s own `?? key` fallback), never thrown.
+export const ROOM_FAILURE_TEXT: Readonly<Record<string, string>> = {
+  handshake_failed: "Could not reach the room service. Check the code, or try again.",
+  malformed_frame: "The room service sent something this game could not read. Try again.",
+  connection_lost: "The connection to the room service was lost.",
+  protocol_error: "The room service reported an unexpected problem.",
+  room_not_open: "That code is not an open room.",
+  room_closed: "That room has closed.",
+  room_expired: "That code has expired.",
+  already_joined: "You are already connected to that room.",
+  room_full: "That room is full.",
+  host_already_claimed: "That room already has a host.",
+  message_too_large: "That message was too large to send.",
+  missing_target: "The room service could not tell who that message was for.",
+  unknown_target: "That peer is no longer in the room.",
+  no_host: "The host is no longer connected.",
+  unknown_sender: "The room service did not recognize the sender.",
+  invalid_envelope: "The room service could not read that message.",
+  binary_not_supported: "The room service does not support that message type.",
+};
+
 function defaultTemplate(ports: LobbyModelPorts): (mode: SessionMatchMode) => SessionManifest {
   return (mode) => ports.protocolFixture.manifest(mode);
 }
@@ -456,6 +583,9 @@ export function newLobbyModel(ports: LobbyModelPorts, options?: LobbyModelOption
     status: "Host a session or join one with a pasted offer.",
     started: false,
     template,
+    room_active: false,
+    room_guest_map: {},
+    room_queue: [],
   };
 }
 
@@ -967,13 +1097,17 @@ function leave(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]
   // deliberately left open here: the owning screen tears it down once the
   // notice has had its chance to leave. Shutting down now would drop it.
   effects.push({ kind: "leave" });
-  return next;
+  if (next.room_active) {
+    effects.push({ kind: "room_close" });
+  }
+  return { ...next, room_active: false };
 }
 
 function onSignal(
   model: LobbyModel,
   ports: LobbyModelPorts,
   command: { readonly peer_id: string; readonly signal: string },
+  effects: LobbyEffect[],
 ): LobbyModel {
   const direction: LobbySignalDirection = model.role === "host" ? "offer" : "answer";
   const exported: LobbySignalRecord = {
@@ -982,7 +1116,7 @@ function onSignal(
     bytes: command.signal.length,
     fingerprint: fingerprint(ports, command.signal),
   };
-  return {
+  const next: LobbyModel = {
     ...model,
     outgoing: command.signal,
     exported,
@@ -990,6 +1124,51 @@ function onSignal(
       direction === "offer"
         ? "Offer ready. Copy it to your peer."
         : "Answer ready. Copy it back to the host.",
+  };
+  // Room-code mode (#552): the blob travels over the room-code relay the
+  // instant it exists, with no "copy" click -- see this module's header.
+  // The manual flow is untouched (`room_active` stays false for it).
+  if (!next.room_active) {
+    return next;
+  }
+  const to = next.role === "host" ? next.room_guest_map[command.peer_id] : undefined;
+  if (next.role === "host" && to === undefined) {
+    // Defensive: no room-code guest is mapped to this link (should not
+    // happen -- every host-side link this module opens for a room-code
+    // guest is mapped at invite time). Fall back to the manual "outgoing"
+    // state above rather than silently dropping the blob.
+    return next;
+  }
+  effects.push({ kind: "room_send", ...(to !== undefined ? { to } : {}), signal: command.signal });
+  const { outgoing: _outgoing, ...rest } = next;
+  return {
+    ...rest,
+    status: direction === "offer" ? "Offer sent automatically." : "Answer sent automatically.",
+  };
+}
+
+function drainRoomQueue(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (model.role !== "host" || model.pending_link !== undefined) {
+    return model;
+  }
+  const [nextGuestId, ...rest] = model.room_queue;
+  if (nextGuestId === undefined) {
+    return model;
+  }
+  const invited = invite({ ...model, room_queue: rest }, ports, effects);
+  if (invited.pending_link === undefined) {
+    // `invite()` refused (capacity, admission closed, ...) -- keep the
+    // guest queued rather than dropping it; the next event that clears
+    // `pending_link` will try again.
+    return { ...invited, room_queue: [nextGuestId, ...invited.room_queue] };
+  }
+  return {
+    ...invited,
+    room_guest_map: { ...invited.room_guest_map, [invited.pending_link]: nextGuestId },
   };
 }
 
@@ -1000,8 +1179,9 @@ function onPeerConnected(
   effects: LobbyEffect[],
 ): LobbyModel {
   if (model.role === "host") {
-    const next = model.pending_link === command.peer_id ? withoutPendingLink(model) : model;
-    return { ...next, status: `${command.peer_id} connected.` };
+    let next = model.pending_link === command.peer_id ? withoutPendingLink(model) : model;
+    next = { ...next, status: `${command.peer_id} connected.` };
+    return drainRoomQueue(next, ports, effects);
   }
   const [next] = step(
     { ...model, status: "Connected to the host." },
@@ -1015,6 +1195,247 @@ function onPeerConnected(
 function withoutPendingLink(model: LobbyModel): LobbyModel {
   const { pending_link: _pendingLink, ...rest } = model;
   return rest;
+}
+
+// ---------------------------------------------------------------------------
+// Room-code signaling (#552) -- see this module's header.
+// ---------------------------------------------------------------------------
+
+function roomEntry(chars: readonly string[], cursor: number): RoomCodeEntry {
+  return { chars, cursor };
+}
+
+function roomPick(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  role: LobbyRole,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (model.coordinator) {
+    return { ...model, error: "the session role is already chosen" };
+  }
+  // A room-code attempt already in flight (or established) must finish or
+  // be cancelled (`room_cancel`/`leave`) before another one starts -- this
+  // is the room-code buttons' own side of the same race `chooseRole`'s
+  // call site guards for the manual "role" command (round-2 council
+  // review, blocking finding 2): `lobby.ts`'s layout already disables
+  // `room_code_host`/`room_code_join` for this window, and this is the
+  // belt to that layout's braces.
+  if (model.room_active) {
+    return { ...model, error: "a room-code connection is already in progress" };
+  }
+  if (role === "guest") {
+    const { room_error: _roomError, ...rest } = model;
+    return {
+      ...rest,
+      room_entry: roomEntry(new Array(ROOM_CODE_LENGTH).fill(""), 0),
+      status: "Enter the room code your host is showing.",
+    };
+  }
+  effects.push({ kind: "room_open_host" });
+  const { room_error: _roomError, ...rest } = model;
+  return {
+    ...rest,
+    room_status: "connecting",
+    room_active: true,
+    status: "Requesting a room code.",
+  };
+}
+
+function roomKey(model: LobbyModel, key: string): LobbyModel {
+  const entry = model.room_entry;
+  if (!entry) {
+    return model;
+  }
+  if (key === "Backspace") {
+    if (entry.chars[entry.cursor] === "" && entry.cursor === 0) {
+      return model;
+    }
+    const chars = [...entry.chars];
+    const cursor = chars[entry.cursor] !== "" ? entry.cursor : entry.cursor - 1;
+    chars[cursor] = "";
+    return { ...model, room_entry: roomEntry(chars, cursor) };
+  }
+  if (key.length !== 1) {
+    return model;
+  }
+  const upper = key.toUpperCase();
+  if (!ROOM_CODE_ALPHABET.includes(upper) || entry.cursor >= ROOM_CODE_LENGTH) {
+    return model;
+  }
+  const chars = [...entry.chars];
+  chars[entry.cursor] = upper;
+  return {
+    ...model,
+    room_entry: roomEntry(chars, Math.min(ROOM_CODE_LENGTH - 1, entry.cursor + 1)),
+  };
+}
+
+function roomCursor(model: LobbyModel, delta: unknown): LobbyModel {
+  const entry = model.room_entry;
+  if (!entry || typeof delta !== "number") {
+    return model;
+  }
+  const cursor = Math.max(0, Math.min(ROOM_CODE_LENGTH - 1, entry.cursor + delta));
+  return { ...model, room_entry: roomEntry(entry.chars, cursor) };
+}
+
+function roomCycle(model: LobbyModel, delta: unknown): LobbyModel {
+  const entry = model.room_entry;
+  if (!entry || typeof delta !== "number") {
+    return model;
+  }
+  const current = entry.chars[entry.cursor] ?? "";
+  const n = ROOM_CODE_ALPHABET.length;
+  const index = current === "" ? -1 : ROOM_CODE_ALPHABET.indexOf(current);
+  const nextIndex = (((index + delta) % n) + n) % n;
+  const chars = [...entry.chars];
+  chars[entry.cursor] = ROOM_CODE_ALPHABET[nextIndex] as string;
+  return { ...model, room_entry: roomEntry(chars, entry.cursor) };
+}
+
+function roomSubmit(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
+  const entry = model.room_entry;
+  if (!entry || entry.chars.some((ch) => ch === "")) {
+    return { ...model, error: "enter all six characters of the room code" };
+  }
+  const code = entry.chars.join("");
+  effects.push({ kind: "room_open_guest", code });
+  const { room_entry: _entry, room_error: _roomError, ...rest } = model;
+  return {
+    ...rest,
+    room_status: "connecting",
+    room_active: true,
+    status: `Connecting to room ${code}.`,
+  };
+}
+
+function roomCancel(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
+  if (model.room_entry === undefined && model.room_status === undefined) {
+    return model;
+  }
+  if (model.room_active) {
+    effects.push({ kind: "room_close" });
+  }
+  const { room_entry: _entry, room_status: _status, room_error: _roomError, ...rest } = model;
+  return { ...rest, room_active: false, status: "Host a session or join one with a pasted offer." };
+}
+
+function roomCreated(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  code: string,
+  effects: LobbyEffect[],
+): LobbyModel {
+  const next = chooseRole(model, ports, "host", effects);
+  const { room_error: _roomError, ...rest } = next;
+  return { ...rest, room_code: code, room_status: "connected", status: `Room code ${code}.` };
+}
+
+function roomJoined(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
+  const next = chooseRole(model, ports, "guest", effects);
+  const { room_error: _roomError, ...rest } = next;
+  return { ...rest, room_status: "connected" };
+}
+
+function roomGuestJoined(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  guestId: string,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (model.role !== "host") {
+    return model;
+  }
+  if (model.pending_link !== undefined) {
+    return { ...model, room_queue: [...model.room_queue, guestId] };
+  }
+  const invited = invite(model, ports, effects);
+  if (invited.pending_link === undefined) {
+    // `invite()` refused (capacity, admission closed, ...) -- keep the
+    // guest queued; a later `drainRoomQueue` call retries it.
+    return { ...invited, room_queue: [...invited.room_queue, guestId] };
+  }
+  return {
+    ...invited,
+    room_guest_map: { ...invited.room_guest_map, [invited.pending_link]: guestId },
+  };
+}
+
+function roomGuestLeft(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  guestId: string,
+  effects: LobbyEffect[],
+): LobbyModel {
+  const room_queue = model.room_queue.filter((id) => id !== guestId);
+  const linkId = model.pending_link;
+  if (linkId === undefined || model.room_guest_map[linkId] !== guestId) {
+    return { ...model, room_queue };
+  }
+  // The currently-pending invite's guest vanished before ever connecting --
+  // free the link so the next queued guest (if any) can be invited.
+  const { [linkId]: _dropped, ...room_guest_map } = model.room_guest_map;
+  const reason = "a peer disconnected before joining";
+  const next = withoutPendingLink({
+    ...model,
+    room_queue,
+    room_guest_map,
+    error: reason,
+    room_error: reason,
+  });
+  return drainRoomQueue(next, ports, effects);
+}
+
+function roomPeerSignal(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  guestId: string | undefined,
+  signal: string,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (model.role === "host") {
+    // A guest's signal can only ever be an answer to whichever invite is
+    // currently pending -- this module never has more than one in flight
+    // (`invite()`'s own "finish the pending invitation first" guard). A
+    // signal for any other guest id is stray (e.g. arrived after that
+    // guest already left) and is ignored rather than misrouted onto an
+    // unrelated link.
+    const linkId = model.pending_link;
+    if (linkId === undefined || guestId === undefined || model.room_guest_map[linkId] !== guestId) {
+      return model;
+    }
+  }
+  return importSignal(model, ports, signal, effects);
+}
+
+function roomFailed(model: LobbyModel, reason: string): LobbyModel {
+  const text = ROOM_FAILURE_TEXT[reason] ?? reason;
+  // Both fields, deliberately: `error` for the first frame (consistent
+  // with every other command's error surface), `room_error` so the message
+  // survives the trailing `tick` command that same frame's `update(dt)`
+  // dispatches right after -- see `room_error`'s own doc on `LobbyModel`.
+  //
+  // `room_active: false` matters just as much as either: it is what
+  // `lobby.ts`'s layout reads to decide whether the manual copy/paste
+  // controls are shown at all (`view.role && !view.room_active`). Leaving
+  // it `true` after a failure -- the connection this flag was tracking no
+  // longer exists -- made the manual fallback this issue's own acceptance
+  // criteria promise ("manual signaling still works") unreachable for a
+  // player who tried a room code first and picked a manual role after it
+  // failed. Mirrors `roomCancel`/`leave`, which already clear it on every
+  // other way out of the room-code path.
+  return { ...model, room_status: "failed", room_active: false, error: text, room_error: text };
+}
+
+function roomDropped(model: LobbyModel): LobbyModel {
+  if (model.room_status !== "connected") {
+    return model;
+  }
+  const text = ROOM_FAILURE_TEXT["connection_lost"] as string;
+  // `room_active: false` -- see `roomFailed`'s own comment; the same
+  // reasoning applies to a connection that was live and then dropped.
+  return { ...model, room_status: "failed", room_active: false, error: text, room_error: text };
 }
 
 export type LobbyCommand =
@@ -1039,7 +1460,27 @@ export type LobbyCommand =
   | { readonly kind: "peer_connected"; readonly peer_id: string }
   | { readonly kind: "control"; readonly link_id: string; readonly wire: string }
   | { readonly kind: "link_lost"; readonly link_id: string }
-  | { readonly kind: "link_error"; readonly detail?: string };
+  | { readonly kind: "link_error"; readonly detail?: string }
+  // Room-code signaling (#552) -- see this module's header. The first six
+  // are UI-driven (the code composer); the rest are fed in by
+  // `online_lobby.ts`'s `roomSignaling` port, translating its events.
+  | { readonly kind: "room_pick"; readonly role: LobbyRole }
+  | { readonly kind: "room_key"; readonly key: string }
+  | { readonly kind: "room_cursor"; readonly delta: unknown }
+  | { readonly kind: "room_cycle"; readonly delta: unknown }
+  | { readonly kind: "room_submit" }
+  | { readonly kind: "room_cancel" }
+  | { readonly kind: "room_created"; readonly code: string }
+  | { readonly kind: "room_joined" }
+  | { readonly kind: "room_guest_joined"; readonly guest_id: string }
+  | { readonly kind: "room_guest_left"; readonly guest_id: string }
+  | {
+      readonly kind: "room_peer_signal";
+      readonly guest_id?: string;
+      readonly signal: string;
+    }
+  | { readonly kind: "room_failed"; readonly reason: string }
+  | { readonly kind: "room_dropped" };
 
 // The single pure entry point. Unknown commands are ignored rather than
 // fatal so a future screen control cannot crash a live session.
@@ -1053,7 +1494,21 @@ export function command(
   let next: LobbyModel = withoutError;
   switch (cmd.kind) {
     case "role":
-      next = chooseRole(next, ports, cmd.role, effects);
+      // Guarded HERE rather than inside `chooseRole` itself: `roomCreated`/
+      // `roomJoined` call `chooseRole` directly while `room_active` is
+      // ALREADY `true` (set the moment a room-code attempt starts, well
+      // before either arrives) -- a guard inside `chooseRole` would reject
+      // its own success path. This is specifically the manual "role"
+      // command's own guard: a role pick may not race an in-flight or
+      // established room-code connection. `lobby.ts`'s layout already
+      // disables `role_host`/`role_guest` for the same window; this is the
+      // belt to that layout's braces, so a stale layout or a synthetic
+      // dispatch cannot wedge the lobby the way round-2 council review's
+      // blocking finding 2 did. See `roomPick`'s matching guard for the
+      // room-code buttons' own side of the same race.
+      next = next.room_active
+        ? { ...next, error: "a room-code connection is in progress" }
+        : chooseRole(next, ports, cmd.role, effects);
       break;
     case "mode":
       next = setMode(next, ports, cmd.mode);
@@ -1122,7 +1577,7 @@ export function command(
       [next] = step(next, ports, { kind: "tick" }, effects);
       break;
     case "signal":
-      next = onSignal(next, ports, cmd);
+      next = onSignal(next, ports, cmd, effects);
       break;
     case "peer_connected":
       next = onPeerConnected(next, ports, cmd, effects);
@@ -1143,6 +1598,45 @@ export function command(
       break;
     case "link_error":
       next = { ...next, error: cmd.detail ?? "the transport reported a failure" };
+      break;
+    case "room_pick":
+      next = roomPick(next, ports, cmd.role, effects);
+      break;
+    case "room_key":
+      next = roomKey(next, cmd.key);
+      break;
+    case "room_cursor":
+      next = roomCursor(next, cmd.delta);
+      break;
+    case "room_cycle":
+      next = roomCycle(next, cmd.delta);
+      break;
+    case "room_submit":
+      next = roomSubmit(next, effects);
+      break;
+    case "room_cancel":
+      next = roomCancel(next, effects);
+      break;
+    case "room_created":
+      next = roomCreated(next, ports, cmd.code, effects);
+      break;
+    case "room_joined":
+      next = roomJoined(next, ports, effects);
+      break;
+    case "room_guest_joined":
+      next = roomGuestJoined(next, ports, cmd.guest_id, effects);
+      break;
+    case "room_guest_left":
+      next = roomGuestLeft(next, ports, cmd.guest_id, effects);
+      break;
+    case "room_peer_signal":
+      next = roomPeerSignal(next, ports, cmd.guest_id, cmd.signal, effects);
+      break;
+    case "room_failed":
+      next = roomFailed(next, cmd.reason);
+      break;
+    case "room_dropped":
+      next = roomDropped(next);
       break;
     default:
       return [model, []];
@@ -1233,6 +1727,16 @@ export interface LobbyView {
   readonly ready: boolean;
   readonly can_start: boolean;
   readonly started: boolean;
+
+  // --- Room-code signaling (#552) -- see this module's header. ---------
+
+  readonly room_entry?: RoomCodeEntry;
+  readonly room_code?: string;
+  readonly room_status?: RoomSignalingStatus;
+  /** Persists across a `tick` where `error` itself does not -- see
+   * `room_error`'s own doc on `LobbyModel`. */
+  readonly room_error?: string;
+  readonly room_active: boolean;
 }
 
 function visibleAssignments(
@@ -1446,5 +1950,10 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     ready,
     can_start: model.role === "host" && phase === "ready",
     started: model.started,
+    ...(model.room_entry !== undefined ? { room_entry: model.room_entry } : {}),
+    ...(model.room_code !== undefined ? { room_code: model.room_code } : {}),
+    ...(model.room_status !== undefined ? { room_status: model.room_status } : {}),
+    ...(model.room_error !== undefined ? { room_error: model.room_error } : {}),
+    room_active: model.room_active,
   };
 }

@@ -134,7 +134,8 @@ describe("online match app routing", () => {
     });
     const app = new App(APP_CONTENT, { online: ports });
 
-    app.handleAction({ go: "online_lobby" });
+    app.handleAction({ go: "multiplayer" });
+    app.handleAction({ go: "lobby", role: "host" });
     expect(app.currentRoute()).toBe("lobby");
 
     app.handleAction({ go: "online_match", freeze: { countdown_id: "countdown.1" } });
@@ -160,7 +161,8 @@ describe("online match app routing", () => {
     const { ports, matchScreens } = fakeOnlinePorts(lobby, { mode: "2v2", owned: [] });
     const app = new App(APP_CONTENT, { online: ports });
 
-    app.handleAction({ go: "online_lobby" });
+    app.handleAction({ go: "multiplayer" });
+    app.handleAction({ go: "lobby", role: "host" });
     app.handleAction({ go: "online_match", freeze: { countdown_id: "countdown.1" } });
 
     expect(app.currentRoute()).toBe("lobby");

@@ -21,8 +21,49 @@ jobs:
     # scripts/check.sh must also appear here, and vice versa).
     gate:
         name: Gate
+        # #538. 30 was silently insufficient: the last two merges to `main`
+        # (#527, #530) were CANCELLED at 30m18s each, producing no verdict at
+        # all, after a growth curve of 10m -> 10m -> 7m -> 27m (#516,
+        # locomotion) went unwatched. A cancelled job is not a fast failure --
+        # it is the total absence of one, which is worse.
+        #
+        # The arithmetic behind 75, not a round number picked to clear
+        # today's worst case (the mistake that made 30 insufficient):
+        #   - `scripts/check.sh` on `main` (commit 1709373) measures 1123s
+        #     (18.7 min) locally, of which `cargo test --workspace` alone is
+        #     1023s (91% of the total) -- see that script's stage-timing
+        #     table, printed on every run as of this change.
+        #   - PR #535 raises one knob contract from n=48 to n=144 (measured:
+        #     398.6s at n=144 vs ~130s before) and adds several more tests;
+        #     local total for that branch is estimated near 1400s (23.3 min).
+        #   - This runner's own historical data puts CI at 30min (cancelled,
+        #     i.e. a lower bound) against 1123s (18.7min) local for the SAME
+        #     commit -- a >=1.6x CI/local factor already, and the true factor
+        #     is unknown because that run never finished. ~2x is used below
+        #     as a working ESTIMATE, not a measurement -- there is still no
+        #     completed CI run to calibrate it against. Measuring the real
+        #     factor once this gate can finish at all is left as an open
+        #     question, not folded into this number by assumption.
+        #   - 1400s (#535, local) * ~2 (CI/local, estimated) ~= 2800s (47min).
+        #   - 75 min leaves ~28 min of headroom over that 47 min estimate:
+        #     enough to absorb the CI/local factor being higher than 2x
+        #     (plausible -- it is unmeasured and the sample it comes from is
+        #     censored), ordinary runner variance, and the next several
+        #     merges' worth of gameplay-rework knob contracts (#488-#491)
+        #     landing before #538's structural question is decided.
+        #
+        # scripts/check.sh's own CI_GATE_TIMEOUT_MINUTES constant must equal
+        # this value -- gate_ci_timeout_sync() (gate 0e) asserts it on every
+        # run, and GATE_WALL_CLOCK_BUDGET_SECONDS is derived from it, so
+        # raising this number without raising that one fails loudly instead
+        # of the two silently drifting apart.
+        #
+        # NOT done here, and deliberately: splitting the gate into parallel
+        # jobs, moving the expensive knob contracts to a schedule, or
+        # touching any test's seed count. All three are open structural
+        # questions for #538 to decide, not a call this change makes.
         runs-on: ubuntu-24.04
-        timeout-minutes: 30
+        timeout-minutes: 75
 
         steps:
             - name: Check out source

@@ -361,6 +361,11 @@ pub struct MetricsCollector {
     pub pending_shot_type: Option<String>,
     /// Keeper state at the most recent unresolved strike.
     pub pending_shot_keeper_state: Option<KeeperState>,
+    /// Standing-poke tackle attempts: a charge that reached its
+    /// executing-phase resolution (#489). Hit + miss.
+    pub tackle_attempts: i64,
+    /// Standing-poke tackle attempts that resolved without winning the ball.
+    pub tackle_misses: i64,
 }
 
 fn dribble_bucket_for_mut(
@@ -435,6 +440,8 @@ pub fn new(s: &MetricsMatchView) -> MetricsCollector {
         pending_shot_team: None,
         pending_shot_type: None,
         pending_shot_keeper_state: None,
+        tackle_attempts: 0,
+        tackle_misses: 0,
     }
 }
 
@@ -580,6 +587,17 @@ pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: 
                     let role = dribble_role(s, player_id);
                     dribble_bucket_for_mut(&mut c.dribble, role).jukes += 1;
                 }
+            }
+            // #489: a committed standing-poke tackle's two resolutions.
+            // `"tackle"` already fired only on a successful steal, before
+            // this metric existed; `"tackle_miss"` is new, fired once per
+            // whiffed executing-phase resolution.
+            "tackle" => {
+                c.tackle_attempts += 1;
+            }
+            "tackle_miss" => {
+                c.tackle_attempts += 1;
+                c.tackle_misses += 1;
             }
             _ => {}
         }
@@ -874,6 +892,9 @@ pub struct MatchMetrics {
     /// Composite fun score, stamped on by the headless runner (never set by
     /// [`finish`]).
     pub fun: Option<f64>,
+    /// Missed standing-poke tackles / attempted standing-poke tackles
+    /// (#489). `None` when the match attempted none.
+    pub whiff_rate: Option<f64>,
 }
 
 /// Fold the collector and final match state into a [`MatchMetrics`] summary.
@@ -974,6 +995,8 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         pass_aim_error: None,
         pass_lead_time: None,
         fun: None,
+        whiff_rate: (c.tackle_attempts > 0)
+            .then(|| c.tackle_misses as f64 / c.tackle_attempts as f64),
     }
 }
 
