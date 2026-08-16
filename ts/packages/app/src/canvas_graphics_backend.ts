@@ -60,8 +60,25 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
 
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
-    this.ctx.textBaseline = "top";
     this.setFont("body");
+  }
+
+  /**
+   * Top-baseline every text draw, immediately before it.
+   *
+   * This used to be set once in the constructor, which does not survive:
+   * assigning `canvas.width`/`height` resets the whole 2D context to its
+   * defaults, and `browser_main.ts`'s `resize()` does exactly that at boot and
+   * on every window resize. So `textBaseline` was always back to `alphabetic`
+   * by the time anything rendered, and every string drew with its baseline —
+   * not its top — at `y`, sitting roughly one ascent too high in its box.
+   *
+   * `font` survived the same reset only because `draw.ts` calls `setFont`
+   * before each text draw; `textBaseline` had no such second chance. Setting
+   * it here gives it one, and costs an assignment of an already-equal value.
+   */
+  private topBaseline(): void {
+    this.ctx.textBaseline = "top";
   }
 
   getDimensions(): Dimensions {
@@ -147,6 +164,7 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
   }
 
   print(text: string, x: number, y: number): void {
+    this.topBaseline();
     this.ctx.fillText(text, x, y);
   }
 
@@ -177,6 +195,7 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
   }
 
   printf(text: string, x: number, y: number, wrapWidth: number, align: TextAlign): void {
+    this.topBaseline();
     const lines = wrapLines(this.ctx, text, wrapWidth);
     const lineHeight = this.fontSize * LINE_HEIGHT_RATIO;
     lines.forEach((line, index) => {
