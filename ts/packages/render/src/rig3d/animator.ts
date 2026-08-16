@@ -443,5 +443,10 @@ export function poseFor(
 
   // Whole-body actions last: they move the root, so they ride on top of
   // whatever gait and stance resolved instead of competing with them.
-  return actionPose.apply(pose, opts);
+  //
+  // `playerId`/`now` are `apply`'s hit-reaction seam (#564) -- see that
+  // function's own doc for why they are optional and why this is the one
+  // call site with both a stable per-character id and a wall clock already
+  // in scope to supply them.
+  return actionPose.apply(pose, opts, playerId, now);
 }

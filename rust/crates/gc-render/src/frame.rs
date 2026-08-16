@@ -38,6 +38,7 @@
 use gc_core::vec2::Vec2;
 use gc_sim::aerial::{AerialOutcome, AerialStyle};
 use gc_sim::brain::TeamPhase;
+use gc_sim::combat::IMMUNITY_TICKS;
 use gc_sim::combat_snapshot::CombatMatchState;
 use gc_sim::keeper::{self, KeeperBehaviorState, KeeperShotType, SaveStyle};
 use gc_sim::r#match as sim_match;
@@ -310,9 +311,11 @@ pub struct RenderFrameEvents {
 /// The slice of `@gc/presentation`'s `CombatPresentationModel` (TS-owned)
 /// this module reads. `RenderFrame.combat` carries the whole model through
 /// the frame unflattened and reads only `combat.players[index]`'s
-/// phase/forced-state fields, to hand [`crate::player_pose::select`] its
-/// `combat` sample; [`crate::frame_buffer`] never encodes any of it (see that
-/// module's own doc, "WHAT IS NOT CARRIED").
+/// phase/forced-state/immunity fields, to hand [`crate::player_pose::select`]
+/// its `combat` sample and to give a renderer the post-hit immunity cue
+/// [`crate::player_pose::CombatPoseSample::immunity_fraction`] carries;
+/// [`crate::frame_buffer`] never encodes any of it (see that module's own
+/// doc, "WHAT IS NOT CARRIED").
 ///
 /// ## This type is narrow on purpose, and it is NOT blocked on marshalling
 ///
@@ -332,14 +335,20 @@ pub struct RenderFrameEvents {
 ///   telegraph kinds, reach/arc geometry, readiness fractions — is genuinely
 ///   TypeScript-owned and genuinely does need a marshalling layer this crate
 ///   does not have. None of it is declared here.
-/// - The POSE-SELECTION half — `phase`, `forced_state`, `forced_ticks` — is
-///   not TypeScript-owned at all. It is already native Rust simulation
-///   state, stepped every tick, on this side of the wall:
-///   `gc_sim::combat_snapshot::CombatPlayerState`. [`combat_model`] below
-///   adapts it in-process, with no boundary crossing whatsoever.
+/// - The POSE-SELECTION half — `phase`, `forced_state`, `forced_ticks`, and
+///   now `immunity_ticks` (carried as [`crate::player_pose::CombatPoseSample::immunity_fraction`],
+///   normalised below) — is not TypeScript-owned at all. It is already
+///   native Rust simulation state, stepped every tick, on this side of the
+///   wall: `gc_sim::combat_snapshot::CombatPlayerState`. [`combat_model`]
+///   below adapts it in-process, with no boundary crossing whatsoever.
 ///
-/// So this type stays narrow because pose selection only ever needed three
-/// fields, not because the data was out of reach.
+/// So this type stays narrow because pose selection and its renderer's
+/// post-hit cue only ever needed four fields, not because the data was out
+/// of reach. `immunity_fraction` is the one field of the four `select`
+/// itself never reads — see [`crate::player_pose::CombatPoseSample`]'s own
+/// doc — but it is still the POSE-SELECTION half, not the RICH PRESENTATION
+/// one: it is native Rust state read straight off `CombatPlayerState`, not
+/// a TypeScript-computed projection.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameCombatModel {
     /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for shape
@@ -437,6 +446,12 @@ pub fn combat_model(state: &MatchState, combat: &CombatMatchState) -> FrameComba
                 phase: runtime.phase,
                 forced_state: runtime.forced_state,
                 forced_ticks: runtime.forced_ticks,
+                // `IMMUNITY_TICKS` is the window's full length, so this is
+                // exactly 1.0 the tick immunity starts and ramps linearly to
+                // 0.0 as `runtime.immunity_ticks` counts down to it. Divides
+                // by a nonzero constant unconditionally: `IMMUNITY_TICKS` is
+                // `combat_rules`' own fixed constant, never zero.
+                immunity_fraction: runtime.immunity_ticks as f64 / IMMUNITY_TICKS as f64,
             }
         })
         .collect();
