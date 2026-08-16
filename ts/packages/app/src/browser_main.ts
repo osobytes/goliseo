@@ -7,9 +7,9 @@
 // (`canvas_graphics_backend.ts`, `browser_content.ts`, `browser_sim_host.ts`,
 // `real_match_factory.ts`) for the pieces that did not.
 //
-// TWO CANVASES, not one. `@gc/ui`'s menu screens (title, squad, formation,
-// tactic, pause, settings, credits, help, result, the fake-match fixture)
-// draw through `draw.layout` onto a `GraphicsBackend`
+// TWO CANVASES, not one. `@gc/ui`'s menu screens (title, team sheet,
+// multiplayer, lobby, pause, settings, credits, help, result, session ended,
+// the fake-match fixture) draw through `draw.layout` onto a `GraphicsBackend`
 // (`canvas_graphics_backend.ts` -- a Canvas2D implementation); the real
 // match screen draws through `@gc/render`'s `SceneRoot`, which owns its own
 // `THREE.WebGLRenderer`. Only one is ever visible at a time (toggled by

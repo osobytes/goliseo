@@ -22,9 +22,9 @@ export interface CompatibilityFlowApp {
 
 const ROUTE_WIDGETS: Readonly<Record<string, string>> = {
   title: "play",
-  squad: "next",
-  formation: "next",
-  tactic: "kickoff",
+  // Squad, formation and tactic were three routes and three clicks. They are
+  // one screen with one commit now, so the flow is title -> team_sheet -> match.
+  team_sheet: "kickoff",
   pause: "resume",
 };
 

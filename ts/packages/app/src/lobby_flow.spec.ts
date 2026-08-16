@@ -93,10 +93,14 @@ describe("online lobby app routing", () => {
     const app = new App(APP_CONTENT, { online: fakeOnlinePorts() });
     expect(app.currentRoute()).toBe("title");
 
-    clickWidget(app, "online_lobby");
+    // Through the multiplayer front door, which is what the title offers now.
+    clickWidget(app, "multiplayer");
+    expect(app.currentRoute()).toBe("multiplayer");
+
+    clickWidget(app, "host");
     expect(app.currentRoute()).toBe("lobby");
 
     app.event({ kind: "key", key: "escape" });
-    expect(app.currentRoute()).toBe("title");
+    expect(app.currentRoute()).toBe("multiplayer");
   });
 });
