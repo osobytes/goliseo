@@ -14,7 +14,7 @@
 // report and invisible to everyone else; the headline above it is the only
 // thing a player has to read.
 
-import { focus, type Layout } from "@gc/ui";
+import { focus, theme, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
 import { TERMINAL_TEXT, type CoordinatorTerminalReason } from "./lobby_model.ts";
 
@@ -50,6 +50,13 @@ export interface SessionEndedScreenState {
 }
 
 export type SessionEndedAction = { readonly go: "main_menu" } | { readonly go: "multiplayer" };
+
+/**
+ * Room for three lines of title type: two line advances plus one glyph box.
+ * Derived from the theme rather than eyeballed, so a font-size change moves
+ * the box with it.
+ */
+const HEADLINE_H = Math.ceil(2 * theme.fonts.title * 1.25 + theme.fonts.title * 1.2);
 
 /**
  * Reasons that mean the match was abandoned rather than played out. Only these
@@ -132,28 +139,33 @@ function layout(state: SessionEndedScreenState): Layout {
       id: "status",
       kind: "eyebrow",
       text: "SESSION ENDED",
-      rect: { x: 0, y: 132, w: state.viewport.w, h: 22 },
+      rect: { x: 0, y: 118, w: state.viewport.w, h: 22 },
       data: { align: "center", focusable: false },
     },
     {
       id: "headline",
       kind: "title",
       text: state.headline,
-      rect: { x: 130, y: 164, w: 700, h: 40 },
+      // Three lines of title type. `build_mismatch`'s headline ("The peers are
+      // running different builds. Install the same build on both.") already
+      // needs two at this width; a 40px box clipped it. Sized for three so the
+      // next authored reason cannot re-break it silently, and `printCentred`
+      // keeps a one-line headline centred rather than stranded at the top.
+      rect: { x: 130, y: 146, w: 700, h: HEADLINE_H },
       data: { align: "center", focusable: false },
     },
     {
       id: "consequence",
       kind: "label",
       text: state.consequence,
-      rect: { x: 230, y: 216, w: 500, h: 44 },
+      rect: { x: 230, y: 246, w: 500, h: 44 },
       data: { align: "center", tone: "muted", focusable: false },
     },
     {
       id: "detail",
       kind: "card",
       text: state.detail,
-      rect: { x: 230, y: 280, w: 500, h: 48 },
+      rect: { x: 230, y: 302, w: 500, h: 48 },
       data: { align: "center", tone: "muted", focusable: false },
     },
     {
@@ -161,14 +173,14 @@ function layout(state: SessionEndedScreenState): Layout {
       kind: "button",
       text: "MAIN MENU",
       focused: state.focus === "main_menu",
-      rect: { x: 268, y: 372, w: 200, h: 42 },
+      rect: { x: 268, y: 384, w: 200, h: 42 },
     },
     {
       id: "new_lobby",
       kind: "button",
       text: "NEW LOBBY",
       focused: state.focus === "new_lobby",
-      rect: { x: 492, y: 372, w: 200, h: 42 },
+      rect: { x: 492, y: 384, w: 200, h: 42 },
     },
   ];
 }
