@@ -391,6 +391,13 @@ function fakeGraphicsBackend(): GraphicsBackend {
     line: noop,
     print: noop,
     printf: noop,
+    // Enough for `draw.ts`'s centring arithmetic to run: a fixed 13px line,
+    // one line per ~7px of width. It is not a font, and no case here asserts
+    // pixel positions -- these specs prove drawing does not throw.
+    measureText: (text: string, wrapWidth: number) => {
+      const lines = wrapWidth > 0 ? Math.max(1, Math.ceil((text.length * 7) / wrapWidth)) : 1;
+      return { lines, lineHeight: 16.25, height: (lines - 1) * 16.25 + 13 };
+    },
     push: noop,
     pop: noop,
     translate: noop,

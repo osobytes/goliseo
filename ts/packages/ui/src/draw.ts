@@ -54,6 +54,34 @@ function setColor(backend: GraphicsBackend, color: RgbColor, alpha = 1): void {
   backend.setColor(color[0], color[1], color[2], alpha);
 }
 
+/**
+ * Draw `text` inside `rect`, vertically centred on measured metrics.
+ *
+ * This replaced three different rules that all got it wrong in their own way:
+ * `rect.y + rect.h / 2 - 7` for a short button (a LÖVE-calibrated half-line
+ * height for a font this build does not ship — #408), a flat `rect.y + 10`
+ * for a card, and a bare `rect.y` for a label. None of them knew how many
+ * lines the text would wrap to, so multi-line text hung out of its box while
+ * single-line text sat high in it.
+ *
+ * Returns the height the text actually occupied, so a caller can tell whether
+ * it fitted.
+ */
+function printCentred(
+  backend: GraphicsBackend,
+  text: string,
+  rect: Rect,
+  align: TextAlign,
+  insetLeft: number,
+  insetRight: number = insetLeft,
+): number {
+  const width = Math.max(0, rect.w - insetLeft - insetRight);
+  const metrics = backend.measureText(text, width);
+  const top = rect.y + Math.max(0, (rect.h - metrics.height) / 2);
+  backend.printf(text, rect.x + insetLeft, top, width, align);
+  return metrics.height;
+}
+
 function requireRect(widget: Widget): Rect {
   invariant(widget.rect !== undefined, `widget "${widget.id}" has no rect to draw`);
   return widget.rect;
@@ -110,9 +138,7 @@ function drawButton(backend: GraphicsBackend, widget: Widget): void {
     backend.setFont("body");
     setColor(backend, disabled ? COLORS.textMuted : COLORS.text, disabled ? 0.55 : 1);
     const align: TextAlign = widget.data?.align ?? "center";
-    const inset = align === "left" ? 16 : 0;
-    const textY = rect.h > 50 ? rect.y + 10 : rect.y + rect.h / 2 - 7;
-    backend.printf(widget.text, rect.x + inset, textY, rect.w - inset * 2, align);
+    printCentred(backend, widget.text, rect, align, align === "left" ? 16 : 0);
   }
 }
 
@@ -173,13 +199,7 @@ function drawCard(backend: GraphicsBackend, widget: Widget): void {
   if (widget.text !== undefined) {
     backend.setFont("body");
     setColor(backend, COLORS.text);
-    backend.printf(
-      widget.text,
-      rect.x + textInset,
-      rect.y + 10,
-      rect.w - textInset - 12,
-      data.align ?? "left",
-    );
+    printCentred(backend, widget.text, rect, data.align ?? "left", textInset, 12);
   }
   drawFocus(backend, widget);
 }
@@ -203,13 +223,16 @@ function drawLabel(backend: GraphicsBackend, widget: Widget): void {
   }
 
   backend.setFont(fontKind);
+  const text = widget.text ?? "";
+  const align = data.align ?? "left";
   if (widget.kind === "hero_title") {
-    // A brazier-lit halo behind the title, not a cyan one.
+    // A brazier-lit halo behind the title, not a cyan one. Offset from the
+    // centred position, so the halo tracks the glyphs rather than the box.
     setColor(backend, COLORS.amber, 0.22);
-    backend.printf(widget.text ?? "", rect.x + 2, rect.y + 3, rect.w, data.align ?? "left");
+    printCentred(backend, text, { ...rect, x: rect.x + 2, y: rect.y + 3 }, align, 0);
   }
   setColor(backend, color);
-  backend.printf(widget.text ?? "", rect.x, rect.y, rect.w, data.align ?? "left");
+  printCentred(backend, text, rect, align, 0);
 }
 
 function anchorPosition(rect: Rect, anchor: Anchor): readonly [x: number, y: number] {
