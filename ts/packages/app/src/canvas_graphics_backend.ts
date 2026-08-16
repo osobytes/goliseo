@@ -17,9 +17,11 @@
 // which this file does not reinterpret.
 
 import type { Dimensions, DrawMode, GraphicsBackend, TextAlign } from "@gc/ui";
-import { theme, type FontKind } from "@gc/ui";
+import { theme, type FontKind, type TextBlockMetrics } from "@gc/ui";
 
 const FONT_FAMILY = "system-ui, sans-serif";
+/** `printf`'s baseline-to-baseline advance, as a multiple of the font size. */
+const LINE_HEIGHT_RATIO = 1.25;
 
 function toCssColor(r: number, g: number, b: number, a: number): string {
   const byte = (c: number): number => Math.max(0, Math.min(255, Math.round(c * 255)));
@@ -148,9 +150,35 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
     this.ctx.fillText(text, x, y);
   }
 
+  /**
+   * Measured through the same `wrapLines` `printf` uses, so a measurement can
+   * never disagree with what is then drawn.
+   *
+   * The FONT's box, not this string's: `fontBoundingBox*` describes the face,
+   * so two labels of differing glyphs ("ZYRO" and "pending") centre
+   * identically. `actualBoundingBox*` would centre each string on its own ink
+   * and make a row of labels visibly ragged. Falls back to the em box where a
+   * runtime reports neither.
+   */
+  measureText(text: string, wrapWidth: number): TextBlockMetrics {
+    const lines = wrapLines(this.ctx, text, wrapWidth);
+    const lineHeight = this.fontSize * LINE_HEIGHT_RATIO;
+    const metrics = this.ctx.measureText(text);
+    const ascent = metrics.fontBoundingBoxAscent ?? this.fontSize * 0.8;
+    const descent = metrics.fontBoundingBoxDescent ?? this.fontSize * 0.2;
+    const glyphHeight = Number.isFinite(ascent + descent) ? ascent + descent : this.fontSize;
+    return {
+      lines: lines.length,
+      lineHeight,
+      // `printf` renders top-baselined, so the block runs from the first
+      // line's top to the last line's top plus one glyph box.
+      height: (lines.length - 1) * lineHeight + glyphHeight,
+    };
+  }
+
   printf(text: string, x: number, y: number, wrapWidth: number, align: TextAlign): void {
     const lines = wrapLines(this.ctx, text, wrapWidth);
-    const lineHeight = this.fontSize * 1.25;
+    const lineHeight = this.fontSize * LINE_HEIGHT_RATIO;
     lines.forEach((line, index) => {
       const lineWidth = this.ctx.measureText(line).width;
       let lineX = x;
