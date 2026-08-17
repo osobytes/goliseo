@@ -5,7 +5,7 @@
 // blank.
 
 import { describe, expect, it } from "vitest";
-import { hit } from "@gc/ui";
+import { hit, theme } from "@gc/ui";
 import { sessionEnded } from "./session_ended.ts";
 import { TERMINAL_TEXT, type CoordinatorTerminalReason } from "./lobby_model.ts";
 
@@ -91,6 +91,35 @@ describe("session ended", () => {
     expect(sessionEnded.update(s, { kind: "action", action: "back" })[1]).toEqual({
       go: "main_menu",
     });
+  });
+
+  // The pure layer cannot measure text, so a headline that overflows its box
+  // is invisible to every other case here — `build_mismatch` clipped in the
+  // browser while all of these passed. Asserting the box against the theme's
+  // own title metrics is the closest a headless test gets.
+  it("gives the headline room for the longest reason the model can emit", () => {
+    const lineHeight = theme.fonts.title * 1.25;
+    const threeLines = 2 * lineHeight + theme.fonts.title * 1.2;
+    const headline = hit.find(
+      sessionEnded.layout(sessionEnded.newState(VP, { reason: "build_mismatch" })),
+      "headline",
+    );
+    expect(headline?.rect?.h ?? 0).toBeGreaterThanOrEqual(threeLines);
+  });
+
+  it("keeps the panels clear of each other, so a long headline cannot collide", () => {
+    const layout = sessionEnded.layout(sessionEnded.newState(VP, { reason: "build_mismatch" }));
+    for (let i = 0; i < layout.length; i += 1) {
+      for (let j = i + 1; j < layout.length; j += 1) {
+        const a = layout[i]?.rect;
+        const b = layout[j]?.rect;
+        if (!a || !b) {
+          continue;
+        }
+        const overlaps = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        expect(overlaps, `"${layout[i]?.id}" overlaps "${layout[j]?.id}"`).toBe(false);
+      }
+    }
   });
 
   it("keeps every widget inside the virtual canvas, for every reason", () => {
