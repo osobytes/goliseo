@@ -1146,7 +1146,12 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         min: 0.0,
         max: 0.8,
         step: 0.05,
-        desc: "Recovery time after a missed tackle.",
+        desc: "NOT WIRED as of #489: superseded by ACTION_TACKLE_MISS_RECOVERY, which \
+               gc_sim::r#match's tackle-resolution code reads instead (see that knob's \
+               desc). No sim code reads this id any more, so it fails the \
+               knob-moves-metric contract (gc_sim::knob_contract) like VOLLEY_SKY_P and \
+               the Replay knobs below. Left registered rather than deleted: a real \
+               deletion is a separate, reviewable removal (panel wiring, sweep history).",
     },
     TunableDef {
         id: "CARRIER_SETTLE",
@@ -1347,6 +1352,77 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         max: 5.0,
         step: 0.2,
         desc: "Seconds an AI carrier waits between jukes.",
+    },
+    // Committed actions (#489). Only the standing-poke tackle is wired
+    // through `gc_sim::action_slot` in this PR -- see that module's doc.
+    TunableDef {
+        id: "ACTION_TACKLE_FULL_CHARGE",
+        tier: Tier::Sim,
+        label: "Tackle wind-up s",
+        cat: "Defending",
+        default: 0.1,
+        unit: "s",
+        min: 0.0,
+        max: 0.3,
+        step: 0.02,
+        desc: "Charge duration before a standing-poke tackle becomes live. Read by \
+               both a human's press and an AI presser's chase (the arrival trigger can \
+               still release earlier, once in range).",
+    },
+    TunableDef {
+        id: "ACTION_TACKLE_COMMIT",
+        tier: Tier::Sim,
+        label: "Tackle commit s",
+        cat: "Defending",
+        // 0.22 (matching the retired STAND_TIMER) measured whiff_rate at
+        // 0.834 over 48 seeds of 30s AI-vs-AI matches -- deep in "defenders
+        // would be expected to stop tackling" territory. 0.15, this knob's
+        // own registered range floor being 0.05, was the more moderate
+        // reading: still inside #489's own suggested 0.15-0.5s range, and
+        // measured lower (see tests/knob_contract.rs's probe notes) without
+        // reaching for the literal floor just to chase a number. It does not
+        // land whiff_rate inside the proposed band either -- see that
+        // metric's own doc in this file: the band is the thing still
+        // unsettled, not this default.
+        default: 0.15,
+        unit: "s",
+        // Range matches #489's own suggestion for `action.tackle.commit`.
+        min: 0.05,
+        max: 0.5,
+        step: 0.02,
+        desc: "Executing-phase duration: how long a committed poke takes to resolve. \
+               Resolution is checked ONCE at the end of this window against the \
+               carrier's THEN-current position, so raising this gives a carrier more \
+               time to escape before the single check -- see gc_sim::action_slot and \
+               tests/knob_contract.rs for the measured direction.",
+    },
+    TunableDef {
+        id: "ACTION_TACKLE_MISS_RECOVERY",
+        tier: Tier::Sim,
+        label: "Tackle miss recovery s",
+        cat: "Defending",
+        default: 0.3,
+        unit: "s",
+        min: 0.15,
+        max: 1.0,
+        step: 0.05,
+        desc: "Recovery-phase duration after a whiffed tackle (stacks AFTER \
+               ACTION_TACKLE_COMMIT), during which movement is scaled by \
+               ACTION_RECOVERY_CONTROL and no new action may start. Replaces the old \
+               AI-only WHIFF_STUMBLE stumble: this one applies to a human's miss too.",
+    },
+    TunableDef {
+        id: "ACTION_RECOVERY_CONTROL",
+        tier: Tier::Sim,
+        label: "Recovery move x",
+        cat: "Defending",
+        default: 0.35,
+        unit: "x",
+        min: 0.0,
+        max: 0.5,
+        step: 0.05,
+        desc: "Movement-input scale while a player is recovering from a whiffed \
+               committed action.",
     },
     // Replay. Presentation by nature (see the module doc's tier 2), but kept
     // in tier 1 for now because they have shipped in the F1 panel's "Replay"
@@ -1553,5 +1629,44 @@ pub static METRICS: &[MetricDef] = &[
         direction: MetricDirection::Banded,
         desc: "Mean seconds of lead on a driven ground pass, counting a pass to the \
                receiver's feet as zero.",
+    },
+    // #489's whiff_rate, appended last. PROPOSED, NOT SETTLED: the issue's own
+    // words. #528 (not yet built -- see that issue) is supposed to put a
+    // newly-registered metric on probation, reported beside the fun score and
+    // excluded from the geometric mean until piloted, exactly like
+    // `pass_aim_error`/`pass_lead_time` above SHOULD already be and are not.
+    // Since that mechanism does not exist yet, this metric folds into the
+    // score as an interim state on the same terms those two do -- see this
+    // PR's description for the explicit call on whether that's acceptable
+    // pending #528, or whether #528 should land first.
+    MetricDef {
+        id: "whiff_rate",
+        // #489's own proposed band. Below good_lo tackles are effectively
+        // free wins and the recovery cost never prices in; above good_hi
+        // defenders would be expected to stop tackling altogether, which the
+        // outer edge is set past rather than at, so the search still has
+        // gradient out to a genuinely broken configuration.
+        //
+        // MEASURED AGAINST IT AND FOUND WANTING: at every value
+        // ACTION_TACKLE_COMMIT/ACTION_TACKLE_FULL_CHARGE can legally take
+        // (including both knobs at their registered floor), 48 seeds of 30s
+        // AI-vs-AI matches measured a mean whiff_rate between 0.63 and 0.83 --
+        // never inside this band, not even close at the low end. The shipped
+        // defaults (tests/knob_contract.rs has the full probe table) land at
+        // 0.63, the best reading found without hand-tuning STAND_REACH or
+        // locomotion speeds, which is a larger, unrelated change. So this
+        // band is doubly unsettled: proposed by the issue with no pilot
+        // behind it AND contradicted by measurement at every point this PR's
+        // knobs can reach. Left as authored rather than hand-fit to the
+        // measurement, because moving a band to match whatever the code
+        // currently does is how a band stops meaning anything -- the #489
+        // playtest pass this issue itself calls for is where this gets
+        // resolved, not a PR that is still shipping the mechanism.
+        band: [0.0, 0.25, 0.55, 1.0],
+        direction: MetricDirection::Banded,
+        desc: "Missed standing-poke tackles / attempted standing-poke tackles \
+               (attempt = a charge that reached its executing-phase resolution). \
+               PROPOSED band, not measured against a pilot, and not yet met by \
+               the shipped defaults -- see this def's own comment.",
     },
 ];

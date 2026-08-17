@@ -355,7 +355,7 @@ and no globals, they run under vitest with no display.
 | ---- | ---- | ---------------- | ---- |
 | 1. Logic          | `gc-sim` math, rules, progression, tactic effects; `gc-core`, `gc-data`, `gc-netcode` | no | always |
 | 2. UI logic       | layout positions, hit-testing, `update` transitions & emitted actions | no | always |
-| 3. Flow           | drive the real screen stack or a real session with a scripted event sequence | no | for flows (squad → formation → tactic → match) |
+| 3. Flow           | drive the real screen stack or a real session with a scripted event sequence | no | for flows (title → team sheet → match → result) |
 | 4. Cross-language | parity checkers, differential tests against pinned vectors, the wasm determinism digest | no | anything crossing the wasm boundary or the wire |
 | 5. Browser evidence | real browsers, real GL, minutes of wall clock | yes | opt-in, by hand and on a schedule |
 

@@ -28,6 +28,7 @@ use crate::match_snapshot::{
 };
 use crate::species;
 use crate::tuning::Tuning;
+use gc_core::deterministic_math;
 use gc_core::rng;
 use gc_core::vec2::Vec2;
 
@@ -709,7 +710,7 @@ fn choose_candidate(
 }
 
 fn rotate_vector(vector: Vec2, angle: f64) -> Vec2 {
-    let (ca, sa) = (angle.cos(), angle.sin());
+    let (ca, sa) = deterministic_math::cos_sin(angle);
     Vec2::new(vector.x * ca - vector.y * sa, vector.x * sa + vector.y * ca)
 }
 

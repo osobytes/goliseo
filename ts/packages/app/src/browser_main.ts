@@ -7,9 +7,9 @@
 // (`canvas_graphics_backend.ts`, `browser_content.ts`, `browser_sim_host.ts`,
 // `real_match_factory.ts`) for the pieces that did not.
 //
-// TWO CANVASES, not one. `@gc/ui`'s menu screens (title, squad, formation,
-// tactic, pause, settings, credits, help, result, the fake-match fixture)
-// draw through `draw.layout` onto a `GraphicsBackend`
+// TWO CANVASES, not one. `@gc/ui`'s menu screens (title, team sheet,
+// multiplayer, lobby, pause, settings, credits, help, result, session ended,
+// the fake-match fixture) draw through `draw.layout` onto a `GraphicsBackend`
 // (`canvas_graphics_backend.ts` -- a Canvas2D implementation); the real
 // match screen draws through `@gc/render`'s `SceneRoot`, which owns its own
 // `THREE.WebGLRenderer`. Only one is ever visible at a time (toggled by
@@ -37,6 +37,7 @@ import { SceneRoot, Stadium, camera, cameraFollow, pitch, viewState } from "@gc/
 import type { RenderPort } from "@gc/screens";
 import { captureGamepad, captureKeyboard } from "@gc/input";
 import { ok, err, type Result } from "@gc/core";
+import { browserStar, installGoliseoStarTransport } from "@gc/transport";
 import { bootstrap } from "./bootstrap.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { draw } from "@gc/ui";
@@ -44,6 +45,11 @@ import type { SettingsStorage } from "./settings.ts";
 import { CanvasGraphicsBackend } from "./canvas_graphics_backend.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
 import { createBrowserSimHost, ensureBrowserSimHostReady } from "./browser_sim_host.ts";
+import { loadOnlineWasmHost } from "./browser_online_wasm_host.ts";
+import { createOnlinePorts, browserStarEval } from "./online_ports.ts";
+import { forceRelayFromSearch, newIceConfig, type IceConfig } from "./ice_config.ts";
+import { fetchTurnCredentials } from "./turn_credentials.ts";
+import { connectRoomGuest, connectRoomHost } from "./room_signaling_port.ts";
 import { APP_CONTENT } from "./browser_content.ts";
 import { buildInfo } from "./build_info.ts";
 
@@ -253,8 +259,85 @@ async function main(): Promise<void> {
     gamepad,
   });
 
+  // ICE configuration (#550/#248): STUN defaults are available immediately;
+  // a same-origin TURN-credentials fetch is kicked off on lobby entry (see
+  // `onLobbyEntry` below) and, once it resolves, is picked up by the NEXT
+  // `RTCPeerConnection` this bridge opens -- `installGoliseoStarTransport`'s
+  // `iceConfig` getter is read fresh per connection, never snapshotted (see
+  // `browser_star_bridge.ts`'s own doc). `forceRelay` is #248's toggle: a
+  // `?ice=relay` query parameter, off (unset) by default, so the direct
+  // path is unaffected for every ordinary page load.
+  const forceRelay = forceRelayFromSearch(window.location.search);
+  let fetchedTurnServers: readonly RTCIceServer[] | undefined;
+  let turnFetchStarted = false;
+  function currentIceConfig(): IceConfig {
+    return newIceConfig(fetchedTurnServers, forceRelay);
+  }
+  function ensureTurnCredentialsFetch(): void {
+    if (turnFetchStarted) {
+      return;
+    }
+    turnFetchStarted = true;
+    // Never awaited here: a slow or failing TURN endpoint must not delay
+    // reaching the lobby -- `turn_credentials.ts`'s own degrade-silently
+    // contract (STUN-only) covers every failure shape.
+    void fetchTurnCredentials().then((servers) => {
+      fetchedTurnServers = servers;
+    });
+  }
+  installGoliseoStarTransport(window, { iceConfig: currentIceConfig });
+
+  // The lobby's manual-signaling copy/paste seam. `LobbyClipboard.read()` is
+  // synchronous (`online_lobby.ts`'s own contract), but `navigator.clipboard.readText()`
+  // is always async and typically gated behind a user gesture/permission --
+  // so read is served from a cache kept fresh by the browser's native
+  // `paste` event (`ClipboardEvent.clipboardData`, synchronous, no special
+  // permission), the standard idiom for exactly this mismatch. Write fires
+  // `navigator.clipboard.writeText` and does not wait on it: the offer/
+  // answer blob is always ALSO shown as on-screen text (`lobby.ts`'s own
+  // layout), so a write that silently fails still leaves the flow usable
+  // via manual select/copy.
+  let lastPastedText: string | undefined;
+  window.addEventListener("paste", (event: ClipboardEvent) => {
+    const text = event.clipboardData?.getData("text");
+    if (text !== undefined && text !== "") {
+      lastPastedText = text;
+    }
+  });
+  const clipboard = {
+    read: (): string | undefined => lastPastedText,
+    write: (text: string): void => {
+      void navigator.clipboard?.writeText(text).catch(() => {
+        // Best-effort -- see this block's own comment.
+      });
+    },
+  };
+
+  const onlinePorts = createOnlinePorts({
+    wasm: loadOnlineWasmHost(),
+    starFactory: (role) => {
+      const star = browserStar({ role, eval: browserStarEval });
+      const initialized = star.initialize();
+      return initialized.ok ? star : undefined;
+    },
+    renderer,
+    keyboard,
+    clipboard,
+    onLobbyEntry: ensureTurnCredentialsFetch,
+    // Room-code signaling (#552): same-origin by default
+    // (`room_signaling_port.ts`'s own header). On a static host with no
+    // Worker behind `/signal/*`, every connection attempt simply fails as
+    // a "handshake_failed" lobby state, and the manual-signaling path
+    // (still fully present in the lobby screen) keeps working.
+    roomSignaling: {
+      openHost: () => connectRoomHost(),
+      openGuest: (code) => connectRoomGuest(code),
+    },
+  });
+
   const app = bootstrap.new(APP_CONTENT, realMatchFactory, initialViewport.w, initialViewport.h, {
     settingsStorage: localStorageSettings(),
+    online: onlinePorts,
     requestQuit: () => {
       // A browser tab cannot reliably self-close outside a script-opened
       // window -- nothing better to do here than log.
@@ -427,6 +510,20 @@ async function main(): Promise<void> {
       setLayerVisibility(false);
       menuCtx.clearRect(0, 0, menuCanvas.width, menuCanvas.height);
       draw.layout(menuBackend, layout, app.viewport);
+    } else if (app.currentRoute() === "lobby") {
+      // The online lobby (`@gc/screens`'s `OnlineLobby`, via `online_ports.ts`)
+      // is not a `Menu`-wrapped screen (`menuLayout` only recognizes those),
+      // so it falls through to this branch -- but unlike the real match
+      // screen, it draws through the SAME 2D `GraphicsBackend` every other
+      // menu screen does (`OnlineLobby.draw(backend)`), not three.js. Route,
+      // not `menuLayout`, is what distinguishes it from the online MATCH
+      // screen (`MatchScreenAsOnlineMatchScreen.draw()`, no-arg, GL canvas
+      // -- the `else` branch below).
+      setLayerVisibility(false);
+      menuCtx.clearRect(0, 0, menuCanvas.width, menuCanvas.height);
+      (
+        app.stack.current() as unknown as { draw(backend: typeof menuBackend): void } | undefined
+      )?.draw(menuBackend);
     } else {
       setLayerVisibility(true);
       app.stack.current()?.draw?.();

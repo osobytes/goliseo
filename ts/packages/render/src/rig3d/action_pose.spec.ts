@@ -556,3 +556,314 @@ describe("ground contact for downward root translations", () => {
     expect(lift("keeper_dive", { dive: 1 })?.[0]).toBeCloseTo(actionPose.metres(1.6), 12);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HIT-REACTION ENVELOPE (#564)
+// ---------------------------------------------------------------------------
+
+describe("hit-reaction envelope shape (hitReactionMultiplier)", () => {
+  // Mirrors action_pose.ts's own private constants -- not imported, since
+  // none is exported; this is the shape's observable contract, not the
+  // numbers as an implementation detail.
+  const ATTACK_TICKS = 4;
+  const SETTLE_TICKS = 3;
+  const RECOVER_TICKS = 8;
+  const PEAK_MULT = 1.15;
+  const HOLD_MULT = 0.75;
+
+  it("ramps from zero at the moment of impact to an overshoot at the attack's end", () => {
+    expect(actionPose.hitReactionMultiplier(0, 100)).toBe(0);
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS / 2, 100)).toBeCloseTo(PEAK_MULT / 2, 12);
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS, 100)).toBeCloseTo(PEAK_MULT, 12);
+    // The whole point of an overshoot: it exceeds the authored static
+    // magnitude (a multiplier of 1), not merely approaches it.
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS, 100)).toBeGreaterThan(1);
+  });
+
+  it("settles from the peak down to a reduced hold, then holds there", () => {
+    const mid = actionPose.hitReactionMultiplier(ATTACK_TICKS + SETTLE_TICKS / 2, 100);
+    expect(mid).toBeLessThan(PEAK_MULT);
+    expect(mid).toBeGreaterThan(HOLD_MULT);
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS + SETTLE_TICKS, 100)).toBeCloseTo(
+      HOLD_MULT,
+      12,
+    );
+    // Held for as long as the window's tail has not started yet -- one tick
+    // later, one hundred ticks later, both read the same hold.
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS + SETTLE_TICKS + 1, 100)).toBeCloseTo(
+      HOLD_MULT,
+      12,
+    );
+    expect(actionPose.hitReactionMultiplier(ATTACK_TICKS + SETTLE_TICKS + 100, 200)).toBeCloseTo(
+      HOLD_MULT,
+      12,
+    );
+    // The reduced hold really is reduced: less than the authored static
+    // magnitude (a multiplier of 1), not merely different from the peak.
+    expect(HOLD_MULT).toBeLessThan(1);
+  });
+
+  it("recovers toward upright over the window's own last few ticks, continuous with the hold", () => {
+    expect(actionPose.hitReactionMultiplier(50, RECOVER_TICKS)).toBeCloseTo(HOLD_MULT, 12);
+    expect(actionPose.hitReactionMultiplier(50, RECOVER_TICKS / 2)).toBeCloseTo(HOLD_MULT / 2, 12);
+    expect(actionPose.hitReactionMultiplier(50, 0)).toBe(0);
+    // Monotonic through the tail: getting up is a ramp, not a second snap.
+    const samples = [8, 6, 4, 2, 0].map((r) => actionPose.hitReactionMultiplier(50, r));
+    for (let i = 1; i < samples.length; i += 1) {
+      const previous = samples[i - 1] ?? Number.NaN;
+      const current = samples[i] ?? Number.NaN;
+      expect(current).toBeLessThanOrEqual(previous);
+    }
+  });
+
+  it("gives a window too short for a hold plateau an immediate, proportional recovery", () => {
+    // A 5-tick window never reaches HIT_ATTACK_TICKS + HIT_SETTLE_TICKS (7)
+    // before RECOVER_TICKS (8) already exceeds it -- `remainingTicks` is
+    // checked first, so this never demands ticks the window does not have.
+    expect(actionPose.hitReactionMultiplier(0, 5)).toBeCloseTo(HOLD_MULT * (5 / RECOVER_TICKS), 12);
+    expect(actionPose.hitReactionMultiplier(0, 5)).toBeLessThan(PEAK_MULT);
+  });
+
+  it("clamps a negative elapsed or remaining rather than reading it as a real tick count", () => {
+    expect(actionPose.hitReactionMultiplier(-5, 100)).toBe(0);
+    expect(actionPose.hitReactionMultiplier(50, -5)).toBe(0);
+  });
+});
+
+describe("hit-reaction envelope wired through apply (#564)", () => {
+  // `combat_knockback`'s own authored lift (`TIPS.combat_knockback.lift`,
+  // metres-converted): a translation, stored as a plain number in
+  // `move.root` rather than folded into a quaternion the way `rot.root` is,
+  // so it is what these tests read to observe the envelope's scaling
+  // without needing to decode a quaternion back into degrees.
+  const KNOCKBACK_STATIC_LIFT = actionPose.metres(0.45);
+
+  function slotOpts(forcedTicks: number | undefined): ActionPoseOptions {
+    return {
+      pose: { id: "combat_knockback" },
+      facing: FACING_UP,
+      ...(forcedTicks !== undefined ? { forced_ticks: forcedTicks } : {}),
+    };
+  }
+
+  function liftOf(pose: actionPose.MutablePose): number {
+    return pose.move["root"]?.[1] ?? Number.NaN;
+  }
+
+  it("keeps every 2-argument caller on exactly today's static, unscaled lift", () => {
+    // No `slotId`/`now` supplied: `ground_contact.spec.ts` and this file's
+    // own baseline tests call `apply` exactly this way, and must keep
+    // reading `TIPS`' authored magnitude untouched -- see `apply`'s own doc
+    // on why this is the compatibility seam rather than an oversight.
+    const pose = actionPose.apply({ rot: {}, move: {} }, slotOpts(1));
+    expect(liftOf(pose)).toBeCloseTo(KNOCKBACK_STATIC_LIFT, 12);
+  });
+
+  it("starts the wall-clock fallback at zero the instant a forced pose id first appears", () => {
+    // No `forced_ticks`, but `slotId`/`now` ARE supplied -- today's actual
+    // production reachability (`animator.ts`'s one call site). The curve
+    // must be LIVE, not the static tilt: the very first frame a forced pose
+    // id appears is the ramp's own zero, exactly like the exact-ticks path.
+    const pose = actionPose.apply({ rot: {}, move: {} }, slotOpts(undefined), "slot_fallback_0", 0);
+    expect(liftOf(pose)).toBeCloseTo(0, 12);
+    expect(liftOf(pose)).not.toBeCloseTo(KNOCKBACK_STATIC_LIFT, 6);
+  });
+
+  it("shapes the lift through attack, hold, and recovery as forced_ticks counts down", () => {
+    const slotId = "slot_envelope";
+    const total = 20;
+    let now = 0;
+    const liftAt = (remaining: number): number => {
+      const pose = actionPose.apply({ rot: {}, move: {} }, slotOpts(remaining), slotId, now);
+      now += 1 / 60;
+      return liftOf(pose);
+    };
+
+    // Frame 0 (elapsed 0): the ramp starts at zero, not the static lift.
+    expect(liftAt(total)).toBeCloseTo(0, 12);
+    // Elapsed 1..3: monotonically growing, still short of the peak.
+    const l1 = liftAt(total - 1);
+    const l2 = liftAt(total - 2);
+    const l3 = liftAt(total - 3);
+    expect(l1).toBeGreaterThan(0);
+    expect(l2).toBeGreaterThan(l1);
+    expect(l3).toBeGreaterThan(l2);
+    expect(l3).toBeLessThan(KNOCKBACK_STATIC_LIFT * 1.15);
+    // Elapsed 4 (HIT_ATTACK_TICKS): the overshoot peak -- past the static
+    // magnitude, which the un-shaped lift (above) never exceeds.
+    const peak = liftAt(total - 4);
+    expect(peak).toBeGreaterThan(KNOCKBACK_STATIC_LIFT);
+    // Elapsed 7 (HIT_ATTACK_TICKS + HIT_SETTLE_TICKS): settled to the
+    // reduced hold -- less than the authored static magnitude.
+    const held = liftAt(total - 7);
+    expect(held).toBeLessThan(KNOCKBACK_STATIC_LIFT);
+    expect(held).toBeGreaterThan(0);
+    // Deep into the recovery tail (2 ticks remaining of an 8-tick window):
+    // most of the way back to upright, and less than the hold.
+    const recovering = liftAt(2);
+    expect(recovering).toBeLessThan(held);
+    // The window ending (0 ticks remaining): fully grounded.
+    expect(liftAt(0)).toBeCloseTo(0, 12);
+  });
+
+  it("keeps two characters' envelopes independent under the same wall clock", () => {
+    // The failure this guards against reads as working software: a
+    // bystander's reaction shaped by another character's hit timing. Two
+    // slots, two different elapsed counts at the SAME `now`, must not
+    // interfere.
+    const now = 0.5;
+    const fresh = actionPose.apply({ rot: {}, move: {} }, slotOpts(20), "slot_a", now);
+    // Prime slot_b through several frames so it has a real latch and a
+    // nonzero elapsed count, then read it back at the same `now` as the
+    // freshly-hit slot_a.
+    let primed = { rot: {}, move: {} };
+    for (const remaining of [20, 19, 18, 17, 16]) {
+      primed = actionPose.apply({ rot: {}, move: {} }, slotOpts(remaining), "slot_b", now);
+    }
+    expect(liftOf(fresh)).toBeCloseTo(0, 12);
+    expect(liftOf(primed)).toBeGreaterThan(liftOf(fresh));
+  });
+
+  it("fades the root overlay out over the blend-out window instead of snapping to the next pose", () => {
+    const slotId = "slot_blend";
+    // Establish a held knockback.
+    actionPose.apply({ rot: {}, move: {} }, slotOpts(15), slotId, 0);
+    const held = actionPose.apply({ rot: {}, move: {} }, slotOpts(14), slotId, 1 / 60);
+    expect(liftOf(held)).toBeGreaterThan(0);
+
+    // `forced_state` clears: the pose id reverts (locomotion has no action
+    // overlay of its own) at t = 2/60s.
+    const justCleared = actionPose.apply(
+      { rot: {}, move: {} },
+      { pose: { id: "locomotion" }, facing: FACING_UP },
+      slotId,
+      2 / 60,
+    );
+    // Not an instant snap to zero: the blend-out is still mostly at the held
+    // lift one frame after clearing.
+    expect(liftOf(justCleared)).toBeGreaterThan(0);
+    expect(liftOf(justCleared)).toBeLessThanOrEqual(liftOf(held));
+
+    // Well past HIT_BLEND_OUT_SECONDS (0.1s): fully faded to the new pose's
+    // own geometry (locomotion authors no root overlay, so no `move.root`
+    // at all).
+    const settled = actionPose.apply(
+      { rot: {}, move: {} },
+      { pose: { id: "locomotion" }, facing: FACING_UP },
+      slotId,
+      1,
+    );
+    expect(settled.move["root"]).toBeUndefined();
+  });
+});
+
+describe("hit-reaction wall-clock fallback (#564, no live forced_ticks)", () => {
+  const KNOCKBACK_STATIC_LIFT = actionPose.metres(0.45);
+  // Mirrors action_pose.ts's own private HIT_FALLBACK_ASSUMED_TOTAL_TICKS
+  // (== gc_sim::combat::MAX_DISABLE_TICKS) and HIT_FALLBACK_TICKS_PER_SECOND.
+  const ASSUMED_TOTAL_TICKS = 30;
+  const TICKS_PER_SECOND = 60;
+
+  function fallbackOpts(poseId = "combat_knockback"): ActionPoseOptions {
+    // Deliberately omits `forced_ticks`: this describe block is entirely
+    // about the branch that engages when it is absent.
+    return { pose: { id: poseId }, facing: FACING_UP };
+  }
+
+  function liftOf(pose: actionPose.MutablePose): number {
+    return pose.move["root"]?.[1] ?? Number.NaN;
+  }
+
+  it("advances the curve by elapsed wall time once a forced pose id appears, assuming the MAX_DISABLE_TICKS cap", () => {
+    const slotId = "fallback_lifecycle";
+    // Frame 0: the pose id first appears. The latch takes `now` here, so
+    // elapsed is zero and the ramp starts at zero -- not the static tilt.
+    const first = actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, 10);
+    expect(liftOf(first)).toBeCloseTo(0, 12);
+
+    // Elapsed HIT_ATTACK_TICKS worth of real time (4 ticks at 60 Hz): the
+    // overshoot peak, exactly as the exact-ticks path reaches it at the
+    // same elapsed tick count.
+    const peakNow = 10 + 4 / TICKS_PER_SECOND;
+    const peak = actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, peakNow);
+    expect(liftOf(peak)).toBeCloseTo(
+      KNOCKBACK_STATIC_LIFT * actionPose.hitReactionMultiplier(4, ASSUMED_TOTAL_TICKS - 4),
+      10,
+    );
+    expect(liftOf(peak)).toBeGreaterThan(KNOCKBACK_STATIC_LIFT);
+
+    // Elapsed past HIT_ATTACK_TICKS + HIT_SETTLE_TICKS (7 ticks): settled to
+    // the reduced hold, same as the exact path at the same elapsed count.
+    const holdNow = 10 + 7 / TICKS_PER_SECOND;
+    const held = actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, holdNow);
+    expect(liftOf(held)).toBeCloseTo(
+      KNOCKBACK_STATIC_LIFT * actionPose.hitReactionMultiplier(7, ASSUMED_TOTAL_TICKS - 7),
+      10,
+    );
+    expect(liftOf(held)).toBeLessThan(KNOCKBACK_STATIC_LIFT);
+    expect(liftOf(held)).toBeGreaterThan(0);
+
+    // Elapsed the full assumed window (30 ticks / 0.5s): the fallback's own
+    // recovery has run its course, fully grounded -- reached by wall time
+    // alone, with no `forced_ticks` ever supplied.
+    const recoveredNow = 10 + ASSUMED_TOTAL_TICKS / TICKS_PER_SECOND;
+    const recovered = actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, recoveredNow);
+    expect(liftOf(recovered)).toBeCloseTo(0, 6);
+  });
+
+  it("blends out from wherever the fallback curve was when the pose id clears early", () => {
+    // A REAL window shorter than the assumed 30-tick cap: the pose id
+    // reverts to locomotion after only 6 ticks of wall time, well inside
+    // the fallback's assumed hold phase. This is the "early release"
+    // `hitReaction`'s own doc says degrades gracefully -- through the same
+    // blend-out an on-time recovery uses, not a snap.
+    const slotId = "fallback_early_release";
+    actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, 100);
+    const midHit = actionPose.apply(
+      { rot: {}, move: {} },
+      fallbackOpts(),
+      slotId,
+      100 + 6 / TICKS_PER_SECOND,
+    );
+    const midLift = liftOf(midHit);
+    expect(midLift).toBeGreaterThan(0);
+
+    const clearedAt = 100 + 6 / TICKS_PER_SECOND + 1 / TICKS_PER_SECOND;
+    const justCleared = actionPose.apply(
+      { rot: {}, move: {} },
+      { pose: { id: "locomotion" }, facing: FACING_UP },
+      slotId,
+      clearedAt,
+    );
+    // Not an instant snap: the blend-out starts from (approximately) the
+    // in-flight fallback lift, not from zero.
+    expect(liftOf(justCleared)).toBeGreaterThan(0);
+    expect(liftOf(justCleared)).toBeLessThanOrEqual(midLift);
+
+    const settled = actionPose.apply(
+      { rot: {}, move: {} },
+      { pose: { id: "locomotion" }, facing: FACING_UP },
+      slotId,
+      clearedAt + 1, // well past HIT_BLEND_OUT_SECONDS (0.1s)
+    );
+    expect(settled.move["root"]).toBeUndefined();
+  });
+
+  it("re-latches a fresh window instead of carrying a stale elapsed count across a full clear", () => {
+    const slotId = "fallback_relatch";
+    actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, 0);
+    // Run this window all the way through its assumed length and past the
+    // blend-out, so the slot returns to having no latch at all.
+    actionPose.apply(
+      { rot: {}, move: {} },
+      { pose: { id: "locomotion" }, facing: FACING_UP },
+      slotId,
+      ASSUMED_TOTAL_TICKS / TICKS_PER_SECOND + 1,
+    );
+    // A second, later hit starts its own ramp at zero again -- it must not
+    // read as instantly recovered because of the earlier window's elapsed
+    // time.
+    const second = actionPose.apply({ rot: {}, move: {} }, fallbackOpts(), slotId, 1000);
+    expect(liftOf(second)).toBeCloseTo(0, 12);
+  });
+});

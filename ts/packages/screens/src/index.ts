@@ -20,29 +20,13 @@ export type {
   TeamResultStats,
 } from "./content.ts";
 
-export { squad } from "./squad.ts";
+export { teamSheet, STARTER_COUNT } from "./team_sheet.ts";
 export type {
-  SquadAction,
-  SquadContentData,
-  SquadScreenContext,
-  SquadScreenState,
-} from "./squad.ts";
-
-export { formation } from "./formation.ts";
-export type {
-  FormationAction,
-  FormationContentData,
-  FormationScreenContext,
-  FormationScreenState,
-} from "./formation.ts";
-
-export { tactic } from "./tactic.ts";
-export type {
-  TacticAction,
-  TacticContentData,
-  TacticScreenContext,
-  TacticScreenState,
-} from "./tactic.ts";
+  TeamSheetAction,
+  TeamSheetContentData,
+  TeamSheetScreenContext,
+  TeamSheetScreenState,
+} from "./team_sheet.ts";
 
 export { result } from "./result.ts";
 export type {
@@ -71,6 +55,20 @@ export type { PauseAction, PauseScreenState } from "./pause.ts";
 export { title } from "./title.ts";
 export type { TitleAction, TitleScreenState } from "./title.ts";
 
+export { multiplayer } from "./multiplayer.ts";
+export type {
+  MultiplayerAction,
+  MultiplayerScreenContext,
+  MultiplayerScreenState,
+} from "./multiplayer.ts";
+
+export { sessionEnded } from "./session_ended.ts";
+export type {
+  SessionEndedAction,
+  SessionEndedScreenContext,
+  SessionEndedScreenState,
+} from "./session_ended.ts";
+
 export { credits } from "./credits.ts";
 export type { CreditsAction, CreditsScreenState } from "./credits.ts";
 
@@ -93,6 +91,7 @@ export {
   TERMINAL_TEXT as LOBBY_TERMINAL_TEXT,
   DEPARTURE_TEXT as LOBBY_DEPARTURE_TEXT,
   PREFERENCE_TEXT as LOBBY_PREFERENCE_TEXT,
+  ROOM_FAILURE_TEXT as LOBBY_ROOM_FAILURE_TEXT,
 } from "./lobby_model.ts";
 export type {
   CoordinatorAction,
@@ -128,6 +127,8 @@ export type {
   ProtocolFixturePort,
   ProtocolMessage,
   ProtocolPort as LobbyProtocolPort,
+  RoomCodeEntry,
+  RoomSignalingStatus,
   SessionLifecyclePhase,
   SessionManifest,
   SessionManifestTeam,
@@ -160,6 +161,9 @@ export type {
   LobbyLinkInstance,
   OnlineLobbyAction,
   OnlineLobbyOptions,
+  RoomSignalingEvent,
+  RoomSignalingFactory,
+  RoomSignalingHandle,
 } from "./online_lobby.ts";
 
 export {
@@ -201,8 +205,16 @@ export type {
   MatchPresentationPort,
   MatchSessionPort,
   OnlineMatchDispatchEvent,
+  // Both already existed in `online_match.ts` (its own constructor takes an
+  // `OnlineMatchModelPort`, and `OnlineMatchOptions.request`/`.coordinator`
+  // are typed in terms of `OnlineMatchState`) but were not re-exported --
+  // #550's `@gc/app` `online_ports.ts` (the production wiring `app.ts`'s
+  // own header says was the missing piece all along) is the first caller
+  // outside this package that needs to name either type directly.
+  OnlineMatchModelPort,
   OnlineMatchOptions,
   OnlineMatchRequest,
+  OnlineMatchState,
 } from "./online_match.ts";
 
 export { RealMatchScreen } from "./real_match.ts";

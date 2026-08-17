@@ -87,14 +87,23 @@ writeFileSync(jsPath, source);
 let dts = readFileSync(dtsPath, "utf8");
 dts += `
 // --- Patched by ts/packages/wasm/scripts/build_web.mjs ---
-// Mirrors gc_wasm_bg.wasm.d.ts's raw ABI for exactly the functions
-// the browser render path needs. Only meaningful to call after \`default\`
-// (init) has resolved -- see this script's header.
+// Mirrors gc_wasm_bg.wasm.d.ts's raw ABI -- both the SimSession per-frame
+// path (\`render_frame_*\`) and the MatchDriverBridge one
+// (\`driver_render_frame_*\`, added for #550's online-match wiring:
+// \`@gc/app\`'s \`browser_online_wasm_host.ts\` needs these to build a live
+// online frame the same way \`@gc/wasm\`'s own Node-target \`SimHost.buildMatchDriverRenderFrame\`
+// already does) -- see \`@gc/wasm/src/types.ts\`'s \`RawExports\` for the
+// identical shape on the Node target. \`__getRawExports()\` itself always
+// returned the WHOLE instantiated module (\`return wasm\`, below) -- this is
+// a type-annotation widening only, not a runtime change. Only meaningful to
+// call after \`default\`/\`initSync\` has resolved -- see this script's header.
 export function __getRawExports(): {
     readonly memory: WebAssembly.Memory;
     render_frame_build(handle: number, kickFollowSlots: number): number;
     render_frame_ptr(): number;
     render_frame_len(): number;
+    driver_render_frame_ptr(): number;
+    driver_render_frame_len(): number;
 };
 `;
 writeFileSync(dtsPath, dts);

@@ -64,10 +64,19 @@ export const viewState = {
 
   // Gait cycle parameters, in world units. A stride is the distance covered
   // by one full two-step cycle, and it lengthens as a player speeds up.
-  WALK_STRIDE: 130,
-  RUN_STRIDE: 285,
-  WALK_SPEED: 150,
-  RUN_SPEED: 400,
+  //
+  // Retuned for the sim's actual reachable envelope (gc-sim stats.rs, SPRINT_MULT
+  // 1.35, roster pace 4-8): base move speed is 140-220 u/s and a full sprint
+  // tops out around 297-351 u/s. The previous WALK_SPEED/RUN_SPEED pair (150/400)
+  // meant runMix never exceeded ~0.59 at the sim's fastest sprint, so the run
+  // clip was permanently under-weighted and every player read as a brisk walk.
+  // Cadence (cycles/sec = speed / stride) at the new thresholds: 90/100 = 0.9
+  // at WALK_SPEED, 260/185 ≈ 1.41 at RUN_SPEED -- in the same 0.8-1.1 / 1.3-1.5
+  // bands the old 150/130 ≈ 1.15 and 400/285 ≈ 1.40 pair read at.
+  WALK_STRIDE: 100,
+  RUN_STRIDE: 185,
+  WALK_SPEED: 90,
+  RUN_SPEED: 260,
 
   update(players: readonly ViewStatePlayer[], dt: number, pose?: ViewStatePose): void {
     for (const p of players) {

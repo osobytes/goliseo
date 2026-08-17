@@ -206,7 +206,7 @@ export type KeeperBehaviorState = "base" | "advance" | "contain" | "set" | "retr
 /** A keeper-relevant shot's presentation type. Mirrors Rust `crates/gc-sim`'s `KeeperShotType` enum. */
 export type KeeperShotType = "ground" | "chip";
 
-/** Wire-carried closed set. Numbered exactly as Rust `crates/gc-sim`'s `MatchEventKind` enum, 1..25. */
+/** Wire-carried closed set. Numbered exactly as Rust `crates/gc-sim`'s `MatchEventKind` enum, 1..26. */
 export type MatchEventKind =
   | "shot"
   | "pass"
@@ -232,7 +232,8 @@ export type MatchEventKind =
   | "volley"
   | "bicycle"
   | "reception"
-  | "juke";
+  | "juke"
+  | "tackle_miss";
 
 /** Who holds the ball this frame. Not part of `pitch.ts`'s `RenderFrame` slice; see this module's report. */
 export interface RenderFramePossession {
@@ -582,6 +583,8 @@ function eventKindFromCode(code: number): MatchEventKind | undefined {
       return "reception";
     case 25:
       return "juke";
+    case 26:
+      return "tackle_miss";
     default:
       return undefined;
   }

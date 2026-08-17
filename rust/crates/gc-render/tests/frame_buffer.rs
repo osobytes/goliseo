@@ -610,5 +610,6 @@ fn numbers_every_enum_from_one_leaving_zero_for_absent() {
         .map(frame_buffer::event_kind_code)
         .collect();
     dense_from_one(&event_codes, "EVENT_KIND");
-    assert_eq!(event_codes.len(), 25);
+    // #489: 25 -> 26 for the new `TackleMiss` event kind (wire code 26).
+    assert_eq!(event_codes.len(), 26);
 }

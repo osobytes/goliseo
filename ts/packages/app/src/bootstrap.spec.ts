@@ -191,9 +191,13 @@ describe("real match adapter", () => {
     expect(app.currentRoute()).toBe("title");
 
     app.handleAction({ go: "play" });
-    app.handleAction({ go: "formation", starterIds: NEBULA.roster });
-    app.handleAction({ go: "tactic", formationId: "1-2-1" });
-    app.handleAction({ go: "match", tacticId: "press_high" });
+    app.handleAction({
+      go: "match",
+      starterIds: NEBULA.roster,
+      formationId: "1-2-1",
+      tacticId: "press_high",
+      combatEnabled: true,
+    });
     expect(app.currentRoute()).toBe("match");
 
     const host = hosts[hosts.length - 1];

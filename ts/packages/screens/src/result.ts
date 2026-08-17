@@ -18,12 +18,21 @@ export interface ResultContentData {
 
 export interface ResultScreenContext {
   readonly result: ProductMatchResult;
+  /**
+   * True when this full time ended an online session. The screen was mounted
+   * twice on two routes for exactly this — so the offline rematch, which
+   * replays a local session that no longer exists, could not be reached from
+   * an online one. One flag does the same job: it swaps the footer's middle
+   * action for a route back to the lobby.
+   */
+  readonly online?: boolean;
 }
 
 export interface ResultScreenState {
   readonly viewport: { readonly w: number; readonly h: number };
   readonly content: ResultContentData;
   readonly result: ProductMatchResult;
+  readonly online: boolean;
   readonly focus: string;
 }
 
@@ -42,7 +51,13 @@ function newState(
   content: ResultContentData,
   context: ResultScreenContext,
 ): ResultScreenState {
-  return { viewport, content, result: context.result, focus: "rematch" };
+  return {
+    viewport,
+    content,
+    result: context.result,
+    online: context.online ?? false,
+    focus: "rematch",
+  };
 }
 
 function layout(state: ResultScreenState): Layout {
@@ -110,19 +125,31 @@ function layout(state: ResultScreenState): Layout {
     },
   ];
 
-  const buttons: readonly [string, string][] = [
-    ["change_lineup", "LINEUP"],
-    ["change_plan", "PLAN"],
-    ["main_menu", "MENU"],
-    ["rematch", "REMATCH"],
-  ];
+  // The middle action is the only thing context changes. Offline, LINEUP and
+  // PLAN both led back into the same pre-match screen once squad, formation
+  // and tactic became one; they are one button now.
+  const buttons: readonly [string, string][] = state.online
+    ? [
+        ["main_menu", "MENU"],
+        ["back_to_lobby", "BACK TO LOBBY"],
+        ["rematch", "REMATCH"],
+      ]
+    : [
+        ["main_menu", "MENU"],
+        ["change_plan", "CHANGE PLAN"],
+        ["rematch", "REMATCH"],
+      ];
+  const buttonW = 200;
+  const gap = 24;
+  const totalW = buttons.length * buttonW + (buttons.length - 1) * gap;
+  const startX = Math.round((state.viewport.w - totalW) / 2);
   buttons.forEach(([id, text], i) => {
     widgets.push({
       id,
       kind: "button",
       text,
       focused: state.focus === id,
-      rect: { x: 72 + i * 214, y: 438, w: 174, h: 44 },
+      rect: { x: startX + i * (buttonW + gap), y: 438, w: buttonW, h: 44 },
     });
   });
   return widgets;

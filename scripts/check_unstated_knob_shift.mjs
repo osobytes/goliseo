@@ -160,6 +160,20 @@ export const ALLOWLIST = [
       "asserts a too-small seed set panics -- MIN_SEEDS is checked before opts.expect is " +
       "ever read, same reasoning as the sibling test above",
   },
+  {
+    id: "rust/crates/gc-sim/tests/knob_contract.rs::the_post_531_pass_census_reports_against_completion",
+    reason:
+      "#531 phase 4's PASS_* re-census: reproduces the original #491 census's own " +
+      "methodology, which measures every knob against pass_completion in BOTH directions " +
+      "to find whichever pairing is closest to WIRED, exactly like noise_floor's own " +
+      "allowed Unstated use above -- the census's job is to report which knobs move at " +
+      "all, not to assert one direction in advance. It uses knob_moves_metric (report, " +
+      "never panics) rather than assert_moves, and any knob it finds newly WIRED gets a " +
+      "separate, directional, committed contract elsewhere in the same file " +
+      "(a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer, " +
+      "a_lower_pass_speed_floor_raises_completion_once_dilution_drops) -- this test is " +
+      "the ignored measurement pilot behind those two, not a substitute for them.",
+  },
 ];
 
 // Comfortably below the count when this gate was written (265 tracked `.rs`

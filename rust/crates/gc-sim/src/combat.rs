@@ -440,6 +440,21 @@ pub fn prepare_inputs(
             }
             suppress_soccer_actions(input);
             input.equipment_pressed = false;
+            // Suppression can eat the release edge that would otherwise have
+            // fired a charged pass (the button goes up on a tick where this
+            // player is committed or forced, so `human_outfield_actions`
+            // never sees it): without this, `pass_charge` latches and the
+            // HUD bar sticks. A fresh equipment press already clears a
+            // charge the same way (see the commit branch below); an ongoing
+            // suppression is the symmetric case, and a hit already cancels
+            // soccer commitments, so a forfeited charge here matches that
+            // rule rather than special-casing it. `pass_target` is a pure
+            // preview marker with no memory (no simulation effect either
+            // way — see the pass-preview-marker tests), cleared alongside it
+            // only so the HUD stops drawing a stale receiver hint.
+            let match_player = &mut state.players[player_index - 1];
+            match_player.pass_charge = 0.0;
+            match_player.pass_target = None;
         } else if input.equipment_pressed {
             if let Some(reason) = request_rejection(
                 state,
@@ -560,9 +575,8 @@ fn melee_geometry(
     if distance <= EPSILON {
         return (true, projection);
     }
-    let half_arc = (family.front_arc_degrees / 2.0).to_radians();
     (
-        dot(offset.scale(1.0 / distance), facing) + EPSILON >= half_arc.cos(),
+        dot(offset.scale(1.0 / distance), facing) + EPSILON >= family.front_arc_cos,
         projection,
     )
 }
@@ -574,9 +588,8 @@ fn target_guarding(target: &MatchPlayer, source_pos: Vec2) -> bool {
         return true;
     }
     let facing = unit_or(target.facing, team_facing_fallback(target.team));
-    let guard_arc =
-        (action_families::get(ActionFamilyId::Guard).front_arc_degrees / 2.0).to_radians();
-    dot(offset.scale(1.0 / distance), facing) + EPSILON >= guard_arc.cos()
+    let guard_arc_cos = action_families::get(ActionFamilyId::Guard).front_arc_cos;
+    dot(offset.scale(1.0 / distance), facing) + EPSILON >= guard_arc_cos
 }
 
 fn select_melee_target(

@@ -233,11 +233,15 @@ pub struct OutfieldPoseContext {
 }
 
 /// The slice of `@gc/presentation`'s `CombatPlayerPresentation` (TS-owned)
-/// that pose selection reads. Declared
-/// locally rather than imported, because presentation crosses the language
-/// boundary into TypeScript and this module only ever reads three of its
-/// fields.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// that pose selection reads, plus one field it does not.
+/// Declared locally rather than imported, because presentation crosses the
+/// language boundary into TypeScript and this module only ever reads three
+/// of its fields: `phase`, `forced_state` and `forced_ticks` decide which
+/// pose wins in [`select`]. `immunity_fraction` is the fourth and is
+/// carried through for a renderer to draw a post-hit cue with — `select`
+/// itself never reads it, so a change to it can never change which pose is
+/// chosen.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CombatPoseSample {
     /// The player's current combat action phase.
     pub phase: CombatActionPhase,
@@ -245,6 +249,14 @@ pub struct CombatPoseSample {
     pub forced_state: Option<CombatForcedState>,
     /// Ticks remaining in the forced state.
     pub forced_ticks: i64,
+    /// The post-hit immunity window's remaining fraction, in `[0, 1]`: `1.0`
+    /// immediately after a hit, decaying linearly to `0.0` as
+    /// `gc_sim::combat::IMMUNITY_TICKS` elapses, and `0.0` whenever no
+    /// immunity is active. Normalised here (rather than carried as a raw
+    /// tick count, the way `forced_ticks` is) so a renderer never needs its
+    /// own copy of the immunity window's length to read it — see
+    /// [`crate::frame::combat_model`] for where the division happens.
+    pub immunity_fraction: f64,
 }
 
 fn add(candidates: &mut Vec<PlayerPoseSelection>, id: PlayerPoseId, source: PlayerPoseSource) {

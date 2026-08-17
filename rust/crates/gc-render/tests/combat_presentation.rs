@@ -19,6 +19,7 @@ use gc_render::player_pose::{
 };
 use gc_sim::aerial::AerialStyle;
 use gc_sim::combat;
+use gc_sim::combat::IMMUNITY_TICKS;
 use gc_sim::combat_feasibility::CombatActionPhase;
 use gc_sim::combat_snapshot::CombatForcedState;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
@@ -54,6 +55,7 @@ fn keeps_keeper_aerial_forced_and_committed_combat_poses_in_one_order() {
         phase: CombatActionPhase::Windup,
         forced_state: None,
         forced_ticks: 2,
+        immunity_fraction: 0.0,
     };
     assert_eq!(
         player_pose::select(player, Some(&sample), None, None).id,
@@ -165,6 +167,7 @@ fn the_combat_model_carries_each_slot_s_own_phase_and_forced_state() {
     combat.players[1].phase = CombatActionPhase::Aim;
     combat.players[2].forced_state = Some(CombatForcedState::Knockback);
     combat.players[2].forced_ticks = 4;
+    combat.players[2].immunity_ticks = IMMUNITY_TICKS;
 
     let model = frame::combat_model(&state, &combat);
     assert!(model.enabled, "a model is only built for a combat match");
@@ -177,6 +180,29 @@ fn the_combat_model_carries_each_slot_s_own_phase_and_forced_state() {
         Some(CombatForcedState::Knockback)
     );
     assert_eq!(model.players[2].forced_ticks, 4);
+    // Slot 0 has no immunity running (0 ticks): the cue is off.
+    assert_eq!(model.players[0].immunity_fraction, 0.0);
+    // Slot 2 was just hit -- immunity is at its full window -- so the cue
+    // starts at exactly 1.0, not merely "greater than zero".
+    assert_eq!(model.players[2].immunity_fraction, 1.0);
+}
+
+/// The immunity fraction's own contract, pinned as an exact ratio rather
+/// than only bounds: it is `runtime.immunity_ticks / IMMUNITY_TICKS`, so a
+/// renderer can read it as "how much of the post-hit window is left"
+/// without knowing the window's length itself.
+#[test]
+fn the_combat_model_normalises_immunity_ticks_into_an_exact_fraction() {
+    let mut state = fixture();
+    let mut combat = combat::new_state(&mut state, None);
+    combat.players[1].immunity_ticks = IMMUNITY_TICKS / 3;
+
+    let model = frame::combat_model(&state, &combat);
+    assert_eq!(
+        model.players[1].immunity_fraction,
+        (IMMUNITY_TICKS / 3) as f64 / IMMUNITY_TICKS as f64
+    );
+    assert!(model.players[1].immunity_fraction > 0.0 && model.players[1].immunity_fraction < 1.0);
 }
 
 /// The alignment guard, shown FIRING rather than merely present.

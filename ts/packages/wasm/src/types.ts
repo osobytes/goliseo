@@ -174,6 +174,55 @@ export interface AiDrivenEvidence {
   readonly score_away: number;
 }
 
+/**
+ * Mirrors `gc_wasm::wasm_native_corpus_bridge::CorpusScenarioInfo`
+ * (`crates/gc-wasm/src/wasm_native_corpus_bridge.rs`) — one
+ * `gc_sim::wasm_native_corpus::CorpusScenario`, as returned by
+ * {@link GcWasmModule.corpusScenarios}. See #517.
+ */
+export interface CorpusScenarioInfo {
+  readonly id: string;
+  readonly match_seed: number;
+  readonly bot_seed: number;
+  readonly ticks: number;
+  readonly combat_enabled: boolean;
+}
+
+/**
+ * Mirrors `gc_wasm::wasm_native_corpus_bridge::CorpusRunResult` — the result
+ * of one {@link GcWasmModule.runCorpusScenario} call. `tick_hashes` has
+ * `ticks + 1` entries (tick 0 through `ticks` inclusive), one independent
+ * FNV-1a-64 hash per tick, so a caller comparing two runs of the same
+ * scenario can find the first index they disagree at directly — see
+ * `rust/crates/gc-sim/src/wasm_native_corpus.rs`'s module doc.
+ */
+export interface CorpusRunResult {
+  readonly scenario_id: string;
+  readonly ticks: number;
+  readonly tick_hashes: string[];
+  readonly final_hash: string;
+  readonly sequence_digest: string;
+  readonly score_home: number;
+  readonly score_away: number;
+  readonly covered_touch: boolean;
+  readonly covered_shot: boolean;
+  readonly covered_pass: boolean;
+  readonly covered_reception: boolean;
+  readonly covered_tackle: boolean;
+  readonly covered_combat_commit: boolean;
+  readonly covered_aerial: boolean;
+  readonly covered_keeper_save: boolean;
+  /** The final tick's ball state: `[x, y, vel_x, vel_y, z, vz]`. For
+   * ATTRIBUTION: diff this (and `last_players`) between `ticks` and
+   * `ticks - 1` calls, on both targets, to find which scalar first changed
+   * at a known divergent tick. */
+  readonly last_ball: number[];
+  readonly last_owner: number;
+  readonly last_rng: number;
+  /** The final tick's player positions, flattened `[x0, y0, x1, y1, ...]`. */
+  readonly last_players: number[];
+}
+
 /** Mirrors `gc_wasm::protocol_bridge::ControlMessageHeader`. */
 export interface ControlMessageHeader {
   readonly kind: string;
@@ -1339,7 +1388,7 @@ export interface PlayerPoseBridge {
    *   "player": { "id": "nebula_02", "is_keeper": false, /* ... *\/ },
    *   // All three optional/omittable, mirroring `player_pose::select`'s
    *   // own optional parameters -- omit exactly when the caller has none.
-   *   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4 },
+   *   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6 },
    *   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
    *   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
    * }
@@ -1377,6 +1426,21 @@ export interface GcWasmModule
   runDeterminismEvidence(): DeterminismEvidence;
   runAiDrivenEvidence(): AiDrivenEvidence;
   runAiDrivenEvidenceTo(ticks: number): AiDrivenEvidence;
+  /** `gc_sim::wasm_native_corpus::CORPUS`'s own scenario list — the single
+   * source of truth for #517's seeded native-vs-wasm differential corpus, so
+   * a caller drives the SAME scenarios the native side defines rather than
+   * maintaining a second, driftable copy. See
+   * `scripts/check_wasm_native_corpus.mjs`. */
+  corpusScenarios(): CorpusScenarioInfo[];
+  /** Runs one #517 corpus scenario inside this compiled wasm module. See
+   * {@link CorpusRunResult}. */
+  runCorpusScenario(
+    id: string,
+    matchSeed: number,
+    botSeed: number,
+    ticks: number,
+    combatEnabled: boolean,
+  ): CorpusRunResult;
   decodeControlMessageHeader(wire: string): ControlMessageHeader;
   protocolVocabularyId(): string;
   /** `gc_data::tuning_presets::ALL`, as {@link WasmTuningPreset}s, in panel

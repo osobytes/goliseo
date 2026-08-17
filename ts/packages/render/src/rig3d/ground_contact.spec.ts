@@ -20,7 +20,7 @@
 // [0, 0, 0] and `player_renderer_3d.ts` hands the posed bones to three.js in
 // that space, so a vertex at negative y is a vertex below the turf.
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { mat4 } from "@gc/core";
 import * as actionPose from "./action_pose.ts";
 import * as animator from "./animator.ts";
@@ -39,8 +39,8 @@ const RIG = RIG_MEDIUM;
 // rig3d, which points only upward (see `animator.ts`'s layer-boundary note).
 // `pose_table.locomotionBlend` is what reads them, and `pose_table.spec.ts`
 // pins these exact two values against `view_state.ts`.
-const WALK_SPEED = 150;
-const RUN_SPEED = 400;
+const WALK_SPEED = 90;
+const RUN_SPEED = 260;
 
 // Everything below is compared against millimetres, so the tolerance has to be
 // far finer than the effect. A tenth of a millimetre is ~0.006% of the
@@ -269,6 +269,39 @@ function groundedOnRig(
   );
   const lift = ground.poseAndGround(rig, pose, probes);
   return { pose, lift };
+}
+
+/**
+ * The same computation `poseOnRig`/`groundedOnRig` produce via
+ * `animator.poseFor`, but calling `action_pose.apply`'s STATIC 2-argument
+ * form (no slot id, no wall clock) instead -- so a forced reaction pose
+ * (`combat_knockback`/`combat_stagger`) reads at its AUTHORED magnitude
+ * rather than wherever #564's hit-reaction envelope happens to land a
+ * single, fresh-slot-per-call, elapsed-zero frame (see `action_pose.ts`'s
+ * own doc: the FIRST frame any slot observes a forced window is always
+ * elapsed 0, i.e. a multiplier of exactly zero, whatever `forced_ticks` it
+ * is or is not handed).
+ *
+ * Valid for any pose id that engages neither a stance action nor a crouch
+ * attitude -- true of both `combat_knockback` and `combat_stagger`
+ * (`pose_table.ts` maps both to `noAction`, and neither appears in
+ * `action_pose.ts`'s `ATTITUDES` table) -- which is exactly the case this
+ * file's own equipment-clearance assertions need: they pin the AUTHORED
+ * tilt these two poses are given in `TIPS`, not the envelope #564 layers on
+ * top of it for a real, in-flight hit (see `action_pose.ts`'s HIT-REACTION
+ * ENVELOPE note on that distinction). `animator.basePose` is the same
+ * locomotion-base computation `poseFor` runs internally before its own
+ * action overlay, so this reproduces `poseFor`'s pre-#564 output exactly
+ * for these two pose ids, not an approximation of it.
+ */
+function staticForcedPose(
+  id: "combat_knockback" | "combat_stagger",
+  frame: Frame,
+  extra?: Partial<actionPose.ActionPoseOptions>,
+): actionPose.MutablePose {
+  const opts = { pose: { id }, dive_dir: { x: 1, y: 0 }, facing: { x: 0, y: 1 }, ...extra };
+  const base = animator.basePose({ speed: frame.speed, gait: frame.gait }, frame.now);
+  return actionPose.apply(base, opts);
 }
 
 /** The seven poses #439 names: every entry in `TIPS`/`ATTITUDES` with a drop. */
@@ -1515,6 +1548,14 @@ describe("ground contact: #444's floor and #446's lift compose", () => {
 describe("ground contact: equipment (#447)", () => {
   const standing = { speed: 0, gait: 0, now: 0 };
 
+  // `poseSeq` only grows, so a stale hit-reaction latch (#564,
+  // `action_pose.ts`'s `hitReactionStates`) from an earlier slot id could
+  // never leak into this block's own slot ids -- reset anyway so that stays
+  // true by construction rather than by the counter never wrapping.
+  beforeEach(() => {
+    actionPose.resetHitReactions();
+  });
+
   // THE ONE OUTFIELD CASE WHERE A BODY-ONLY MEASUREMENT LIES, AND IT SURVIVES
   // #447 UNCHANGED. Everywhere else in this file, ignoring the props
   // understates the depth. Here it inverts the answer: the body reads a
@@ -1529,8 +1570,14 @@ describe("ground contact: equipment (#447)", () => {
   // shield away from keepers and from nobody else, so the case is not a
   // hypothetical about a figure that no longer exists.
   it("combat_knockback: an outfielder's body reads clear while their shield does not", () => {
+    // `staticForcedPose`, not `poseOnRig`/`groundedOnRig`: this test's every
+    // number below is derived from `TIPS.combat_knockback`'s AUTHORED 0.45r
+    // lift, not from wherever #564's hit-reaction envelope would otherwise
+    // sample a single fresh-slot call (always elapsed 0, i.e. no lift at
+    // all -- see that helper's own doc).
     const flat = flatRig();
-    poseOnRig(flat, "combat_knockback", standing);
+    const knockback = staticForcedPose("combat_knockback", standing);
+    skeleton.apply(flat, knockback);
     const bodyOnly = lowestRendered(flat, PROP, SHIELD_MESH.verts);
     const withProps = lowestRendered(flat, undefined, SHIELD_MESH.verts);
     expect(bodyOnly.y, "body-only, this pose looks entirely fine").toBeGreaterThan(40 * MM);
@@ -1541,7 +1588,11 @@ describe("ground contact: equipment (#447)", () => {
     expect(withProps.bone, "and it is the shield that does it").toBe("socket_shield.L");
 
     const rig = groundedRig();
-    const { lift } = groundedOnRig(rig, "combat_knockback", standing, undefined, SHIELD_PROBES);
+    const lift = ground.poseAndGround(
+      rig,
+      staticForcedPose("combat_knockback", standing),
+      SHIELD_PROBES,
+    );
     expect(lift, "the lift is driven by the shield, so it is small").toBeCloseTo(
       -(withProps.y + SHIELD_PROBES.restLift),
       9,

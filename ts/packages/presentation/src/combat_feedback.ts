@@ -117,6 +117,18 @@ export interface CombatFeedbackSettings {
 const NOTICE_SECONDS = 0.72;
 const MAX_NOTICE_COUNT = 6;
 const IMPULSE_SECONDS = 0.16;
+// A forced (stagger/knockback) hit interrupts the victim's control for up to
+// 30 ticks / 0.5s (a sim-owned duration this module never touches) plus 45
+// ticks / 0.75s of post-hit immunity -- and the camera used to settle at a
+// third of the way through the shorter of those, well before the victim's
+// own reaction has finished playing. This is the one dispositional beat
+// worth a longer read: it decays over roughly the length of the ATTACK/HOLD
+// portion of `rig3d/action_pose.ts`'s hit-reaction envelope, so the camera
+// settles around when the character visibly starts getting back up, not
+// mid-impact. Every other disposition (guard recoils, plain contacts, ball
+// spills) keeps the short `IMPULSE_SECONDS` -- see `impulseSeconds` below,
+// which is the one place this distinction is made.
+const FORCED_IMPULSE_SECONDS = 0.35;
 const MAX_CAMERA_OFFSET = 4;
 let defaultReducedMotion = false;
 let defaultReducedFlash = false;
@@ -431,6 +443,15 @@ function configure(
   }
 }
 
+// The only place a forced hit's camera read is distinguished from every
+// other disposition's. `semantic_id` rather than `disposition` itself,
+// because the disposition table is shared vocabulary (`DISPOSITIONS`) and
+// this module is the one reader that cares about the shape of the decay,
+// not merely whether one happens.
+function impulseSeconds(semanticId: string): number {
+  return semanticId === "combat.forced" ? FORCED_IMPULSE_SECONDS : IMPULSE_SECONDS;
+}
+
 function stableDirection(id: string): number {
   let value = 0;
   for (let index = 0; index < id.length; index += 1) {
@@ -466,12 +487,13 @@ function confirm(state: CombatFeedbackState, feedbackLink: CombatFeedbackLink): 
   if (feedbackDisposition.camera_strength > 0 && !state.reduced_motion) {
     const strength = Math.min(MAX_CAMERA_OFFSET, feedbackDisposition.camera_strength);
     const current = state.impulse?.strength ?? 0;
+    const seconds = impulseSeconds(feedbackLink.semantic_id);
     state.impulse = {
       id: feedbackLink.stable_id,
       strength: Math.min(MAX_CAMERA_OFFSET, current + strength),
       direction: stableDirection(feedbackLink.stable_id),
-      life: IMPULSE_SECONDS,
-      max: IMPULSE_SECONDS,
+      life: seconds,
+      max: seconds,
     };
   }
   return true;
