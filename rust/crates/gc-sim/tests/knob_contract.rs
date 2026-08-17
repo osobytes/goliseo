@@ -672,6 +672,52 @@ fn ignoring_the_aim_sends_the_pass_further_from_where_it_was_pointed() {
     );
 }
 
+/// #531 phase 5's own finding: the second of the three selection knobs, and
+/// the one that was asserted WIRED against `pass_aim_error` in #545's PR
+/// body and in `docs/design/fun_metrics.md` without ever having a committed
+/// contract to back it — only `PASS_ANGULAR_WEIGHT` did. Verified by hand
+/// during phase 5's investigation into whether `pass_aim_error` still earns
+/// its slot (it was the crux: a metric backing an *unverified* claim is not
+/// load-bearing, it is an assumption), confirmed here so the claim stops
+/// being prose.
+///
+/// **Up, not down, and asymmetric the same way `PASS_ANGULAR_WEIGHT` is.**
+/// `PASS_ELIGIBLE_MIN` excludes teammates nearer than the floor (a handoff
+/// is not a pass). Raising it excludes the near candidates first, which in
+/// a bot-driven slot's geometry are disproportionately the ones nearest the
+/// aim direction too — so the selection is pushed onto a worse-aimed
+/// candidate more often. Lowering it (already near the floor of its
+/// declared range) has nothing left to exclude and measures a flat zero.
+///
+/// | n  | delta   | threshold | verdict |
+/// | -- | ------- | --------- | ------- |
+/// | 48 | +0.0813 | 0.0614    | WIRED (1.3x) |
+/// | 96 | +0.1226 | 0.0427    | WIRED (2.9x) |
+///
+/// `pass_completion` was measured DECORATION for both directions of this
+/// knob in #531 phase 4's census (`docs/design/fun_metrics.md`), so this is
+/// `PASS_ELIGIBLE_MIN`'s only committed contract — the same dependency
+/// shape `PASS_ANGULAR_WEIGHT` has on this metric.
+#[test]
+fn excluding_the_nearest_teammate_sends_the_pass_further_from_where_it_was_pointed() {
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "PASS_ELIGIBLE_MIN",
+        metric: "pass_aim_error",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: Some(1.0),
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.report.contains("WIRED"),
+        "the eligible-min floor is decoration: {}",
+        outcome.report
+    );
+}
+
 /// #491's second required pairing, with the metric corrected by measurement.
 ///
 /// The issue says "lowering `pass.lead_tolerance` toward 0 must lower

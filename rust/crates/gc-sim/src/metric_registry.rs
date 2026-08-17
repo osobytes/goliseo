@@ -185,7 +185,11 @@ pub fn assemble() -> MetricRegistry {
             // Registered into the FOLD as an interim state, superseded by
             // #528's probation decision -- see their `MetricDef`s in
             // `gc_data::tunables` for the measured inflation and why this is
-            // a known condition rather than an oversight.
+            // a known condition rather than an oversight. #531 phase 5
+            // reviewed and kept both, on a per-knob dependency argument
+            // rather than #527's original blanket one -- same interim fold,
+            // narrower justification; see `gc_data::tunables` and
+            // `docs/design/fun_metrics.md`'s phase-5 section.
             Metric {
                 def: def("pass_aim_error"),
                 extract: |m| m.pass_aim_error,

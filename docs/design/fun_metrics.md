@@ -791,6 +791,166 @@ instruction, if a repowering had been needed the fix would have been more
 seeds only, never a threshold, a direction check or `NOISE_SIGMAS` — that
 did not arise here because nothing needed it.
 
+## #531 phase 5 — do `pass_aim_error` and `pass_lead_time` still earn their registry slots, now that completion is movable? 2026-08-15
+
+The last deferred phase. #527 registered both metrics as a workaround: all
+eleven `PASS_*` knobs measured DECORATION against every pre-existing metric,
+so rather than leave AGENTS.md §9's knob-moves-metric contract unsatisfiable,
+two metrics closer to the mechanism were registered instead — correct
+measurements, but proving nothing about play, and inflating `fun` by
+**+4.10%** purely by metric count (#528). Phase 4 (above) found that premise
+partly dissolved: two of the eleven knobs now clear DECORATION against
+`pass_completion` itself. This phase asks whether the two workaround metrics
+still earn their place.
+
+**Verdict: both stay, on a narrower and stronger justification than #527's
+original one.** Neither is a blanket "nothing else moves" argument any more
+— each is the *sole* committed §9 contract for a specific, named subset of
+knobs that `pass_completion` was measured unable to move.
+
+### `pass_aim_error` — load-bearing for two knobs, not one
+
+The registry's committed contracts against `pass_aim_error`:
+
+| knob | direction | n | delta | threshold | verdict | vs `pass_completion` (phase 4 census) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `PASS_ANGULAR_WEIGHT` | down | 48 | +0.108 | 0.055 | WIRED (#491) | DECORATION, both directions |
+| `PASS_ELIGIBLE_MIN` | up | 96 | +0.1226 | 0.0427 | WIRED (new, this phase) | DECORATION, both directions |
+
+**The crux, checked rather than trusted.** #545's PR body and this doc's
+phase-4 section both asserted "`PASS_ANGULAR_WEIGHT` / `PASS_ELIGIBLE_MIN`
+... already WIRED against `pass_aim_error`" — true for the first (a
+committed contract has existed since #491), **unverified for the second**.
+No committed test exercised `PASS_ELIGIBLE_MIN` against `pass_aim_error`
+anywhere in the tree; the claim was inherited from #491's blanket
+registration reasoning for "the three selection knobs" and never checked
+per-knob. Measured by hand during this phase (`knob_moves_metric`, not
+`assert_moves`, so a DECORATION reading would not panic):
+
+```
+n=48:  PASS_ELIGIBLE_MIN up   vs pass_aim_error: delta=0.0813  threshold=0.0614  WIRED (1.3x)
+       PASS_ELIGIBLE_MIN down vs pass_aim_error: delta=0.0000  threshold=0.0561  DECORATION
+n=96:  PASS_ELIGIBLE_MIN up   vs pass_aim_error: delta=0.1226  threshold=0.0427  WIRED (2.9x)
+```
+
+The claim was correct, not merely asserted — but correct by luck of
+inheritance, not by evidence, until now. Per #537's lesson (a knob close to
+its threshold at low n can read either way), confirmed at double the count
+before shipping. Now a real, committed contract:
+`excluding_the_nearest_teammate_sends_the_pass_further_from_where_it_was_pointed`
+in `gc-sim/tests/knob_contract.rs`. This closes a real §9 gap this
+investigation surfaced — `PASS_ELIGIBLE_MIN` had **zero** committed
+knob-moves-metric contract before this phase, DECORATION against
+`pass_completion` in both directions and untested against `pass_aim_error`
+despite the prose claiming otherwise. It does not change the fun-score fold
+(`gc_data::tunables::METRICS` and `gc_sim::metric_registry` are untouched by
+this phase) or any baseline signature — it only adds test coverage.
+
+The third selection knob, `PASS_ELIGIBLE_MAX`, is **not** in this table on
+purpose: phase 4 promoted it to a real `pass_completion` contract
+(`a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer`),
+so it no longer depends on `pass_aim_error` at all. Removing `pass_aim_error`
+today would leave `PASS_ANGULAR_WEIGHT` and `PASS_ELIGIBLE_MIN` with **no**
+committed §9 contract — a real regression under AGENTS.md §9, not a
+bookkeeping one, unless those tests were deleted along with the metric.
+
+### `pass_lead_time` — load-bearing for two knobs, and never human-starved
+
+| knob | direction | n | delta | threshold | verdict | vs `pass_completion` (phase 4 census) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `PASS_LEAD_TOLERANCE` | down | 24 | −0.335 | 0.087 | WIRED (#491) | DECORATION, both directions |
+| `PASS_LEAD_MIN_SPEED` | up | 24 | −0.296 | 0.087 | WIRED (#491) | DECORATION, both directions |
+
+Both remain the only committed contracts either knob has. Neither clears
+`pass_completion` in phase 4's census (`PASS_LEAD_TOLERANCE`: up −0.0177/
+0.0395, down +0.0343/0.0518; `PASS_LEAD_MIN_SPEED`: up +0.0109/0.0546, down
++0.0061/0.0395 — DECORATION throughout).
+
+`pass_lead_time` does not share `pass_aim_error`'s cause, per #531's own
+adjudication comment: its `ground_releases` tally arms on **any** producer's
+ground release, including AI bowls, so unlike `pass_aim_error` — which
+recorded only in the human/bot-only `try_pass` path and armed on 0 of 60
+all-AI matches before the seam (#527) — it was never starved by the bypass
+this issue exists to fix. Its registration reflects a genuine
+measurement-resolution argument, not an AI-blindness workaround: it is a
+mean over dozens of releases per match (relative standard error 2.7% at
+n=48, `the_passing_metrics_arm_on_every_match`) against `pass_completion`'s
+ratio over a handful of events filtered through every AI decision in
+between and diluted further by the ~56% of releases (lobs, planned throws,
+keeper-to-keeper distribution) the lead-solve knobs have no lever over at
+all (phase 4's gate-fraction measurement, 43.75%). That argument does not
+depend on the seam and is not weakened by it.
+
+### Does either correspond to something a player experiences?
+
+Neither has had the hands-on pilot #528's standard requires, and this phase
+does not run one — say so plainly rather than assume it from the mechanism.
+Both bands remain self-fit priors (`gc_data::tunables::METRICS`'s own
+comment: "neither has had a hands-on pilot"). Qualitatively, though, the two
+are not equally close to something a player would notice:
+
+- **`pass_aim_error`** measures the gap between where a pass was aimed and
+  who the soft cone actually picked — literally the fidelity of the control
+  scheme #491 shipped ("aim biases the choice instead of gating it"). A
+  player who aims at one teammate and watches the ball go to another
+  *would* notice that, in the same match a "the cone feels like a gate
+  again" complaint would be about. It is close to a felt quantity even
+  though its specific band thresholds (in chord units, unpiloted) are not
+  validated against anyone's actual sense of "close enough."
+- **`pass_lead_time`** measures the lead solver's internal output — mean
+  seconds of lead applied to a driven ground pass. A player does not
+  experience "0.41 seconds of lead" as a number; what they would notice is
+  whether a led pass met a moving teammate comfortably or ran past them,
+  which `pass_lead_time` does not distinguish — a well-judged long lead and
+  a wildly over-eager one that strands the ball three strides ahead both
+  register as "lead was applied." It is one step further from felt
+  experience than `pass_aim_error`: an instrument reading on the solver,
+  not yet a measurement of reception quality. `reachable_before_arrival`'s
+  own recommended upgrade (#491's PR body, filed but not built) is closer
+  to what a "did the receiver actually get there comfortably" metric would
+  need, and does not exist yet.
+
+Neither claim changes the phase-5 registry-membership verdict above — being
+load-bearing for a §9 contract and having survived a hands-on pilot are
+different bars, and #528 is explicitly the second one, not this phase.
+
+### The +4.10% inflation
+
+Unchanged by this phase, and not compensated for. Phase 5 makes no change to
+`gc_data::tunables::METRICS` or `gc_sim::metric_registry` — the fun score,
+its signature, and `outfield_ai_baseline`'s `baseline_version` are all
+untouched. The reasoning behind the interim state has narrowed, not
+resolved: #527 folded both metrics because *no* passing knob could move
+anything else; this phase confirms the fold is still necessary because *two
+specific knobs each* — four in total, `PASS_ANGULAR_WEIGHT`,
+`PASS_ELIGIBLE_MIN`, `PASS_LEAD_TOLERANCE`, `PASS_LEAD_MIN_SPEED` — have no
+other committed evidence. That is a better-justified interim state than
+#527's, not a resolved one. The inflation is real either way, and remains
+blocked on **#528**, whose probation mechanism does not exist yet: this
+phase does not build it, per the brief's own instruction not to build a
+governance mechanism inside a metrics-decision pass (the same discipline
+#491's PR body already applied to itself). `whiff_rate` (#489) is in the
+identical unresolved bucket — `gc_data::tunables.rs`'s own comment says so —
+and is not this phase's scope, but #528 will have to answer for all three
+metrics together, not just the two named here.
+
+### What remains, and whether #531 can close
+
+Phases 1–2 landed in #535 (the seam and re-recorded fixtures). Phases 3–4
+landed in #545 (the post-seam balance reference and the knob re-census).
+Phase 5 — this section — is the last phase #531 names, and it is complete:
+both metrics are kept, the justification is restated on firmer ground than
+#527's, one real §9 coverage gap (`PASS_ELIGIBLE_MIN`) found during the
+investigation is closed, and the +4.10% inflation is confirmed to remain
+exactly where #528 left it, with nothing new invented to resolve it here.
+**#531 has no further phases and can close.** What is still open and
+explicitly not gated by #531: **#528** (metric probation, now with three
+metrics — `time_to_reverse`, `pass_aim_error`, `pass_lead_time`, and
+`whiff_rate` — waiting on its mechanism and each needing the hands-on pilot
+this section could not substitute for), **#532** (slide tackle / jockey
+have no AI counterpart), **#533** (AI shooting onto the seam), **#534**
+(carry/sprint/evasion/aerial hygiene).
+
 ## Baseline drift log
 
 **This heading's own date range and "every entry is pre-port" claim are

@@ -1716,6 +1716,24 @@ pub static METRICS: &[MetricDef] = &[
     // reported beside the score, excluded from the mean until piloted. If you
     // are reading this and they are still folded, that is the known
     // time-boxed condition, not an oversight.
+    //
+    // REVIEWED, KEPT, ON A NARROWER GROUND (#531 phase 5, 2026-08-15). By the
+    // time pass_completion became movable for two of eleven PASS_* knobs
+    // (#531 phase 4), the original "nothing else moves" argument for these
+    // two metrics only partly held. Checked per-knob rather than assumed:
+    // `pass_aim_error` is still the ONLY committed contract either
+    // `PASS_ANGULAR_WEIGHT` or `PASS_ELIGIBLE_MIN` has (neither clears
+    // `pass_completion`); `pass_lead_time` is still the only one either
+    // `PASS_LEAD_TOLERANCE` or `PASS_LEAD_MIN_SPEED` has, and per #531's own
+    // adjudication it was never human-starved the way `pass_aim_error` was
+    // (its `ground_releases` tally arms on any producer's ground release,
+    // not only the human/bot-only `try_pass` path) -- a genuine
+    // measurement-resolution case, not an AI-blindness workaround. Full
+    // per-knob table in `docs/design/fun_metrics.md`'s phase-5 section. The
+    // interim-state fold above is UNCHANGED by this review -- still blocked
+    // on #528, still +4.10% -- only the justification for keeping the
+    // metrics registered is now per-knob evidence instead of a blanket
+    // claim.
     MetricDef {
         id: "pass_aim_error",
         // Chord, not radians (`gc_sim::passing`). 0.52 is 30 degrees off
