@@ -263,6 +263,20 @@ const REVERSAL_THROUGH_ZERO_FRACTION: f64 = 0.1;
 /// "reversal".
 const REVERSAL_TIMEOUT_S: f64 = 2.0;
 
+/// The "short window" in `rebound_rate`'s definition (#490): seconds after a
+/// parry within which an attacker taking the ball counts as that parry having
+/// produced a rebound.
+///
+/// 1.5s is a scramble, not a possession. The parried ball leaves the keeper's
+/// gloves at `MIN_PARRY_CLEAR` (260 px/s) or 60% of the shot's own pace,
+/// popped up at `PARRY_POP_VZ`, and is locked out of pickup for
+/// `PARRY_CD` (0.18s) — so an attacker reaching it inside this window
+/// followed the rebound in rather than recycled possession a phase later,
+/// which is exactly the difference the metric exists to measure. Longer and
+/// it would count any subsequent attack; shorter and it would miss the
+/// pickup lockout plus a stride.
+pub const REBOUND_WINDOW_S: f64 = 1.5;
+
 /// One player's in-flight reversal measurement.
 ///
 /// The reversal is detected from the TRAJECTORY, not from a stored command,
@@ -366,6 +380,14 @@ pub struct MetricsCollector {
     pub tackle_attempts: i64,
     /// Standing-poke tackle attempts that resolved without winning the ball.
     pub tackle_misses: i64,
+    /// A parry whose rebound window is still open (#490): the attacking side
+    /// the keeper parried, and the match time the window shuts at. Replaced,
+    /// not stacked, by a second parry — two parries in 1.5s is one scramble,
+    /// and the numerator counts scrambles that an attacker got on the end
+    /// of, not parries.
+    pub pending_rebound: Option<(MatchTeam, f64)>,
+    /// Parries an attacker reached inside [`REBOUND_WINDOW_S`].
+    pub rebounds: i64,
 }
 
 fn dribble_bucket_for_mut(
@@ -442,6 +464,8 @@ pub fn new(s: &MetricsMatchView) -> MetricsCollector {
         pending_shot_keeper_state: None,
         tackle_attempts: 0,
         tackle_misses: 0,
+        pending_rebound: None,
+        rebounds: 0,
     }
 }
 
@@ -520,6 +544,42 @@ fn observe_reversals(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64) {
     }
 }
 
+/// Whether an OUTFIELD player of `attacker` has the parried ball on this
+/// frame (#490).
+///
+/// Two ways to qualify, and both are genuinely "the rebound came back to
+/// them": the attacker owns the ball, or the attacker produced a ball-contact
+/// event this frame. The second matters because a rebound smashed straight
+/// back first-time never passes through an ownership frame at all, and
+/// counting only ownership would systematically under-report exactly the most
+/// dramatic case the metric is for.
+///
+/// The event kinds are restricted to contact — a `juke` or a run somewhere
+/// else on the pitch is not a touch on this ball. The keeper is excluded on
+/// both paths: a keeper of the attacking side collecting a clearance is not an
+/// attacker following in.
+fn attacker_reached_the_rebound(
+    c: &MetricsCollector,
+    s: &MetricsMatchView,
+    attacker: MatchTeam,
+) -> bool {
+    if let Some(index) = s.owner {
+        let owner = &s.players[index];
+        if owner.team == attacker && !owner.is_keeper {
+            return true;
+        }
+    }
+    s.events.iter().any(|e| {
+        matches!(
+            e.kind.as_str(),
+            "shot" | "header" | "volley" | "bicycle" | "pass" | "touch"
+        ) && e.player.as_deref().is_some_and(|id| {
+            c.team_of.get(id).copied() == Some(attacker)
+                && !c.keeper.get(id).copied().unwrap_or(false)
+        })
+    })
+}
+
 /// Observe one frame, AFTER stepping the match for the same `dt` (so
 /// `s.events` holds exactly this frame's actions).
 pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: &Tuning) {
@@ -533,6 +593,22 @@ pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: 
     }
 
     observe_reversals(c, s, dt);
+
+    // #490's `rebound_rate` numerator, resolved BEFORE this frame's events are
+    // folded so the two cannot collide on one frame: a window opened by a
+    // parry below is never also closed by that same frame, and a frame that
+    // both collects a rebound and produces a fresh parry does them in that
+    // order. The deliberate consequence is that the earliest a rebound can be
+    // counted is the tick after the parry — which is correct anyway, since
+    // `PARRY_CD` locks pickup out for 0.18s.
+    if let Some((attacker, deadline)) = c.pending_rebound {
+        if c.t > deadline {
+            c.pending_rebound = None;
+        } else if attacker_reached_the_rebound(c, s, attacker) {
+            c.rebounds += 1;
+            c.pending_rebound = None;
+        }
+    }
 
     for e in &s.events {
         let team = e.player.as_deref().and_then(|p| c.team_of.get(p).copied());
@@ -551,6 +627,21 @@ pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: 
                 c.pending_shot_team = None;
                 c.pending_shot_type = None;
                 c.pending_shot_keeper_state = None;
+                // #490. A catch shuts any open rebound window: the keeper has
+                // the ball, so whatever the previous parry put on the floor is
+                // no longer live. A parry opens one against the side the
+                // keeper is defending AGAINST.
+                if e.kind == "parry" {
+                    c.pending_rebound = team.map(|keeper_team| {
+                        let attacker = match keeper_team {
+                            MatchTeam::Home => MatchTeam::Away,
+                            MatchTeam::Away => MatchTeam::Home,
+                        };
+                        (attacker, c.t + REBOUND_WINDOW_S)
+                    });
+                } else {
+                    c.pending_rebound = None;
+                }
             }
             "shot" | "header" | "volley" | "bicycle" if !is_keeper => {
                 // Keeper "shot" events are punts/clearances, not strikes at
@@ -895,6 +986,16 @@ pub struct MatchMetrics {
     /// Missed standing-poke tackles / attempted standing-poke tackles
     /// (#489). `None` when the match attempted none.
     pub whiff_rate: Option<f64>,
+    /// Parries an attacker reached inside [`REBOUND_WINDOW_S`], over TOTAL
+    /// saves — catches included (#490).
+    ///
+    /// The denominator is deliberately every save, not every parry: the
+    /// measurement is "how often does a save leave the ball live for the
+    /// attack", and a keeper who catches everything answers that with zero.
+    /// Over parries alone it would read the same whether the keeper caught
+    /// nine of ten or none of them, which is precisely the distinction the
+    /// fatigue pool changes. `None` when the match contained no save at all.
+    pub rebound_rate: Option<f64>,
 }
 
 /// Fold the collector and final match state into a [`MatchMetrics`] summary.
@@ -997,6 +1098,7 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         fun: None,
         whiff_rate: (c.tackle_attempts > 0)
             .then(|| c.tackle_misses as f64 / c.tackle_attempts as f64),
+        rebound_rate: (c.saves > 0).then(|| c.rebounds as f64 / c.saves as f64),
     }
 }
 

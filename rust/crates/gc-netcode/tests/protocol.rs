@@ -164,7 +164,7 @@ fn replace_manifest_player_id(
 fn omp3_online_protocol_pins_the_accepted_input_snapshot_tape_and_combat_schema_versions() {
     assert_eq!(protocol::CURRENT_VERSIONS.protocol, 1);
     assert_eq!(protocol::CURRENT_VERSIONS.input, 2);
-    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 14);
+    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 15);
     assert_eq!(protocol::CURRENT_VERSIONS.tape, 2);
     assert_eq!(protocol::CURRENT_VERSIONS.combat, 3);
 }
@@ -174,17 +174,17 @@ fn omp3_online_protocol_matches_literal_wire_manifest_transcript_and_per_kind_go
     let report = conformance::verify();
     // #489: repinned alongside `protocol_conformance::GOLDEN` -- see that
     // constant's doc comment. `match_snapshot::COMBAT_VERSION` moved
-    // 13 -> 14.
-    assert_eq!(report.manifest_id, "572bbff19cdfc603");
-    assert_eq!(report.transcript_id, "a83439d3fe39fa52");
+    // 13 -> 14 under #489 and 14 -> 15 under #490.
+    assert_eq!(report.manifest_id, "90b90970080d7978");
+    assert_eq!(report.transcript_id, "1b8407df3614a2cb");
     assert_eq!(report.message_count, 15);
     assert_eq!(
         gc_core::fnv1a64::hash(conformance::GOLDEN.complete_wire.as_bytes()),
-        "61cf18d63e6076e9"
+        "d0907dd1786309f5"
     );
     assert_eq!(
         conformance::marker(&report),
-        "GC_PROTOCOL|golden|schema=1|manifest_id=572bbff19cdfc603|transcript_id=a83439d3fe39fa52|messages=15"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=90b90970080d7978|transcript_id=1b8407df3614a2cb|messages=15"
     );
 }
 
@@ -1370,28 +1370,36 @@ fn handshake_build_declaration_counts_the_declaration_as_part_of_the_vocabulary_
 // assertion's own failure output (`MIN_WIRE`/`MAXIMAL_WIRE` via a temporary
 // `eprintln!` added, run, then removed, since both need intermediate values
 // a panic alone would not surface past the first divergence).
+// #490 RE-RECORDS THE SAME SET, and the `_489` suffixes stay as they are: they
+// name the PR that RETIRED these values from the frozen Lua fixture, not the
+// last one to re-derive them. `match_snapshot::COMBAT_VERSION` bumps 14 -> 15
+// (`MatchPlayer::keeper_fatigue`), so `manifest_id` and every value derived
+// from it moves exactly as it did under #489, by exactly the same mechanism,
+// and nothing outside that set moves. Re-derived the same way: a throwaway
+// probe calling `protocol::manifest_id`/`transcript_id`/`encode` against the
+// same fixture, plus temporary `eprintln!`s for the two intermediate wires.
 // ---------------------------------------------------------------------------
 
 /// See the module-section doc comment above.
-const MIN_WIRE_BASELINE_489: &str = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:572bbff19cdfc603s4:kinds15:\
+const MIN_WIRE_BASELINE_489: &str = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:90b90970080d7978s4:kinds15:\
 manifest_accepts10:message_ids16:GCMI;1;1:s1:p1:0s7:peer_ids1:ps8:sequencei1:0s10:session_ids1:ss7:versioni1:1";
 /// See the module-section doc comment above. Unchanged from the frozen
 /// fixture's `MIN_WIRE_LEN` — the new and old manifest ids are both 16-byte
 /// hex hashes, so wire length does not move even though the bytes do.
 const MIN_WIRE_LEN_BASELINE_489: usize = 176;
 /// See the module-section doc comment above.
-const MIN_WIRE_HASH_BASELINE_489: &str = "8a579038a6ca68f7";
+const MIN_WIRE_HASH_BASELINE_489: &str = "b398e49a73452b3b";
 /// See the module-section doc comment above.
-const MAXIMAL_MANIFEST_ID_BASELINE_489: &str = "3d57dda4f63b8b0c";
+const MAXIMAL_MANIFEST_ID_BASELINE_489: &str = "9fbc7b2c02f50b0b";
 /// See the module-section doc comment above. Unchanged from the frozen
 /// fixture's `MAXIMAL_WIRE_LEN`, same reasoning as `MIN_WIRE_LEN_BASELINE_489`.
 const MAXIMAL_WIRE_LEN_BASELINE_489: usize = 7240;
 /// See the module-section doc comment above.
-const MAXIMAL_WIRE_HASH_BASELINE_489: &str = "c27bb322ce5a552a";
+const MAXIMAL_WIRE_HASH_BASELINE_489: &str = "1f436d15827652d2";
 /// See the module-section doc comment above.
-const MANIFEST_ID_BASELINE_489: &str = "572bbff19cdfc603";
+const MANIFEST_ID_BASELINE_489: &str = "90b90970080d7978";
 /// See the module-section doc comment above.
-const TRANSCRIPT_ID_BASELINE_489: &str = "a83439d3fe39fa52";
+const TRANSCRIPT_ID_BASELINE_489: &str = "1b8407df3614a2cb";
 
 #[test]
 fn differential_handshake_wire_matches_the_real_lua_byte_for_byte() {

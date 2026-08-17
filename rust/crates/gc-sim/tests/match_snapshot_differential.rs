@@ -114,11 +114,11 @@ const CASE_B: &str = include_str!("fixtures/match_snapshot_case_b_baseline.txt")
 /// `match_snapshot::hash_canonical` of case A's snapshot, recorded from this
 /// build alongside `match_snapshot_case_a_baseline.txt` — self-recorded, not
 /// the retired Lua digest. See this file's module doc.
-const CASE_A_BASELINE_HASH: &str = "1bda8232c7289d6b";
+const CASE_A_BASELINE_HASH: &str = "ab3381aac8746e9d";
 /// `match_snapshot::hash_canonical` of case B's snapshot, recorded from this
 /// build alongside `match_snapshot_case_b_baseline.txt` — self-recorded, not
 /// the retired Lua digest. See this file's module doc.
-const CASE_B_BASELINE_HASH: &str = "d83db6b2c97e674b";
+const CASE_B_BASELINE_HASH: &str = "e7f10e3262fb9b55";
 
 #[allow(clippy::too_many_arguments)]
 fn make_player(
@@ -198,6 +198,7 @@ fn make_player(
         save_vx: 0.0,
         save_style: None,
         save_tip_emitted: false,
+        keeper_fatigue: 0.0,
         settle_timer: 0.0,
         header_cd: 0.0,
         aerial_timer: 0.0,

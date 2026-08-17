@@ -1228,6 +1228,115 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         step: 0.5,
         desc: "Seconds a human-controlled keeper may hold before a forced release.",
     },
+    // Keeper save fatigue (#490). The pool and its catch band: what makes
+    // sustained pressure earn rebounds instead of nothing. Every range below
+    // is #490's own authored suggestion; the DEFAULTS are pilot-measured
+    // (`gc-sim/tests/knob_contract.rs` carries the probe table) rather than
+    // taken from the middle of the range.
+    //
+    // The pool gates only whether the keeper can HOLD the ball. It is
+    // deliberately absent from the reach/beaten decision and from the
+    // `quality` scalar that feeds it -- see `gc_sim::r#match`'s `attempt_save`
+    // and `tests/keeper_fatigue.rs`, which proves the reach verdict is
+    // identical at a full pool and an empty one.
+    TunableDef {
+        id: "KEEPER_FATIGUE_MAX",
+        tier: Tier::Sim,
+        label: "Keeper fatigue pool",
+        cat: "Keeper",
+        default: 100.0,
+        unit: "points",
+        min: 50.0,
+        max: 200.0,
+        step: 5.0,
+        desc: "Size of the keeper's save-fatigue pool, and the value it starts \
+               every match and restart at.",
+    },
+    TunableDef {
+        id: "KEEPER_FATIGUE_REGEN",
+        tier: Tier::Sim,
+        label: "Keeper fatigue regen",
+        cat: "Keeper",
+        default: 4.0,
+        unit: "points/s",
+        min: 1.0,
+        max: 10.0,
+        step: 0.5,
+        desc: "Passive pool recovery, in points per SECOND -- integrated per fixed \
+               tick, never a per-tick increment, so changing the tick rate cannot \
+               silently redefine it.",
+    },
+    TunableDef {
+        id: "KEEPER_COST_CATCH",
+        tier: Tier::Sim,
+        label: "Keeper catch cost",
+        cat: "Keeper",
+        default: 25.0,
+        unit: "points",
+        min: 5.0,
+        max: 40.0,
+        step: 1.0,
+        desc: "Pool drained by a clean catch -- the most expensive save type, because \
+               holding a shot is the outcome the band exists to ration.",
+    },
+    TunableDef {
+        id: "KEEPER_COST_PARRY",
+        tier: Tier::Sim,
+        label: "Keeper parry cost",
+        cat: "Keeper",
+        default: 12.0,
+        unit: "points",
+        min: 5.0,
+        max: 40.0,
+        step: 1.0,
+        desc: "Pool drained by a parry. Cheaper than a catch, so a keeper forced into \
+               parrying recovers toward the catch band rather than spiralling.",
+    },
+    TunableDef {
+        id: "KEEPER_COST_DEFLECT",
+        tier: Tier::Sim,
+        label: "Keeper deflect cost",
+        cat: "Keeper",
+        default: 8.0,
+        unit: "points",
+        min: 5.0,
+        max: 40.0,
+        step: 1.0,
+        desc: "Pool drained by a fingertip deflection on a shot that beat the keeper \
+               (the Tip event) -- effort spent without a save to show for it.",
+    },
+    TunableDef {
+        id: "KEEPER_CATCH_THRESHOLD",
+        tier: Tier::Sim,
+        label: "Keeper catch band",
+        cat: "Keeper",
+        default: 45.0,
+        unit: "points",
+        min: 10.0,
+        max: 80.0,
+        step: 5.0,
+        desc: "Pool level below which a clean catch stops being a legal outcome: the \
+               save still happens, but it resolves as a parry with the live rebound \
+               that already carries.",
+    },
+    TunableDef {
+        id: "KEEPER_CATCH_POWER_CEILING",
+        tier: Tier::Sim,
+        label: "Keeper catch power cap",
+        cat: "Keeper",
+        // Shot pace at the moment of the save. A strike leaves the boot at
+        // `stats::shot_speed` (150-650 px/s by strength) times up to
+        // 1 + CHARGE_POWER, so the reachable band is roughly 150-1235 px/s and
+        // this sits in its upper half: a normal strike is holdable, a
+        // full-blooded one is not, however fresh the keeper is.
+        default: 700.0,
+        unit: "px/s",
+        min: 300.0,
+        max: 1400.0,
+        step: 25.0,
+        desc: "Shot pace above which the keeper parries regardless of fatigue. The \
+               second, independent half of the catch band.",
+    },
     TunableDef {
         id: "PUNT_MAX",
         tier: Tier::Sim,
@@ -1686,5 +1795,30 @@ pub static METRICS: &[MetricDef] = &[
                (attempt = a charge that reached its executing-phase resolution). \
                PROPOSED band, not measured against a pilot, and not yet met by \
                the shipped defaults -- see this def's own comment.",
+    },
+    // #490's rebound_rate, APPENDED LAST for the same reason every entry above
+    // it was: this list is deliberately unsorted, its fold order is pinned by
+    // `gc-sim/tests/metric_registry.rs`, and inserting anywhere but the end
+    // moves a hash nobody meant to move.
+    //
+    // It folds into the fun score on exactly the terms `whiff_rate`,
+    // `pass_aim_error` and `pass_lead_time` above already do -- #528's
+    // probation mechanism, which would report a newly-registered metric beside
+    // the score and exclude it from the geometric mean until piloted, still
+    // does not exist. Same known, time-boxed condition, called out here rather
+    // than discovered later.
+    MetricDef {
+        id: "rebound_rate",
+        // #490's own proposed band, and a PRIOR rather than ground truth:
+        // "below it, fatigue is invisible; above it, every save is a goalmouth
+        // scramble". The outer edges are set where the reading stops being
+        // interesting rather than by measurement -- 0.0 is a keeper who never
+        // coughs one up (the wall this issue exists to remove) and 0.8 is a
+        // goalmouth that never clears.
+        band: [0.0, 0.15, 0.40, 0.8],
+        direction: MetricDirection::Banded,
+        desc: "Parries that put the ball back on an attacker's foot within a short \
+               window, over total saves. Measures whether sustained pressure earns a \
+               second chance -- PROPOSED band, no hands-on pilot behind it.",
     },
 ];

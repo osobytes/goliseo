@@ -111,6 +111,7 @@ fn make_player(
         save_vx: 0.0,
         save_style: None,
         save_tip_emitted: false,
+        keeper_fatigue: 0.0,
         settle_timer: 0.0,
         header_cd: 0.0,
         aerial_timer: 0.0,
@@ -943,7 +944,7 @@ fn rollback_events_defensively_copies_inputs_diffs_confirmed_records_and_compact
     let next_diff = rollback_events::apply(&mut timeline, 1, 1, &[supplied(&next)]).unwrap();
     assert_eq!(next_diff.added.len(), 0);
     assert_eq!(match_snapshot::hash(&initial), initial_hash);
-    assert_eq!(match_snapshot::VERSION, 13);
+    assert_eq!(match_snapshot::VERSION, 14);
 }
 
 #[test]
