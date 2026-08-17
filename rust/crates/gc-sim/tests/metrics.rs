@@ -845,7 +845,6 @@ fn rebound_rate_ignores_the_defending_side_and_the_keeper_recovering_the_parry()
             owner: Some(1), // "h1"
             events: vec![event("touch", Some("h1"))],
             dt: 0.2,
-            ..Default::default()
         },
         &tuning,
     );
@@ -857,7 +856,6 @@ fn rebound_rate_ignores_the_defending_side_and_the_keeper_recovering_the_parry()
             owner: Some(3), // "a_keeper"
             events: vec![event("touch", Some("a_keeper"))],
             dt: 0.2,
-            ..Default::default()
         },
         &tuning,
     );
