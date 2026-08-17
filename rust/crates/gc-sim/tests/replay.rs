@@ -54,10 +54,10 @@ use gc_sim::tuning::Tuning;
 // (`r#match::advance_tackle_actions`) if this short fixture's three
 // stepped ticks touch a tackle -- re-derived from this build either way.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "0492d110f37e0e24",
-    "489b60a4bf410be9",
-    "84e842ded5fb94e5",
-    "e2745802185af012",
+    "1ecbf653af4411b0",
+    "f5cb818b030f8f01",
+    "206fd6fc3e3dfe21",
+    "f5e98aeeba81f646",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

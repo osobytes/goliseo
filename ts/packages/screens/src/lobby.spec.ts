@@ -483,7 +483,7 @@ function realManifest(mode: SessionMatchMode): SessionManifest {
     session_id: "session_alpha",
     protocol_version: 1,
     input_version: 2,
-    snapshot_version: 14,
+    snapshot_version: 15,
     tape_version: 2,
     combat_schema_version: 3,
     build_id: "build.97b60ea",

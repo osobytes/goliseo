@@ -520,7 +520,10 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // Re-recorded again for #489, same reason: `identity.snapshot_version`
     // (12 -> 13, `MatchPlayer::action`) and the derived `boundary_hashes`
     // both moved in `gc-data/src/omp1_determinism.json`.
-    assert_eq!(rollback_lab::tape_digest(&tape), "7f9fea1e03562a5e");
+    //
+    // And again for #490, same reason a third time: snapshot_version 13 -> 14
+    // (`MatchPlayer::keeper_fatigue`) plus the derived `boundary_hashes`.
+    assert_eq!(rollback_lab::tape_digest(&tape), "1fd2190eb5f25387");
 }
 
 #[test]

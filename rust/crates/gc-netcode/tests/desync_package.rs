@@ -587,7 +587,7 @@ fn identity_field(identity: &SessionIdentity, field: &str) -> String {
 /// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
 /// when a deliberate, reviewed wire-schema change moves it -- never to clear
 /// a check that surprised you.
-const MANIFEST_ID_BASELINE: &str = "808cb0936103c9eb";
+const MANIFEST_ID_BASELINE: &str = "ae00f6aea0825f00";
 
 /// Cross-language identity agreement (`ARCHITECTURE.md` §1.2's shared-vector
 /// contract — see the module doc comment for how this assertion was adapted
@@ -610,8 +610,8 @@ fn keeps_the_export_and_the_package_agreeing_on_identity() {
     for (field, expected) in &vector {
         let actual = identity_field(&identity, field);
         if field == "manifest_id" {
-            // #489: schema-coupled, retired to a Rust-recorded baseline.
-            // See `MANIFEST_ID_BASELINE`'s doc comment.
+            // #489, re-recorded again by #490: schema-coupled, retired to a
+            // Rust-recorded baseline. See `MANIFEST_ID_BASELINE`'s doc comment.
             assert_eq!(
                 &actual, MANIFEST_ID_BASELINE,
                 "SessionIdentity field \"manifest_id\" no longer matches its \

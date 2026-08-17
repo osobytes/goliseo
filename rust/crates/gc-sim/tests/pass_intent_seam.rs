@@ -101,6 +101,7 @@ fn make_player(id: &str, team: Team, is_keeper: bool, x: f64, y: f64) -> MatchPl
         save_vx: 0.0,
         save_style: None,
         save_tip_emitted: false,
+        keeper_fatigue: 0.0,
         settle_timer: 0.0,
         header_cd: 0.0,
         aerial_timer: 0.0,
