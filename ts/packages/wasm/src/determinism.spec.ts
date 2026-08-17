@@ -51,8 +51,18 @@ import { loadSimHost } from "./index.ts";
 // constants, which is the "simply stale" case, not the #517 case.
 //
 // #489 re-recorded them before this, on the same terms.
+//
+// #572 (completing #489's possession invariant) then moved the SEQUENCE
+// DIGEST ALONE, leaving `final_hash` where #490 left it: full time is
+// reached in the same state, the chain arriving there is not. The
+// discriminating measurement was run again before this line moved, and
+// again it is the "simply stale" case — wasm, via the header's own `node -e`
+// one-liner against the freshly built `dist/pkg/gc_wasm.cjs`: final
+// `0e41232666bc8568`, sequence `fcdaac058c967e68`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`, the same two. They
+// AGREE, so this is not #517.
 const EXPECTED_FINAL_HASH = "0e41232666bc8568";
-const EXPECTED_SEQUENCE_DIGEST = "8e7da14b3908191a";
+const EXPECTED_SEQUENCE_DIGEST = "fcdaac058c967e68";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
