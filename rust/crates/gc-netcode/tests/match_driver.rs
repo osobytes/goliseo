@@ -1177,7 +1177,7 @@ fn canonical_digest(digest: &str) -> bool {
 /// Re-recorded for #489: `match_snapshot::VERSION` bumps 12 -> 13 for the new
 /// `action` field on every serialized `MatchPlayer`, which is on the
 /// boundary-zero kickoff checkpoint like any other tick.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "89b63e968ec22b9e";
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "cce72804f0c6b446";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and

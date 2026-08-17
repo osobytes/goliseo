@@ -109,6 +109,29 @@ fn pass_range_min(tune: &Tuning) -> f64 {
     tune.value("PASS_RANGE_MIN")
 }
 
+/// The AUTHORED default of a tier-1 knob, straight off `gc-data`'s content
+/// table (#490).
+///
+/// Used in exactly one place — seeding `MatchPlayer::keeper_fatigue` in
+/// [`new`], which builds a match from content alone and is handed no
+/// [`Tuning`]. Every read of the knob DURING a match goes through the live
+/// `tune` handle like every other knob; a panel-raised
+/// `KEEPER_FATIGUE_MAX` therefore fills in over the first seconds through
+/// the regeneration clamp rather than retroactively at kickoff, and a
+/// lowered one clamps down on the next tick.
+///
+/// # Panics
+///
+/// Panics on an unknown id, for the same reason [`Tuning::value`] does:
+/// every caller reads a key it authored.
+fn authored_default(id: &str) -> f64 {
+    gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == id)
+        .unwrap_or_else(|| panic!("unregistered tunable id: {id}"))
+        .default
+}
+
 /// The `pass_charge` fraction (`[0, 1]`) that would make `try_pass`'s own
 /// range formula (`pass_range_min(tune) + charge * (PASS_RANGE_MAX -
 /// pass_range_min(tune))`) reach `distance` — the inverse of that formula.
@@ -559,6 +582,15 @@ fn build_team(
             save_vx: 0.0,
             save_style: None,
             save_tip_emitted: false,
+            // A full pool at kick-off, for keepers only. Nothing reads an
+            // outfield player's, and leaving theirs at zero keeps that
+            // explicit rather than storing a number that would mean
+            // something if anyone ever did.
+            keeper_fatigue: if is_keeper {
+                authored_default("KEEPER_FATIGUE_MAX")
+            } else {
+                0.0
+            },
             settle_timer: 0.0,
             header_cd: 0.0,
             aerial_timer: 0.0,
@@ -5195,6 +5227,21 @@ fn pass_shadow_record<F: FnOnce(&mut PassShadowTally)>(f: F) {
     });
 }
 
+/// Spend `cost` points of a keeper's save-fatigue pool, floored at zero
+/// (#490).
+///
+/// The single writer for every drain, so the three save types differ only in
+/// the knob they pass. Regeneration is the other half and lives in [`step`]'s
+/// per-player tick, where it is integrated from a per-SECOND rate rather than
+/// added as a per-tick constant.
+///
+/// Deterministic and total: no RNG, no clock, and an already-empty pool
+/// simply stays empty rather than going negative and buying the keeper a
+/// debt to work off later.
+fn drain_keeper_fatigue(keeper: &mut MatchPlayer, cost: f64) {
+    keeper.keeper_fatigue = (keeper.keeper_fatigue - cost).max(0.0);
+}
+
 /// The keeper of the threatened goal COMMITS against an on-target shot: it
 /// picks its verdict now (catch / parry / beaten — pure and deterministic,
 /// a function of reach, handling, pace and angle), but the ball is NOT
@@ -5391,6 +5438,13 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
                     && !keeper.save_tip_emitted
                 {
                     s.players[ki].save_tip_emitted = true;
+                    // A fingertip on a shot that beat the keeper: the third
+                    // save type's cost (#490). Effort spent with no save to
+                    // show for it, so it is the cheapest of the three. The
+                    // drain happens AFTER the reach verdict above has
+                    // already been taken, and can therefore not feed back
+                    // into it -- see `tests/keeper_fatigue.rs`.
+                    drain_keeper_fatigue(&mut s.players[ki], tune.value("KEEPER_COST_DEFLECT"));
                     s.events.push(MatchEvent {
                         kind: MatchEventKind::Tip,
                         x: keeper.pos.x,
@@ -5438,10 +5492,27 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
                         + deterministic_math::exp(
                             -(quality - tune.value("CATCH_EVEN_QUALITY")) / CATCH_SOFTNESS,
                         ));
+                // The roll stays exactly where it was and is still drawn
+                // unconditionally, whatever the catch band says (#490). The
+                // band changes what the sample MEANS, never whether or when
+                // the stream advances: a conditional draw here would
+                // reorder every downstream consumer of `s.rng` the moment a
+                // keeper tired, and desync every pinned fixture.
                 let (next_rng, sample) = rng::roll(s.rng);
                 s.rng = next_rng;
                 let keeper = &mut s.players[ki];
-                keeper.save_pending = Some(if sample < p_catch {
+                // The catch band: two independent, deterministic gates on
+                // whether HOLDING the ball is a legal outcome at all. Below
+                // `KEEPER_CATCH_THRESHOLD` the pool is too low to gather a
+                // shot; above `KEEPER_CATCH_POWER_CEILING` the shot is too
+                // hot to gather however fresh the keeper is. Either one
+                // forces the save to resolve as a parry — which is a real
+                // save with a real, playable rebound
+                // (`resolve_pending_save`), not a miss. Neither gate touches
+                // `quality`, the reach test above, or the RNG.
+                let catch_legal = keeper.keeper_fatigue >= tune.value("KEEPER_CATCH_THRESHOLD")
+                    && speed <= tune.value("KEEPER_CATCH_POWER_CEILING");
+                keeper.save_pending = Some(if catch_legal && sample < p_catch {
                     crate::match_snapshot::SavePending::Catch
                 } else {
                     crate::match_snapshot::SavePending::Parry
@@ -5460,7 +5531,17 @@ fn attempt_save(s: &mut MatchState, tune: &Tuning) {
 /// at the line), or on the timeout backstop. The dive is abandoned (a
 /// whiff) if the shot got deflected away in flight — a body block or
 /// bounce reversing its direction.
-fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snapshot::SavePending> {
+///
+/// This is also where a save's fatigue cost is spent (#490), on the
+/// resolution that actually happened rather than on the verdict that was
+/// committed: a catch costs `KEEPER_COST_CATCH`, a parry `KEEPER_COST_PARRY`.
+/// An abandoned commitment (the shot was deflected away, or died short of the
+/// gloves) costs nothing — the keeper never made a save.
+fn resolve_pending_save(
+    s: &mut MatchState,
+    dt: f64,
+    tune: &Tuning,
+) -> Option<crate::match_snapshot::SavePending> {
     use crate::match_snapshot::SavePending;
     for ki in 0..s.players.len() {
         let keeper = s.players[ki].clone();
@@ -5521,6 +5602,9 @@ fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snap
                 k.grab_timer = KEEPER_GRAB_POSE;
                 k.hold_timer = KEEPER_HOLD;
                 k.feet_ball = false;
+                // The most expensive of the three: holding a shot is the
+                // outcome the catch band exists to ration (#490).
+                drain_keeper_fatigue(k, tune.value("KEEPER_COST_CATCH"));
                 if k.dive_timer > 0.0 {
                     end_dive(k); // possession ends the dive (#450)
                 }
@@ -5568,6 +5652,10 @@ fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snap
             s.ball_spin = 0.0;
             s.pickup_cd = PARRY_CD;
             s.block_grace = BLOCK_GRACE;
+            // Cheaper than a catch, deliberately (#490): a keeper the band
+            // has already pushed into parrying recovers back toward it
+            // instead of spiralling into a permanently open goal.
+            drain_keeper_fatigue(&mut s.players[ki], tune.value("KEEPER_COST_PARRY"));
             return Some(SavePending::Parry);
         }
     }
@@ -6687,7 +6775,7 @@ fn update_ball(
     // trigger an immediate re-save); being beaten falls through to a
     // possible goal.
     attempt_save(s, tune);
-    if resolve_pending_save(s, dt) == Some(crate::match_snapshot::SavePending::Catch) {
+    if resolve_pending_save(s, dt, tune) == Some(crate::match_snapshot::SavePending::Catch) {
         return;
     }
 
@@ -7064,6 +7152,23 @@ pub fn step(
         }
         if p.receive_timer > 0.0 {
             p.receive_timer = (p.receive_timer - dt).max(0.0);
+        }
+        // Keeper save fatigue regenerates at an explicit per-SECOND rate,
+        // integrated across this tick's own `dt` (#490). Deliberately not a
+        // per-tick increment constant: that shape silently redefines the
+        // recovery rate the moment the tick rate changes, which is exactly
+        // what the issue rules out. Same shape as `update_sprint`'s
+        // `SPRINT_REFILL * dt` refill, and the `.min` doubles as the clamp
+        // that pulls a pool down after the panel lowers `KEEPER_FATIGUE_MAX`
+        // mid-match.
+        //
+        // Not reset at a kickoff, unlike `sprint_meter`: a keeper worn down
+        // by a spell of pressure who then concedes should not be handed a
+        // fresh pool for it. The dead-ball time before the restart is
+        // already regeneration time.
+        if p.is_keeper {
+            p.keeper_fatigue = (p.keeper_fatigue + tune.value("KEEPER_FATIGUE_REGEN") * dt)
+                .min(tune.value("KEEPER_FATIGUE_MAX"));
         }
         if p.settle_timer > 0.0 {
             p.settle_timer = (p.settle_timer - dt).max(0.0);

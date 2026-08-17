@@ -50,6 +50,13 @@ use gc_data::tactics::MarkingConfig;
 
 /// Soccer-only snapshot format version.
 ///
+/// 13 -> 14 (#490): added `MatchPlayer::keeper_fatigue`, the keeper's save
+/// fatigue pool. Ordinary simulation state: drained at each resolved save,
+/// integrated back at a per-second rate on every fixed tick, and read by the
+/// catch band in `crate::r#match`'s `attempt_save`. A rollback that failed to
+/// restore it would resimulate a keeper who can hold balls the live run said
+/// they could not, so it must survive resimulation like any other field here.
+///
 /// 12 -> 13 (#489): added `MatchPlayer::action`, the sim-owned committed-action
 /// slot (charging/executing/recovering) a standing-poke tackle now runs
 /// through -- see `crate::action_slot`. Ordinary simulation state, and must
@@ -60,8 +67,13 @@ use gc_data::tactics::MarkingConfig;
 /// protocol -- nothing about it crosses the network -- but it is ordinary
 /// simulation state and must survive rollback resimulation like any other
 /// field here.
-pub const VERSION: i64 = 13;
+pub const VERSION: i64 = 14;
 /// Combat-companion snapshot format version.
+///
+/// 14 -> 15 (#490): kept one ahead of [`VERSION`], for the same reason the
+/// previous bump was -- the combat companion's `MatchPlayer` shape is the same
+/// struct `VERSION` versions, so `MatchPlayer::keeper_fatigue` moves this one
+/// too.
 ///
 /// 13 -> 14 (#489): kept one ahead of [`VERSION`] -- the combat companion's
 /// `MatchPlayer` shape is the same struct `VERSION` versions, so
@@ -69,7 +81,7 @@ pub const VERSION: i64 = 13;
 /// equal (`snapshot.version == VERSION || snapshot.version == COMBAT_VERSION`
 /// is how a restore tells the two wire shapes apart), which is exactly the
 /// collision leaving this at 13 would have produced.
-pub const COMBAT_VERSION: i64 = 14;
+pub const COMBAT_VERSION: i64 = 15;
 
 /// Fixed fixture size: five players per side, ten total.
 pub const PLAYER_COUNT: usize = 10;
@@ -301,6 +313,16 @@ pub struct MatchPlayer {
     pub save_style: Option<SaveStyle>,
     /// One-shot guard for the current released shot.
     pub save_tip_emitted: bool,
+    /// Keeper save-fatigue pool, in points, clamped to
+    /// `[0, KEEPER_FATIGUE_MAX]` (#490). Only meaningful when `is_keeper`;
+    /// an outfield player carries it at zero and nothing reads it.
+    ///
+    /// Drained by a resolved save (catch costs more than a parry, which
+    /// costs more than a fingertip deflection) and integrated back at
+    /// `KEEPER_FATIGUE_REGEN` points per SECOND, every fixed tick. It gates
+    /// only whether the keeper can HOLD the ball — the catch band in
+    /// `crate::r#match`'s `attempt_save` — never whether they can reach it.
+    pub keeper_fatigue: f64,
     /// AI first-touch control window (no pressured pass until settled).
     pub settle_timer: f64,
     /// Cooldown between aerial (header/volley) attempts.
@@ -1201,6 +1223,7 @@ fn append_player(w: &mut Encoder, player: &MatchPlayer) {
         scalar_opt_str(player.save_style.map(save_style_wire))
     );
     field!("save_tip_emitted", scalar_bool(player.save_tip_emitted));
+    field!("keeper_fatigue", scalar_num(player.keeper_fatigue));
     field!("settle_timer", scalar_num(player.settle_timer));
     field!("header_cd", scalar_num(player.header_cd));
     field!("aerial_timer", scalar_num(player.aerial_timer));
@@ -2139,6 +2162,11 @@ fn diff_player(path: &str, a: &MatchPlayer, b: &MatchPlayer) -> Option<MatchSnap
         format!("{path}.save_tip_emitted"),
         a.save_tip_emitted,
         b.save_tip_emitted
+    );
+    diff_num!(
+        format!("{path}.keeper_fatigue"),
+        a.keeper_fatigue,
+        b.keeper_fatigue
     );
     diff_num!(
         format!("{path}.settle_timer"),

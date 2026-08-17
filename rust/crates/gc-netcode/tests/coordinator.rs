@@ -149,7 +149,7 @@ const TRANSCRIPT_ID_LINE: usize = 13;
 /// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
 /// when a deliberate, reviewed wire-schema change moves it — never to clear
 /// a check that surprised you.
-const TRANSCRIPT_ID_BASELINE: &str = "transcript_id=a44ebac2fc25d349";
+const TRANSCRIPT_ID_BASELINE: &str = "transcript_id=bbc5b6538c656626";
 
 #[test]
 fn coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths() {
@@ -272,8 +272,8 @@ fn coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths()
     );
     for (index, (ours, theirs)) in log.iter().zip(reference.iter()).enumerate() {
         if index == TRANSCRIPT_ID_LINE {
-            // #489: schema-coupled, retired to a Rust-recorded baseline.
-            // See `TRANSCRIPT_ID_BASELINE`'s doc comment.
+            // #489, re-recorded again by #490: schema-coupled, retired to a
+            // Rust-recorded baseline. See `TRANSCRIPT_ID_BASELINE`'s doc comment.
             assert_eq!(
                 ours, TRANSCRIPT_ID_BASELINE,
                 "transcript_id no longer matches its Rust-recorded baseline"

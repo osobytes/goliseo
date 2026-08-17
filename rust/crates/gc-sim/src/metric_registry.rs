@@ -202,6 +202,16 @@ pub fn assemble() -> MetricRegistry {
                 def: def("whiff_rate"),
                 extract: |m| m.whiff_rate,
             },
+            // #490, appended last matching `gc_data::tunables::METRICS`'s
+            // authored order -- this list and that one are compared element by
+            // element by `metric_registry_folds_in_the_authored_order`, so
+            // "append, never insert" is enforced here rather than merely
+            // asked for. `None` when the match contained no save at all,
+            // which the fold skips rather than scoring as a perfect zero.
+            Metric {
+                def: def("rebound_rate"),
+                extract: |m| m.rebound_rate,
+            },
         ],
     );
     b.build()

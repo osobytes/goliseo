@@ -164,6 +164,10 @@ fn metric_registry_folds_in_the_authored_order() {
             // #489, appended after #491's two and in the order
             // `gc_data::tunables::METRICS` authors it.
             "whiff_rate",
+            // #490's keeper rebound rate, appended after #489's -- same rule,
+            // same reason: appended, never inserted, because inserting moves
+            // the fold order and with it the fun score's last bits.
+            "rebound_rate",
         ]
     );
 }
