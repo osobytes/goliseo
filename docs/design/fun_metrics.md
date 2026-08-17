@@ -1021,6 +1021,49 @@ The ritual still stands: a sim change that moves the fun signature owes a
   the same missing probation mechanism (#528), and stated here in the one
   place a future reader would otherwise be misled.
 
+  **`rebound_rate` WAS ALREADY NEAR THE TOP OF ITS BAND BEFORE THIS FEATURE
+  EXISTED, and that is the finding most likely to mislead a later reader.**
+  Measured with fatigue fully disabled — the pool never reaches the catch
+  band, so the code path this entry is about never fires — 96 full matches
+  put `rebound_rate` at **0.380**, against the metric's own proposed
+  0.15–0.40 good range. At the shipped defaults it converges to **0.400**,
+  i.e. sitting on the upper edge. Parries were producing live, followed-in
+  rebounds all along; what the issue's framing ("sustained pressure earns
+  nothing") is actually right about is *catches*, not this metric.
+
+  Two consequences worth stating before someone tunes against this number.
+  First, the band is a **prior**, authored from the issue's proposal, and the
+  measurement already argues with it; it was left as authored rather than
+  hand-fitted to what the code does, the same call `whiff_rate`'s own
+  `MetricDef` records and for the same reason. Second, a metric this close to
+  saturation has very little headroom left to register an improvement, so a
+  future change that genuinely makes rebounds better may show almost no
+  movement here and a later "no effect" conclusion drawn from it would be an
+  artefact of the ceiling, not a finding. Re-examine the band before treating
+  `rebound_rate` as evidence either way.
+
+  **A stronger configuration was measured and DELIBERATELY REJECTED, and the
+  reason was this band rather than the contract.** `KEEPER_FATIGUE_MAX=60`,
+  `KEEPER_FATIGUE_REGEN=2.5`, `KEEPER_CATCH_THRESHOLD=35` produced a larger
+  effect (`delta +0.0378`, WIRED at only 96 seeds where the shipped defaults
+  need 288) — a *better* knob-contract result on every axis the contract
+  measures. It was not shipped because it drove `rebound_rate` to **0.486**,
+  well past the band's upper edge: the keeper stops holding almost anything,
+  which is a different game rather than a keeper under pressure. The shipped
+  defaults (`100/4/45`) are the ones authored from the design pilot, and
+  nothing was tuned to make the contract pass. This is recorded because
+  choosing the weaker-but-in-band configuration is exactly the decision a
+  future reader would otherwise re-litigate from scratch, and because a
+  contract result is not by itself a reason to ship a value.
+
+  Neither measurement is reproducible from a committed test: both need a
+  base-configuration override that `gc_sim::knob_contract` does not expose
+  (`knob_moves_metric` and `noise_floor` both measure against
+  `Tuning::new()`). Adding that seam would make them rerunnable, and until
+  someone does, these two paragraphs are the record. See
+  `gc-sim/tests/knob_contract.rs`'s pilot doc comment, which says the same
+  thing beside the code.
+
   **`save_rate` did NOT move, and that is the honest headline for the slice.**
   0.9029 → 0.9008 on this fixture, against a 0.45–0.75 band. Fatigue gates
   whether the keeper can HOLD a shot, never whether they can reach it (that

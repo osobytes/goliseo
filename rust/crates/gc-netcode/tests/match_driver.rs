@@ -1177,6 +1177,17 @@ fn canonical_digest(digest: &str) -> bool {
 /// Re-recorded for #489: `match_snapshot::VERSION` bumps 12 -> 13 for the new
 /// `action` field on every serialized `MatchPlayer`, which is on the
 /// boundary-zero kickoff checkpoint like any other tick.
+///
+/// Re-recorded again by #490, by the identical mechanism one version later:
+/// `match_snapshot::VERSION` bumps 13 -> 14 for the new `keeper_fatigue`
+/// field on every serialized `MatchPlayer`, and boundary zero is a
+/// constructed kickoff snapshot, so it carries the new field exactly like
+/// every other tick's does. `89b63e968ec22b9e` -> `cce72804f0c6b446`. This is
+/// a SCHEMA move, not a behavioural one: the keeper has made no save at tick
+/// zero, so the field's value there is its full-pool initial value and no
+/// simulation output moved to produce this hash. Its siblings
+/// `coordinator.rs`'s `TRANSCRIPT_ID_BASELINE` and `desync_package.rs`'s
+/// `MANIFEST_ID_BASELINE` carry the same addendum for the same bump.
 const BOUNDARY_ZERO_BASELINE_HASH: &str = "cce72804f0c6b446";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario

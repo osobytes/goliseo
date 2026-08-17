@@ -1273,11 +1273,35 @@ fn rebound_rate_arms_on_every_ai_vs_ai_match() {
     );
 }
 
-/// The pilot that produced the tables in this section's two doc comments,
-/// kept runnable rather than described. Not an assertion:
-/// `knob_moves_metric` (not `assert_moves`) is used throughout so a
-/// DECORATION verdict prints as a finding instead of panicking, which is the
-/// whole point of a probe.
+/// The pilot that produced the table in this section's doc comment, kept
+/// runnable rather than described. Not an assertion: `knob_moves_metric`
+/// (not `assert_moves`) is used throughout so a DECORATION verdict prints as
+/// a finding instead of panicking, which is the whole point of a probe.
+///
+/// **The row list below is the published table, row for row, and that is
+/// deliberate.** It was a cross product of `{30s, 120s} x {24, 48, 96, 192}`
+/// until #490 review pointed out the mismatch that made "kept runnable" only
+/// partly true: the cross product could not generate the `120s/288` or
+/// `120s/384` rows the table publishes -- and those two carry the table's
+/// strongest argument, that the delta holds near +0.024 while the threshold
+/// shrinks as `1/sqrt(n)`. A reproducibility claim that stops short of the
+/// rows doing the arguing is the same shape of defect as a harness self-test
+/// standing in for a harness run (AGENTS.md §9). It also computed `30s/24`
+/// and `30s/96` and published neither. Both halves are fixed by listing the
+/// rows explicitly: what the table shows is now exactly what this probe
+/// prints, and adding a row to one without the other is a visible edit.
+///
+/// One measurement in this section is still prose rather than a rerunnable
+/// artifact, and it is worth naming: the REJECTED stronger configuration
+/// (`KEEPER_FATIGUE_MAX=60`, `KEEPER_FATIGUE_REGEN=2.5`,
+/// `KEEPER_CATCH_THRESHOLD=35`). Neither `knob_contract::knob_moves_metric`
+/// nor `knob_contract::noise_floor` accepts a base-configuration override --
+/// both measure against `Tuning::new()`'s defaults by construction -- so
+/// recording it here would mean either a new seam in `gc_sim::knob_contract`
+/// (a `src/` change, out of that review round's scope) or a second,
+/// hand-rolled harness in this file, whose numbers would not be comparable
+/// to the table above. Prose that says so beats a number produced a
+/// different way and presented as if it were the same measurement.
 ///
 /// `cargo test -p gc-sim --test knob_contract -- --ignored --nocapture \
 ///  the_keeper_fatigue_pilot_reports_across_durations_and_seed_counts`
@@ -1288,31 +1312,42 @@ fn the_keeper_fatigue_pilot_reports_across_durations_and_seed_counts() {
         "{:<9} {:>4} {:>9} {:>9} {:>9} {:>9} {:>10}  verdict",
         "duration", "n", "base", "delta", "delta_se", "noise_se", "threshold"
     );
-    for (label, duration) in [("30s", DURATION), ("120s", None)] {
-        for n in [24, 48, 96, 192] {
-            let seeds = seeds(n);
-            let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
-                knob: "KEEPER_COST_CATCH",
-                metric: "rebound_rate",
-                seeds: &seeds,
-                duration,
-                perturbation: None,
-                expect: ExpectedShift::Increases,
-                direction: Some(Perturb::Up),
-            });
-            println!(
-                "{label:<9} {n:>4} {:>9.4} {:>+9.4} {:>9.4} {:>9.4} {:>10.4}  {}",
-                outcome.noise.mean,
-                outcome.delta,
-                outcome.delta_se,
-                outcome.noise.standard_error,
-                outcome.threshold,
-                if outcome.passes {
-                    "WIRED"
-                } else {
-                    "DECORATION"
-                }
-            );
-        }
+    // EXACTLY the rows published in the doc comment above, in the same
+    // order -- see that comment's note on why this is an explicit list
+    // rather than a cross product.
+    let rows: &[(&str, Option<f64>, usize)] = &[
+        ("30s", DURATION, 48),
+        ("30s", DURATION, 192),
+        ("120s", None, 24),
+        ("120s", None, 48),
+        ("120s", None, 96),
+        ("120s", None, 192),
+        ("120s", None, 288),
+        ("120s", None, 384),
+    ];
+    for (label, duration, n) in rows.iter().copied() {
+        let seeds = seeds(n);
+        let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
+            knob: "KEEPER_COST_CATCH",
+            metric: "rebound_rate",
+            seeds: &seeds,
+            duration,
+            perturbation: None,
+            expect: ExpectedShift::Increases,
+            direction: Some(Perturb::Up),
+        });
+        println!(
+            "{label:<9} {n:>4} {:>9.4} {:>+9.4} {:>9.4} {:>9.4} {:>10.4}  {}",
+            outcome.noise.mean,
+            outcome.delta,
+            outcome.delta_se,
+            outcome.noise.standard_error,
+            outcome.threshold,
+            if outcome.passes {
+                "WIRED"
+            } else {
+                "DECORATION"
+            }
+        );
     }
 }
