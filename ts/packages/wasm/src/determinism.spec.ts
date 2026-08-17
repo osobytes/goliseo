@@ -44,8 +44,13 @@ import { loadSimHost } from "./index.ts";
 // own unit test. Verified wasm and native AGREE at this value (native:
 // `cargo test -p gc-sim --test determinism_evidence`; wasm: this file's own
 // gate run) before touching these two lines, per the doc comment above.
+//
+// #572 re-recorded the digest again and NOT the final hash: full time is
+// reached in the same state, the chain arriving there is not. Same
+// verification -- native and wasm were confirmed to agree at the new digest
+// before this line moved.
 const EXPECTED_FINAL_HASH = "4d002b60a635a76c";
-const EXPECTED_SEQUENCE_DIGEST = "45929ad5af7bf12a";
+const EXPECTED_SEQUENCE_DIGEST = "95e4a276437e3dde";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

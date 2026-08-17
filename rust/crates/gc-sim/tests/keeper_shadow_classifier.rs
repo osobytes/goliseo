@@ -213,11 +213,26 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9746);
-    assert_eq!(total.agree_true, 3364);
-    assert_eq!(total.agree_false, 6089);
-    assert_eq!(total.disagree_deferred, 268);
-    assert_eq!(total.disagree_height, 25);
+    // Re-pinned by #489's possession-invariant completion, in the SAME commit
+    // as `gc_data::outfield_ai_baseline`'s v12 -> v13 re-freeze, for the
+    // reason the paragraph above already gives.
+    //
+    // candidates 9746 -> 9458: seven ownership writes (eight with
+    // `combat`'s ball spill) were silently exempt from #489's rule that a
+    // possession change clears the outgoing owner's committed action slot,
+    // and now are not. A presser who whiffs a standing poke and then loses
+    // the ball no longer serves out its miss recovery, so it re-presses
+    // sooner and carriers give the ball up marginally earlier -- fewer
+    // possessions run long enough to reach the keeper as a save candidate.
+    // The agree/disagree split shifts roughly in proportion (agree_true
+    // 3364 -> 3262, agree_false 6089 -> 5926, disagree_deferred 268 -> 242,
+    // disagree_height 25 -> 28), and `new_only` stays structurally 0, which
+    // is the assertion that would have been a finding rather than a re-pin.
+    assert_eq!(total.candidates, 9458);
+    assert_eq!(total.agree_true, 3262);
+    assert_eq!(total.agree_false, 5926);
+    assert_eq!(total.disagree_deferred, 242);
+    assert_eq!(total.disagree_height, 28);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -296,7 +311,17 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // bucket by an even wider margin, consistent with `disagree_deferred`
     // more than doubling above while `disagree_height` fell. No historical
     // byte-divergent split to compare against here either.
-    assert_eq!(matches_with_disagree, 13);
-    assert_eq!(matches_with_deferred, 31);
-    assert_eq!(matches_with_either, 37);
+    //
+    // Re-pinned by #489's possession-invariant completion alongside the
+    // counts above: `disagree_height` alone touches 14/60 matches (23%), and
+    // folding in `disagree_deferred` reaches 33/60 (55%). Deferred episodes
+    // remain the larger bucket, but by a narrower margin than the previous
+    // #489 re-pin recorded -- consistent with `disagree_deferred` falling
+    // (268 -> 242) while `disagree_height` rose (25 -> 28) above. That is the
+    // signature this file's module doc gives for a one-tick-earlier-or-later
+    // RNG-stream shift, which is exactly what an earlier-cleared miss
+    // recovery is. No historical byte-divergent split to compare against.
+    assert_eq!(matches_with_disagree, 14);
+    assert_eq!(matches_with_deferred, 26);
+    assert_eq!(matches_with_either, 33);
 }

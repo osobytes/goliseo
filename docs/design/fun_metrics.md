@@ -966,6 +966,102 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-17 — #489's possession invariant applied at every ownership
+  change instead of two of them (PR #572).** `baseline_version` **12 → 13**,
+  signature `d8b961e7e23fb426` → `3983564e36c3284e`;
+  `identity.tuning_hash`, `identity.content_hash`, `identity.fixture_hash`,
+  `policy_id` and `snapshot_version` all unchanged — no knob default, no
+  content and no AI policy moved. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol,
+  after the repository owner's explicit authorization.
+
+  **The mechanism.** `r#match::set_owner` is the single site that applies
+  #489's rule — a possession change clears the OUTGOING owner's committed
+  action slot, whichever verb and whichever phase. Its doc comment claimed
+  every `s.owner` assignment went through it. Seven did not (kickoff, shot
+  release, pass release, keeper dropkick, keeper gather, heavy touch, loose
+  ball pickup), and an eighth outside the module did not either
+  (`combat`'s ball spill), plus two scenario builders in
+  `rollback_validation`. Only `win_ball` and the keeper smother were routed.
+  PR #572 routes all of them and adds the structural test the doc comment
+  already cited but which did not exist
+  (`tests/action_slot_possession_invariant.rs`).
+
+  **The every-phase semantics was affirmed, not changed.** Clearing from
+  `Charging`, `Executing` AND `Recovering` was decided and tested in #548
+  (`tests/action_slot_integration.rs`'s
+  `possession_change_clears_a_committed_action_from_every_phase_no_matter_the_verb`);
+  this change only makes it actually apply. Neither `action_slot::clear` nor
+  that test was touched. The counter-argument — that refunding an earned
+  miss-recovery penalty is a cancel tech — was raised, considered, and filed
+  as a separate follow-up against #489 with its own measurements rather than
+  resolved here.
+
+  **Where the measured cost sits.** `#[track_caller]` instrumentation on
+  `set_owner` identifies it precisely: across the OMP-1 fixture the newly
+  routed sites clear a non-idle slot twice, both at the heavy-touch site,
+  both `phase=Recovering verb=Tackle`. A presser whiffs a standing poke,
+  picks the loose ball up while still in miss recovery, then loses it to a
+  heavy touch — and no longer serves out the recovery. It re-presses sooner,
+  so carriers surrender the ball marginally earlier and matches end sooner.
+  `ai_dribble_heavy_losses_per_min` falling 20% and `duration` falling 1.7s
+  are that same interaction in aggregate. The effect is small per event and
+  compounds over 7,200 ticks, which is why `fun` moves more than any single
+  metric feeding it suggests.
+
+  | metric | frozen (v12) | re-frozen (v13) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.322688 | 0.254926 | −0.067761 |
+  | `goals_total` | 1.916667 | 1.933333 | +0.016667 |
+  | `goals_home` | 0.733333 | 0.700000 | −0.033333 |
+  | `goals_away` | 1.183333 | 1.233333 | +0.050000 |
+  | `shots` | 31.966667 | 31.900000 | −0.066667 |
+  | `shots_per_goal` | 19.378182 | 18.507233 | −0.870949 |
+  | `save_rate` | 0.902887 | 0.897695 | −0.005192 |
+  | `passes` | 30.016667 | 29.700000 | −0.316667 |
+  | `pass_completion` | 0.519213 | 0.513852 | −0.005361 |
+  | `turnovers_per_min` | 8.937462 | 9.185102 | +0.247640 |
+  | `possession_balance` | 0.532096 | 0.526682 | −0.005415 |
+  | `longest_drought_s` | 11.691111 | 11.606667 | −0.084444 |
+  | `decided_late` | 0.676499 | 0.705869 | +0.029371 |
+  | `lead_changes` | 0.083333 | 0.100000 | +0.016667 |
+  | `margin` | 1.150000 | 1.066667 | −0.083333 |
+  | `duration` | 117.596667 | 115.873056 | −1.723611 |
+  | `ai_dribble_carry_s` | 25.561389 | 25.524167 | −0.037222 |
+  | `ai_dribble_close_share` | 0.815167 | 0.816863 | +0.001696 |
+  | `ai_dribble_sprint_share` | 0.162368 | 0.165615 | +0.003246 |
+  | `ai_dribble_juke_share` | 0.097733 | 0.094232 | −0.003501 |
+  | `ai_dribble_touches_per_min` | 120.756420 | 118.915417 | −1.841003 |
+  | `ai_dribble_heavy_losses_per_min` | 0.507549 | 0.406667 | −0.100883 |
+  | `ai_jukes` | 35.550000 | 34.400000 | −1.150000 |
+
+  Four other frozen artifacts moved in the same commit, for the same reason,
+  and were re-recorded with it: `gc_data::omp1_determinism`'s derived half
+  (`boundary_hashes` from boundary 1877 on, `boundary_count`,
+  `expected_final_hash`, `expected_sequence_digest`; its frozen half is
+  untouched and the recorder asserts that), `gc-sim`'s
+  `tests/fixtures/match_step_ai_ai_baseline.txt` (first divergence at tick
+  1945, `players[8].pos.x` 455.19756407928269937 → 455.16689392518952673),
+  and `gc_sim::keeper_shadow_classifier`'s frozen 60-seed counts
+  (`candidates` 9746 → 9458, `agree_true` 3364 → 3262, `agree_false` 6089 →
+  5926, `disagree_deferred` 268 → 242, `disagree_height` 25 → 28,
+  `new_only` unchanged at 0). OMP-1's never-refreshed behavioral half
+  (`event_counts`, `expected_score`) was **not** touched; its reported drift
+  against this build is unchanged by this commit, verified identical on
+  `origin/main`.
+
+  **One knob contract was weakened and is NOT re-baselined here.**
+  `PASS_ELIGIBLE_MAX` × `pass_completion` (down), the contract #531 phase 4
+  promoted, measured −0.0459 against a 0.0278 threshold at n=96 before this
+  change and −0.0268 against 0.0272 after — under its floor, so
+  `a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer`
+  is red. Lowering a threshold or swapping the metric to whatever passes is
+  forbidden by AGENTS.md §9 and by `gc_sim::knob_contract`'s own module
+  rule, so neither was done; the measurements are in PR #572's body and the
+  resolution is the owner's. `PASS_ELIGIBLE_MIN` × `pass_aim_error`, #553's
+  sibling contract, was checked for the same degradation and does **not**
+  degrade: +0.1226/0.0427 before, +0.1209/0.0419 after at n=96.
+
 - **2026-08-14 — nine `gc-sim`/`gc-data` transcendental call sites converted
   to `gc_core::deterministic_math::cos_sin` or a precomputed constant, so
   native and the compiled wasm module compute the same simulation state
