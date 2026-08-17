@@ -20,29 +20,13 @@ export type {
   TeamResultStats,
 } from "./content.ts";
 
-export { squad } from "./squad.ts";
+export { teamSheet, STARTER_COUNT } from "./team_sheet.ts";
 export type {
-  SquadAction,
-  SquadContentData,
-  SquadScreenContext,
-  SquadScreenState,
-} from "./squad.ts";
-
-export { formation } from "./formation.ts";
-export type {
-  FormationAction,
-  FormationContentData,
-  FormationScreenContext,
-  FormationScreenState,
-} from "./formation.ts";
-
-export { tactic } from "./tactic.ts";
-export type {
-  TacticAction,
-  TacticContentData,
-  TacticScreenContext,
-  TacticScreenState,
-} from "./tactic.ts";
+  TeamSheetAction,
+  TeamSheetContentData,
+  TeamSheetScreenContext,
+  TeamSheetScreenState,
+} from "./team_sheet.ts";
 
 export { result } from "./result.ts";
 export type {
@@ -70,6 +54,20 @@ export type { PauseAction, PauseScreenState } from "./pause.ts";
 
 export { title } from "./title.ts";
 export type { TitleAction, TitleScreenState } from "./title.ts";
+
+export { multiplayer } from "./multiplayer.ts";
+export type {
+  MultiplayerAction,
+  MultiplayerScreenContext,
+  MultiplayerScreenState,
+} from "./multiplayer.ts";
+
+export { sessionEnded } from "./session_ended.ts";
+export type {
+  SessionEndedAction,
+  SessionEndedScreenContext,
+  SessionEndedScreenState,
+} from "./session_ended.ts";
 
 export { credits } from "./credits.ts";
 export type { CreditsAction, CreditsScreenState } from "./credits.ts";

@@ -26,18 +26,17 @@ import { bindings, controller, type ControllerInputEvent } from "@gc/input";
 import {
   Menu,
   credits,
-  formation,
   help,
+  multiplayer,
   pause,
   result,
+  sessionEnded,
   settings as settingsScreen,
-  squad,
-  tactic,
+  teamSheet,
   title,
+  LOBBY_TERMINAL_TEXT,
   type BuildInfo as ScreensBuildInfo,
-  type FormationContentData,
-  type SquadContentData,
-  type TacticContentData,
+  type TeamSheetContentData,
 } from "@gc/screens";
 import { matchAdapter, type MatchAdapter, type MatchAdapterCallbacks } from "./match_adapter.ts";
 import { ScreenStack, type Screen } from "./screen_stack.ts";
@@ -98,9 +97,7 @@ export type AppAction = { readonly go: string } & Record<string, unknown>;
 export interface AppContent {
   readonly matchContract: MatchContractContent;
   readonly homeTeam: TeamData;
-  readonly squad: SquadContentData;
-  readonly formation: FormationContentData;
-  readonly tactic: TacticContentData;
+  readonly teamSheet: TeamSheetContentData;
   readonly buildInfo: ScreensBuildInfo;
 }
 
@@ -200,74 +197,78 @@ export class App {
     this.replaceRoute("title", asMenu(menu));
   }
 
-  showSquad(): void {
-    this.session.setupStep = "squad";
+  // The whole pre-match decision. It replaced three routes -- squad,
+  // formation, tactic -- that were three views of it.
+  showTeamSheet(): void {
     const menu = new Menu(
-      squad,
-      squad.newState(this.viewport, this.content.squad, { starterIds: this.session.starterIds }),
-      this.onAction(),
-    );
-    this.replaceRoute("squad", asMenu(menu));
-  }
-
-  showFormation(): void {
-    this.session.setupStep = "formation";
-    const menu = new Menu(
-      formation,
-      formation.newState(this.viewport, this.content.formation, {
-        selected: this.session.formationId,
+      teamSheet,
+      teamSheet.newState(this.viewport, this.content.teamSheet, {
         starterIds: this.session.starterIds,
-      }),
-      this.onAction(),
-    );
-    this.replaceRoute("formation", asMenu(menu));
-  }
-
-  showTactic(): void {
-    this.session.setupStep = "tactic";
-    const menu = new Menu(
-      tactic,
-      tactic.newState(this.viewport, this.content.tactic, {
-        selected: this.session.tacticId,
         formationId: this.session.formationId,
+        tacticId: this.session.tacticId,
+        combatEnabled: this.session.combatEnabled,
       }),
       this.onAction(),
     );
-    this.replaceRoute("tactic", asMenu(menu));
+    this.replaceRoute("team_sheet", asMenu(menu));
   }
 
-  showResult(): void {
-    const lastResult = this.session.lastResult;
-    if (!lastResult) {
+  showMultiplayer(): void {
+    const menu = new Menu(multiplayer, multiplayer.newState(this.viewport), this.onAction());
+    this.replaceRoute("multiplayer", asMenu(menu));
+  }
+
+  /**
+   * One result route for both contexts. It used to be two -- `result` and
+   * `online_result` -- purely so the offline rematch, which replays a local
+   * session that an online match does not have, was unreachable from an
+   * online one. The screen takes a flag for that now.
+   */
+  showResult(matchResult?: ProductMatchResult): void {
+    const online = matchResult !== undefined;
+    const shown = matchResult ?? this.session.lastResult;
+    if (!shown) {
       throw new Error("result route needs a match result");
+    }
+    if (online) {
+      this.onlineError = undefined;
     }
     const menu = new Menu(
       result,
       result.newState(
         this.viewport,
         { players: this.content.matchContract.players },
-        { result: lastResult },
+        { result: shown, online },
       ),
       this.onAction(),
     );
     this.replaceRoute("result", asMenu(menu));
   }
 
-  // The online result screen is the same product screen, on its own route so
-  // the offline rematch (which replays the local session) cannot be reached
-  // from a session that no longer exists.
-  showOnlineResult(matchResult: ProductMatchResult): void {
-    this.onlineError = undefined;
+  /**
+   * Where a dead online session goes. The coordinator has always emitted a
+   * typed reason; until now it was stored on `onlineError` and rendered
+   * nowhere, and the player was dropped at the title screen without being
+   * told anything.
+   */
+  showSessionEnded(reason: string, detail?: string): void {
+    // `reason` arrives as a plain string off an `AppAction`, so the lookup is
+    // widened rather than asserted: a reason the model gains without a thought
+    // for this screen must still render, and the screen has its own fallback
+    // for exactly that case.
+    const table: Readonly<Record<string, string | undefined>> = LOBBY_TERMINAL_TEXT;
+    const text = table[reason];
+    this.onlineError = detail ?? text ?? reason;
     const menu = new Menu(
-      result,
-      result.newState(
-        this.viewport,
-        { players: this.content.matchContract.players },
-        { result: matchResult },
-      ),
+      sessionEnded,
+      sessionEnded.newState(this.viewport, {
+        reason,
+        ...(text !== undefined ? { text } : {}),
+        ...(detail !== undefined ? { detail } : {}),
+      }),
       this.onAction(),
     );
-    this.replaceRoute("online_result", asMenu(menu));
+    this.replaceRoute("session_ended", asMenu(menu));
   }
 
   startMatch(): void {
@@ -286,7 +287,7 @@ export class App {
         this.showResult();
       },
       on_cancelled: () => {
-        this.showTactic();
+        this.showTeamSheet();
       },
     };
     const screen = this.adapter.new(request, callbacks, this.viewport);
@@ -296,9 +297,14 @@ export class App {
     this.replaceRoute("match", screen);
   }
 
-  // The developer online route -- see this file's header for why it is
-  // injected rather than imported.
-  showLobby(options?: { readonly modelOptions?: Record<string, unknown> }): void {
+  // The online route -- see this file's header for why the lobby screen is
+  // injected rather than imported. `role`/`mode` are the multiplayer front
+  // door's decision, forwarded so the player does not choose Host twice.
+  showLobby(options?: {
+    readonly modelOptions?: Record<string, unknown>;
+    readonly role?: "host" | "guest";
+    readonly mode?: string;
+  }): void {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
     }
@@ -306,6 +312,8 @@ export class App {
     const resolved = {
       ...modelOptions,
       template: modelOptions.template ?? this.online.matchManifestTemplate,
+      ...(options?.role !== undefined ? { role: options.role } : {}),
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
     };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
     this.pushRoute("lobby", screen);
@@ -377,13 +385,16 @@ export class App {
         this.requestQuit();
       }
     } else if (route === "title" && action.go === "play") {
-      session.setCombatEnabled(this.session, false);
-      this.showSquad();
-    } else if (route === "title" && action.go === "combat_prototype") {
-      session.setCombatEnabled(this.session, true);
-      this.showSquad();
-    } else if (route === "title" && action.go === "online_lobby") {
-      this.showLobby();
+      this.showTeamSheet();
+    } else if (route === "title" && action.go === "multiplayer") {
+      this.showMultiplayer();
+    } else if (route === "multiplayer" && action.go === "title") {
+      this.showTitle();
+    } else if (route === "multiplayer" && action.go === "lobby") {
+      this.showLobby({
+        ...(action.role !== undefined ? { role: action.role as "host" | "guest" } : {}),
+        ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
+      });
     } else if (route === "lobby" && action.go === "online_match") {
       if (action.freeze === undefined) {
         throw new Error("an online start needs its freeze");
@@ -393,18 +404,26 @@ export class App {
       if (action.result === undefined) {
         throw new Error("an online result needs its record");
       }
-      this.showOnlineResult(action.result as ProductMatchResult);
+      this.showResult(action.result as ProductMatchResult);
     } else if (route === "online_match" && action.go === "online_ended") {
       const terminal = action.terminal as { readonly reason?: string } | undefined;
-      this.onlineError =
-        (action.detail as string | undefined) ?? terminal?.reason ?? "the online session ended";
-      this.showTitle();
+      this.showSessionEnded(
+        terminal?.reason ?? "transport_lost",
+        action.detail as string | undefined,
+      );
     } else if (
-      route === "online_result" &&
-      (action.go === "rematch" || action.go === "change_lineup" || action.go === "change_plan")
+      route === "session_ended" &&
+      (action.go === "multiplayer" || action.go === "main_menu")
     ) {
+      // Both exits go through the title, so a dead session leaves nothing
+      // mounted behind it; Multiplayer then reopens the front door.
       this.showTitle();
-      this.showLobby();
+      if (action.go === "multiplayer") {
+        this.showMultiplayer();
+      }
+    } else if (route === "result" && action.go === "back_to_lobby") {
+      this.showTitle();
+      this.showMultiplayer();
     } else if (route === "title" && action.go === "help") {
       const menu = new Menu(
         help,
@@ -412,7 +431,9 @@ export class App {
         this.onAction(),
       );
       this.pushRoute("help", asMenu(menu));
-    } else if (route === "title" && action.go === "credits") {
+    } else if (action.go === "credits") {
+      // Reached from Settings -> About. It is no longer a front-door entry:
+      // build info and attribution belong behind settings, not beside Play.
       const menu = new Menu(
         credits,
         credits.newState(this.viewport, this.content.buildInfo),
@@ -433,7 +454,12 @@ export class App {
         this.setSettings(action.settings as GameSettings, true);
       }
       this.popRoute();
-    } else if (route === "squad" && action.go === "formation") {
+    } else if (route === "team_sheet" && action.go === "title") {
+      this.showTitle();
+    } else if (route === "team_sheet" && action.go === "match") {
+      // One commit, three decisions. Starters are validated first: an invalid
+      // five is a programmer error by the time it reaches here, since the
+      // screen refuses to emit `match` at any other count.
       const set = session.setStarters(
         this.content.matchContract,
         this.session,
@@ -443,31 +469,14 @@ export class App {
       if (!set.ok) {
         throw new Error(set.error);
       }
-      this.showFormation();
-    } else if (route === "squad" && action.go === "title") {
-      this.showTitle();
-    } else if (route === "formation" && action.go === "squad") {
-      if (action.formationId !== undefined) {
-        session.setFormation(this.session, action.formationId as string);
-      }
-      this.showSquad();
-    } else if (route === "formation" && action.go === "tactic") {
       session.setFormation(this.session, action.formationId as string);
-      this.showTactic();
-    } else if (route === "tactic" && action.go === "formation") {
-      if (action.tacticId !== undefined) {
-        session.setTactic(this.session, action.tacticId as string);
-      }
-      this.showFormation();
-    } else if (route === "tactic" && action.go === "match") {
       session.setTactic(this.session, action.tacticId as string);
+      session.setCombatEnabled(this.session, action.combatEnabled === true);
       this.startMatch();
     } else if (route === "result" && action.go === "rematch") {
       this.startMatch();
     } else if (route === "result" && action.go === "change_plan") {
-      this.showFormation();
-    } else if (route === "result" && action.go === "change_lineup") {
-      this.showSquad();
+      this.showTeamSheet();
     } else if (action.go === "main_menu") {
       this.showTitle();
     } else if (route === "pause" && action.go === "resume") {

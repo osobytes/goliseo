@@ -1,5 +1,18 @@
 // The main title/menu screen. See AGENTS.md §9 for the pure/impure seam;
 // this screen needs no injected content.
+//
+// Four entries, down from seven. What went, and why:
+//
+//   - COMBAT PROTOTYPE was a duplicate of PLAY distinguished only by
+//     `session.setCombatEnabled`. Combat is a match option, not a second Play
+//     button, so it is a toggle on the team sheet now.
+//   - QUIT has been a no-op since native was dropped: the browser entry logs
+//     a message and returns. The `back` action still emits `{go: "quit"}` —
+//     that is the window-close gesture, which `App` forwards to an injected
+//     `requestQuit` — but there is no longer a button for it.
+//   - CREDITS folded into Settings -> About, where build info belongs.
+//   - ONLINE LOBBY (DEV) became MULTIPLAYER: a real front door, instead of a
+//     button that threw because no `OnlinePorts` is ever injected.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -20,7 +33,7 @@ function layout(state: TitleScreenState): Layout {
     {
       id: "brand",
       kind: "eyebrow",
-      text: "INTERGALACTIC 5v5",
+      text: "ARCADE COMBAT SOCCER  •  5 V 5",
       rect: { x: 0, y: 72, w: state.viewport.w, h: 22 },
       data: { align: "center" },
     },
@@ -34,20 +47,17 @@ function layout(state: TitleScreenState): Layout {
     {
       id: "tagline",
       kind: "label",
-      text: "PICK THE FIVE  •  SET THE SHAPE  •  PLAY THE PLAN",
+      text: "COACH FOR THIRTY SECONDS  •  THEN PLAY IT YOURSELF",
       rect: { x: 0, y: 174, w: state.viewport.w, h: 24 },
       data: { align: "center", tone: "muted" },
     },
   ];
 
   const labels: readonly [string, string][] = [
-    ["play", "PLAY SHOWCASE"],
-    ["combat_prototype", "COMBAT PROTOTYPE"],
+    ["play", "PLAY"],
+    ["multiplayer", "MULTIPLAYER"],
     ["help", "HOW TO PLAY"],
     ["settings", "SETTINGS"],
-    ["credits", "CREDITS"],
-    ["online_lobby", "ONLINE LOBBY"],
-    ["quit", "QUIT"],
   ];
   labels.forEach(([id, text], i) => {
     widgets.push({
@@ -55,8 +65,16 @@ function layout(state: TitleScreenState): Layout {
       kind: "button",
       text,
       focused: state.focus === id,
-      rect: { x: 350, y: 210 + i * 46, w: 260, h: 40 },
+      rect: { x: 330, y: 232 + i * 48, w: 300, h: 42 },
     });
+  });
+
+  widgets.push({
+    id: "hint",
+    kind: "label",
+    text: "UP / DOWN TO NAVIGATE  •  ENTER TO SELECT",
+    rect: { x: 0, y: 470, w: state.viewport.w, h: 20 },
+    data: { align: "center", tone: "muted", focusable: false },
   });
   return widgets;
 }

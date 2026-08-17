@@ -96,6 +96,29 @@ export interface ActionPoseOptions {
   readonly aerial?: number;
   readonly aerial_style?: string;
   readonly aerial_jump?: number;
+  /**
+   * Ticks remaining in the current forced (stagger/knockback) disable
+   * window -- `gc_sim::combat_snapshot::CombatPlayerState.forced_ticks`,
+   * mirrored one hop through `gc_render::player_pose::CombatPoseSample`'s
+   * field of the same name. Only read when `pose.id` is
+   * `"combat_knockback"` or `"combat_stagger"`, and only by [`apply`]'s hit-
+   * reaction envelope (see its own doc) -- `forOptions`/`tip` never read it,
+   * so the AUTHORED static tilt in `TIPS` stays the single source of truth
+   * for the pose's magnitude; the envelope only ever scales it.
+   *
+   * `undefined` -- not `0` -- is "no live tick count for this frame", which
+   * is every caller today: this field is not yet threaded from a live
+   * `RenderFrame`, which does not carry it (see
+   * `gc_render::frame::FrameCombatModel`'s own doc on why not). `apply`'s
+   * hit-reaction envelope does NOT simply go unscaled when this is
+   * `undefined` -- it falls back to a wall-clock approximation instead, so
+   * the curve is live today rather than dormant until that wire extension
+   * lands. See `hitReaction`'s own doc for the fallback's shape and why it
+   * degrades gracefully. `0` means "the window is ending this tick", which
+   * is a real, meaningfully different frame from "no data" and is handled
+   * by the EXACT path, not the fallback.
+   */
+  readonly forced_ticks?: number;
 }
 
 // ONE UNIT, ONE CONVERSION (#436).
@@ -569,6 +592,333 @@ function tip(poseId: string | undefined, opts: ActionPoseOptions): RootPose | nu
   return pose;
 }
 
+// ---------------------------------------------------------------------------
+// HIT-REACTION ENVELOPE (#564)
+// ---------------------------------------------------------------------------
+//
+// THE BUG THIS REPLACES. `TIPS.combat_knockback`/`combat_stagger` above are a
+// single STATIC tilt, held unchanged for the whole forced window and then
+// gone in one frame the instant `forced_state` clears -- a hit reads as "the
+// victim braces once, then is back up immediately", because nothing about
+// the pose moves for the ~0.5s (<=30 ticks) `gc_sim` actually holds control
+// away from them. `hitReactionMultiplier` below is what makes it move: a
+// fast attack that slightly OVERSHOOTS the authored tilt (an impact, not a
+// pose fading in), a settle to a REDUCED hold (absorbing the hit, not still
+// reeling at the peak), and a recovery that ramps back toward upright over
+// the window's OWN LAST FEW TICKS -- so the character is visibly getting up
+// before control returns, not snapping upright the instant it does.
+//
+// TWO SEPARATE MECHANISMS, DELIBERATELY:
+//
+//   1. THE ENVELOPE ([`hitReactionMultiplier`]) scales `TIPS`' authored
+//      magnitude while `forced_state` is active. Pure and stateless on its
+//      own -- it takes `elapsedTicks`/`remainingTicks` as plain numbers so
+//      its SHAPE is testable independent of how a caller tracks them.
+//   2. THE LATCH AND THE BLEND-OUT (`hitReactionStates`, a per-slot `Map`)
+//      are what a caller needs to find `elapsedTicks` in the first place --
+//      `forced_ticks` only ever reports what remains, not the window's
+//      original length -- and to fade the ROOT OVERLAY out over
+//      `HIT_BLEND_OUT_SECONDS` once `forced_state` clears, instead of
+//      letting it disappear in the one frame `forOptions` stops returning
+//      it. This is the same shape `rig3d/animator.ts`'s own `states` map
+//      keeps per character (see that file's `AnimatorState`) -- a plain
+//      module-level `Map<string, ...>` keyed by a caller-supplied slot id,
+//      because AGENTS.md's "no global mutable state" rule is a Rust rule
+//      (`unsafe_code = "forbid"`; there is no such restriction here) and
+//      because presentation-derived per-character state belongs in
+//      `@gc/render`, not in the simulation this module reads from.
+//
+// WHY THIS DOES NOT TOUCH `forOptions`/`tip`. Both stay exactly as authored:
+// the envelope is applied to their OUTPUT, in `apply`, rather than threaded
+// into their signatures. That keeps every existing caller of `forOptions`
+// (`ground_contact.spec.ts`'s exact-equality assertions against `TIPS`'s
+// static geometry among them) reading the unscaled, authored pose, which is
+// still the right thing for them to read: they are pinning the AUTHORED
+// contract, not the runtime envelope on top of it.
+//
+// TODAY'S REACHABILITY, STATED RATHER THAN LEFT IMPLICIT. `apply`'s two new
+// parameters (`slotId`, `now`) are OPTIONAL and every call site but
+// `rig3d/animator.ts`'s omits them, so every one of them keeps today's exact
+// static/instant behaviour -- see `apply`'s own doc. Where they ARE supplied
+// (`animator.ts`, the only production call site), the curve is LIVE TODAY:
+// `ActionPoseOptions.forced_ticks` is not yet populated by any production
+// caller (`RenderFrame` does not carry it -- see that field's own doc), so
+// `hitReaction` takes its WALL-CLOCK FALLBACK branch rather than its exact
+// one, latching `now` and assuming `MAX_DISABLE_TICKS` as the window's
+// length. See `hitReaction`'s own doc for the fallback's shape and why an
+// early real recovery (a shorter window than the assumed cap) degrades
+// gracefully through the same blend-out an exact, on-time one uses, rather
+// than reading as a second snap. The EXACT path stays preferred and takes
+// over the instant `forced_ticks` is threaded from a live `RenderFrame`,
+// with no further change to this file.
+
+/** Ticks the attack ramp takes to reach its overshoot peak. */
+const HIT_ATTACK_TICKS = 4;
+/** Ticks the peak then takes to settle down to the held magnitude. */
+const HIT_SETTLE_TICKS = 3;
+/** Ticks before the forced window ends that recovery starts -- the window
+ * the character is visibly getting up in, before control returns. */
+const HIT_RECOVER_TICKS = 8;
+/** The attack's overshoot, as a multiple of `TIPS`' authored static tilt. */
+const HIT_PEAK_MULT = 1.15;
+/** What the overshoot settles to and holds at until recovery starts -- LESS
+ * than the authored static magnitude, which is the "reduced hold" the task
+ * asks for. */
+const HIT_HOLD_MULT = 0.75;
+/** How long the root overlay keeps fading out the LAST forced pose shown
+ * after `forced_state` clears, instead of snapping to whatever the next
+ * pose (usually locomotion) resolves to. */
+const HIT_BLEND_OUT_SECONDS = 0.1;
+
+/**
+ * The hit-reaction envelope's shape, as a multiplier on `TIPS`' authored
+ * static magnitude. Pure and stateless: `elapsedTicks`/`remainingTicks` are
+ * plain numbers so the curve itself is testable independent of
+ * `hitReactionStates`' latching below.
+ *
+ * THE RECOVER CHECK COMES FIRST, and that ordering is load-bearing rather
+ * than incidental: a forced window shorter than
+ * `HIT_ATTACK_TICKS + HIT_SETTLE_TICKS + HIT_RECOVER_TICKS` has no room for
+ * a hold plateau at all, and checking `remainingTicks` first means a short
+ * stagger recovers immediately -- proportionally, from wherever the attack
+ * ramp would have left it -- rather than demanding attack/settle ticks the
+ * window does not have before it is allowed to start recovering.
+ */
+export function hitReactionMultiplier(elapsedTicks: number, remainingTicks: number): number {
+  const remaining = Math.max(0, remainingTicks);
+  if (remaining <= HIT_RECOVER_TICKS) {
+    return HIT_HOLD_MULT * clamp(remaining / HIT_RECOVER_TICKS, 0, 1);
+  }
+  const elapsed = Math.max(0, elapsedTicks);
+  if (elapsed < HIT_ATTACK_TICKS) {
+    return HIT_PEAK_MULT * (elapsed / HIT_ATTACK_TICKS);
+  }
+  const settling = elapsed - HIT_ATTACK_TICKS;
+  if (settling < HIT_SETTLE_TICKS) {
+    return HIT_PEAK_MULT + (HIT_HOLD_MULT - HIT_PEAK_MULT) * (settling / HIT_SETTLE_TICKS);
+  }
+  return HIT_HOLD_MULT;
+}
+
+/** Ticks per second the sim runs at. Used only by the wall-clock fallback
+ * below (see `hitReaction`'s own doc) to convert elapsed real time into an
+ * assumed tick count -- everywhere else in this file that cares about ticks
+ * reads them straight from the sim via `ActionPoseOptions.forced_ticks`. */
+const HIT_FALLBACK_TICKS_PER_SECOND = 60;
+/** The forced window length the wall-clock fallback assumes: not any one
+ * hit's actual duration (which the fallback has no way to know), but
+ * `gc_sim::combat::MAX_DISABLE_TICKS` -- the CAP every real window is at
+ * most as long as. See `hitReaction`'s own doc for why assuming the cap,
+ * rather than guessing shorter, is the right bias. */
+const HIT_FALLBACK_ASSUMED_TOTAL_TICKS = 30;
+
+/** One character's hit-reaction latch/blend-out bookkeeping. */
+interface HitReactionSlotState {
+  /** The forced pose id this latch belongs to. A fresh forced pose -- either
+   * the other one (stagger after a knockback or vice versa) or the same one
+   * starting a new window after a full clear -- is detected by this
+   * changing (together with `phase`, see below), which is what tells
+   * `hitReaction` to re-latch outright rather than continue an old window. */
+  poseId: "combat_knockback" | "combat_stagger";
+  /** Whether this slot is currently SHOWING a forced pose or BLENDING OUT
+   * of one. This is what makes `poseId` alone insufficient to decide
+   * "continuing": without it, a fresh hit of the SAME forced pose id
+   * arriving while an earlier hit's blend-out is still in flight would read
+   * as a continuation of the OLD (already-finished) window and inherit its
+   * stale latch, rather than starting its own ramp at zero. `"forced"` is
+   * set every time the forced branch below runs; `"blending"` is set every
+   * time the blend-out branch runs; `continuing` in `hitReaction` requires
+   * BOTH the pose id to match AND `phase` to still be `"forced"`. */
+  phase: "forced" | "blending";
+  /** EXACT-TICKS LATCH (the preferred branch -- see `ActionPoseOptions
+   * .forced_ticks`'s own doc): `forced_ticks` the FIRST frame this window
+   * was observed at this magnitude or higher. `elapsedTicks` is derived
+   * from it each frame (`latchedTotalTicks - forced_ticks`) rather than
+   * counted independently, so a frame this module never saw (a dropped
+   * frame, a rollback re-seed) cannot desync the two. Re-latched upward
+   * rather than dropped if a later frame reports MORE remaining ticks than
+   * the latch (a chained hit extending the same window), so elapsed never
+   * goes negative. `undefined` while this slot is running the wall-clock
+   * fallback instead (the two latches are mutually exclusive: a slot is in
+   * exactly one mode per window, decided by whether `forced_ticks` was live
+   * the frame the window was first observed). */
+  latchedTotalTicks: number | undefined;
+  /** WALL-CLOCK FALLBACK LATCH: `now` the FIRST frame this window was
+   * observed with no live `forced_ticks` -- see `hitReaction`'s own doc.
+   * `undefined` while this slot is running the exact-ticks latch instead. */
+  latchedAt: number | undefined;
+  /** The last root overlay this slot actually showed while forced, in
+   * authoring units (degrees/metres) -- what a blend-out fades FROM once
+   * `forced_state` clears. */
+  lastForcedPose: RootPose;
+  /** Wall time (seconds) the blend-out began, or `undefined` while this
+   * slot is not currently blending out. */
+  blendStartedAt: number | undefined;
+}
+
+const hitReactionStates = new Map<string, HitReactionSlotState>();
+
+/**
+ * Drops every character's hit-reaction latch and blend-out state.
+ *
+ * Not wired to any call site inside this package -- there is no scene-
+ * discontinuity hook within this file's scope to wire it to (see
+ * `rig3d/animator.ts`'s own `reset`, which the same caller that resets
+ * animator state should call this alongside). Left un-called rather than
+ * silently omitted is deliberate here: the cost of not calling it is a
+ * self-correcting one (the next hit re-latches this slot outright), not a
+ * lingering incorrect state.
+ */
+export function resetHitReactions(): void {
+  hitReactionStates.clear();
+}
+
+function isForcedReactionPose(id: string | undefined): id is "combat_knockback" | "combat_stagger" {
+  return id === "combat_knockback" || id === "combat_stagger";
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+// Euler-linear rather than slerped: the blend-out window is 100 ms and the
+// angles involved are the same small magnitudes `TIPS` already authors, so
+// the difference from a true slerp is not visible, and every other root
+// transform in this file is already authored and composed in euler space
+// (see `apply`'s own ASSIGN FOR AN ACTION / COMPOSE FOR AN ATTITUDE note).
+// `null` reads as the zero transform, matching how `apply` already treats
+// "no action pose" for the branch this feeds.
+function blendRootPose(from: RootPose, to: RootPose | null, t: number): RootPose {
+  const fr = from.rot.root ?? [0, 0, 0];
+  const fm = from.move.root ?? [0, 0, 0];
+  const tr = to?.rot.root ?? [0, 0, 0];
+  const tm = to?.move.root ?? [0, 0, 0];
+  return {
+    rot: { root: [lerp(fr[0], tr[0], t), lerp(fr[1], tr[1], t), lerp(fr[2], tr[2], t)] },
+    move: { root: [lerp(fm[0], tm[0], t), lerp(fm[1], tm[1], t), lerp(fm[2], tm[2], t)] },
+  };
+}
+
+// Scales a root overlay's rotation and translation uniformly. Only ever
+// called on `combat_knockback`/`combat_stagger`'s own output, whose `TIPS`
+// entries author exactly one nonzero rotation axis and one nonzero
+// translation axis (see `tip`), so scaling every component uniformly is
+// scaling exactly the two authored numbers -- there is no third axis here
+// for a uniform scale to corrupt.
+function scaleRootPose(root: RootPose, mult: number): RootPose {
+  const r = root.rot.root ?? [0, 0, 0];
+  const m = root.move.root ?? [0, 0, 0];
+  return {
+    rot: { root: [r[0] * mult, r[1] * mult, r[2] * mult] },
+    move: { root: [m[0] * mult, m[1] * mult, m[2] * mult] },
+  };
+}
+
+/**
+ * The hit-reaction seam `apply` calls into: shapes `action` while a forced
+ * reaction pose is active, and blends the root overlay out over
+ * `HIT_BLEND_OUT_SECONDS` for the frames right after it clears. Returns
+ * `action` completely unchanged for every other pose id, so a player who
+ * was never staggered or knocked back is not touched by any of this.
+ *
+ * TWO WAYS TO FIND `elapsedTicks`/`remainingTicks`, one preferred:
+ *
+ *   1. EXACT (`ActionPoseOptions.forced_ticks` live this frame): the sim's
+ *      own remaining-tick count, latched and differenced exactly as before.
+ *      Always used when available -- see that field's own doc for why a
+ *      future wire extension needs no change here to take over.
+ *   2. WALL-CLOCK FALLBACK (`forced_ticks` undefined -- today's actual
+ *      production reachability, since `RenderFrame` does not carry it yet):
+ *      latches `now` the first frame this slot shows `poseId`, and reads
+ *      elapsed real time since, converted to ticks at
+ *      `HIT_FALLBACK_TICKS_PER_SECOND` against an ASSUMED total of
+ *      `HIT_FALLBACK_ASSUMED_TOTAL_TICKS` (the cap, `MAX_DISABLE_TICKS` --
+ *      not any one hit's real, possibly shorter, length, which this branch
+ *      has no way to know). Chosen deliberately over a shorter guess:
+ *      assuming the cap means a real, shorter window is caught by the pose
+ *      id reverting -- exactly what the BLEND-OUT branch below already
+ *      handles -- rather than the curve finishing recovery early and
+ *      holding upright while the player is still actually staggered.
+ *
+ *      THIS IS WHY THE APPROXIMATION DEGRADES GRACEFULLY RATHER THAN
+ *      VISIBLY: a real window shorter than the assumed 30 ticks clears
+ *      while the fallback curve is still mid-attack/hold, and the moment it
+ *      does, this function's OTHER branch takes over and blends the
+ *      in-flight tilt out over `HIT_BLEND_OUT_SECONDS` -- the same 100 ms
+ *      fade an exact, on-time recovery would have used anyway. A viewer
+ *      never sees a snap; they see a hit that recovers somewhat sooner than
+ *      the full curve, which is the least-wrong reading available without
+ *      the sim's own tick count.
+ */
+function hitReaction(
+  slotId: string,
+  opts: ActionPoseOptions,
+  action: RootPose | null,
+  now: number,
+): RootPose | null {
+  const poseId = opts.pose?.id;
+
+  if (isForcedReactionPose(poseId) && action !== null) {
+    const previous = hitReactionStates.get(slotId);
+    // Both must hold: the pose id matching alone is not enough while a
+    // PREVIOUS window's blend-out is still in flight -- see `phase`'s own
+    // doc on `HitReactionSlotState`.
+    const continuing = previous?.poseId === poseId && previous.phase === "forced";
+    const forcedTicks = opts.forced_ticks;
+
+    let elapsedTicks: number;
+    let remainingTicks: number;
+    let latchedTotalTicks: number | undefined;
+    let latchedAt: number | undefined;
+
+    if (forcedTicks !== undefined && forcedTicks >= 0) {
+      // EXACT PATH (preferred). `0` is deliberately accepted here, not
+      // treated like "no data": it is a real, meaningful frame (the window
+      // ending THIS tick), and `hitReactionMultiplier` already resolves it
+      // to exactly zero -- see `ActionPoseOptions.forced_ticks`'s own doc
+      // on why `0` and `undefined` must not be conflated.
+      const baseline = continuing ? (previous?.latchedTotalTicks ?? forcedTicks) : forcedTicks;
+      latchedTotalTicks = Math.max(baseline, forcedTicks);
+      elapsedTicks = latchedTotalTicks - forcedTicks;
+      remainingTicks = forcedTicks;
+    } else {
+      // WALL-CLOCK FALLBACK. See this function's own doc above.
+      latchedAt = continuing && previous?.latchedAt !== undefined ? previous.latchedAt : now;
+      elapsedTicks = Math.max(0, now - latchedAt) * HIT_FALLBACK_TICKS_PER_SECOND;
+      remainingTicks = Math.max(0, HIT_FALLBACK_ASSUMED_TOTAL_TICKS - elapsedTicks);
+    }
+
+    const shaped = scaleRootPose(action, hitReactionMultiplier(elapsedTicks, remainingTicks));
+    hitReactionStates.set(slotId, {
+      poseId,
+      phase: "forced",
+      latchedTotalTicks,
+      latchedAt,
+      lastForcedPose: shaped,
+      blendStartedAt: undefined,
+    });
+    return shaped;
+  }
+
+  // Not (or no longer) a forced reaction pose this frame. Blend out of the
+  // last one shown, if any, instead of snapping straight to whatever this
+  // frame resolved to. Reached from BOTH latch modes above -- a real early
+  // release under the wall-clock fallback lands here exactly like an
+  // on-time exact-path recovery does.
+  const state = hitReactionStates.get(slotId);
+  if (state === undefined) {
+    return action;
+  }
+  const startedAt = state.blendStartedAt ?? now;
+  const t = clamp((now - startedAt) / HIT_BLEND_OUT_SECONDS, 0, 1);
+  if (t >= 1) {
+    hitReactionStates.delete(slotId);
+    return action;
+  }
+  hitReactionStates.set(slotId, { ...state, phase: "blending", blendStartedAt: startedAt });
+  return blendRootPose(state.lastForcedPose, action, t);
+}
+
 interface AttitudeSpec {
   /** Whole-figure lean in player radii: positive FORWARD, negative back. */
   readonly lean?: number;
@@ -785,8 +1135,28 @@ export function forOptions(opts: ActionPoseOptions): RootPose | null {
 // tables stay readable and testable in the units they are written in; this is
 // the boundary where a pose becomes something a skeleton will actually be
 // posed with, and therefore the boundary where the pitch exists.
-export function apply(pose: MutablePose, opts: ActionPoseOptions): MutablePose {
-  const action = forOptions(opts);
+//
+// `slotId`/`now` ARE OPTIONAL, AND THAT IS THE COMPATIBILITY SEAM (#564).
+// They exist only to drive the HIT-REACTION ENVELOPE section above --
+// `rig3d/animator.ts`'s `poseFor` is the one production caller with both a
+// stable per-character id and a wall clock in scope, and is the only call
+// site that supplies them. Every other caller (this file's own spec,
+// `ground_contact.spec.ts`'s exact-equality assertions against `forOptions`'
+// authored geometry, `crouch.spec.ts`, `animator.spec.ts`) omits both and
+// gets EXACTLY today's behaviour: `hitReaction` is never reached, `action`
+// passes through `forOptions`'s output unchanged, and a forced pose still
+// assigns its static `TIPS` tilt outright. Adding the envelope therefore
+// changes no existing caller's result.
+export function apply(
+  pose: MutablePose,
+  opts: ActionPoseOptions,
+  slotId?: string,
+  now?: number,
+): MutablePose {
+  let action = forOptions(opts);
+  if (slotId !== undefined && now !== undefined) {
+    action = hitReaction(slotId, opts, action, now);
+  }
   if (action) {
     for (const [bone, r] of Object.entries(action.rot)) {
       pose.rot[bone] = quat.fromEuler(

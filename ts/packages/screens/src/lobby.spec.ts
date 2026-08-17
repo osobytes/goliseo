@@ -391,6 +391,13 @@ function fakeGraphicsBackend(): GraphicsBackend {
     line: noop,
     print: noop,
     printf: noop,
+    // Enough for `draw.ts`'s centring arithmetic to run: a fixed 13px line,
+    // one line per ~7px of width. It is not a font, and no case here asserts
+    // pixel positions -- these specs prove drawing does not throw.
+    measureText: (text: string, wrapWidth: number) => {
+      const lines = wrapWidth > 0 ? Math.max(1, Math.ceil((text.length * 7) / wrapWidth)) : 1;
+      return { lines, lineHeight: 16.25, height: (lines - 1) * 16.25 + 13 };
+    },
     push: noop,
     pop: noop,
     translate: noop,
@@ -1373,5 +1380,129 @@ describe("room-code entry (#552)", () => {
     expect(view(raced).room_entry).toBeUndefined();
     expect(view(raced).error).toBeDefined();
     expect(view(raced).room_active).toBe(true);
+  });
+});
+
+// The presentation pass over an unchanged model: same ids, same commands, new
+// arrangement. These cases pin what the redesign is *for*, so a later layout
+// edit that quietly undoes it goes red.
+describe("online lobby presentation", () => {
+  it("groups seats into team columns instead of one flat list of eight", () => {
+    const currentLayout = lobbyLayout(hosting());
+    const columnOf = (id: string): number | undefined => hit.find(currentLayout, id)?.rect?.x;
+
+    const homeColumn = columnOf("slot_home_1");
+    const awayColumn = columnOf("slot_away_1");
+    expect(homeColumn).toBeDefined();
+    expect(awayColumn).toBeDefined();
+    expect(homeColumn, "the two teams must not share a column").not.toBe(awayColumn);
+
+    for (const slot of ["home_2", "home_3", "home_4"]) {
+      expect(columnOf(`slot_${slot}`), `${slot} left its team's column`).toBe(homeColumn);
+    }
+    for (const slot of ["away_2", "away_3", "away_4"]) {
+      expect(columnOf(`slot_${slot}`), `${slot} left its team's column`).toBe(awayColumn);
+    }
+    // Each keeper sits under its own team, not in a separate block.
+    expect(columnOf("keeper_home")).toBe(homeColumn);
+    expect(columnOf("keeper_away")).toBe(awayColumn);
+  });
+
+  it("stacks each team's four slots vertically, so a column reads as a team", () => {
+    const currentLayout = lobbyLayout(hosting());
+    const rows = ["home_1", "home_2", "home_3", "home_4"].map(
+      (slot) => hit.find(currentLayout, `slot_${slot}`)?.rect?.y ?? -1,
+    );
+    for (let i = 1; i < rows.length; i += 1) {
+      expect(rows[i] ?? -1, "slots should descend within their column").toBeGreaterThan(
+        rows[i - 1] ?? -1,
+      );
+    }
+  });
+
+  it("shows an invite code rather than a byte count, and never the blob", () => {
+    let state = hosting();
+    expect(hit.find(lobbyLayout(state), "signal_out")?.text).toContain("NO INVITE YET");
+
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "signal", peer_id: "guest_1", signal: "offer:blob" },
+    });
+    const invite = hit.find(lobbyLayout(state), "signal_out")?.text ?? "";
+    expect(invite).toContain("GC://JOIN/");
+    expect(invite).not.toContain("offer:blob");
+
+    const fingerprint = view(state).exported?.fingerprint;
+    expect(fingerprint, "the code must be the model's own digest").toBeDefined();
+    expect(invite).toContain((fingerprint ?? "").toUpperCase());
+  });
+
+  it("reads peers and what is still missing as one line", () => {
+    const state = click(hosting(), "mode_1v1");
+    const line = hit.find(lobbyLayout(state), "peer_count")?.text ?? "";
+    expect(line).toContain("1 / 2");
+    expect(line).toContain("WAITING ON 1 PLAYER");
+  });
+
+  it("offers no seating or signaling controls before a role is chosen", () => {
+    const currentLayout = lobbyLayout(newState(VP, ports()));
+    for (const id of ["slot_home_1", "keeper_home", "seat_1", "signal_out", "peer_count"]) {
+      expect(hit.find(currentLayout, id), `${id} should not exist without a role`).toBeNull();
+    }
+    expect(hit.find(currentLayout, "role_host")).not.toBeNull();
+  });
+
+  // Two overlapping rects are a click landing on the wrong control, and
+  // `hit.at`'s back-to-front scan makes the winner an accident of push order.
+  // This screen now has two signalling paths sharing one control block --
+  // and `room_code` outlives `room_active`, so the room-code readout and the
+  // manual copy/paste controls are on screen together after a drop.
+  it("never overlaps two widgets, in any state the lobby can reach", () => {
+    const roomHosted = dispatch(click(newState(VP, ports()), "room_code_host"), {
+      kind: "lobby",
+      command: { kind: "room_created", code: "A3F9K2" },
+    });
+    const cases: readonly (readonly [string, LobbyScreenState])[] = [
+      ["role", newState(VP, ports())],
+      ["host", hosting()],
+      ["guest", click(newState(VP, ports()), "role_guest")],
+      ["room composer", click(newState(VP, ports()), "room_code_join")],
+      ["room host", roomHosted],
+      ["room dropped", dispatch(roomHosted, { kind: "lobby", command: { kind: "room_dropped" } })],
+    ];
+
+    for (const [name, state] of cases) {
+      const currentLayout = lobbyLayout(state);
+      assertWithinCanvas(currentLayout);
+      for (let i = 0; i < currentLayout.length; i += 1) {
+        for (let j = i + 1; j < currentLayout.length; j += 1) {
+          const a = currentLayout[i];
+          const b = currentLayout[j];
+          if (!a?.rect || !b?.rect) {
+            continue;
+          }
+          const overlaps =
+            a.rect.x < b.rect.x + b.rect.w &&
+            b.rect.x < a.rect.x + a.rect.w &&
+            a.rect.y < b.rect.y + b.rect.h &&
+            b.rect.y < a.rect.y + a.rect.h;
+          expect(overlaps, `${name}: "${a.id}" overlaps "${b.id}"`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("keeps the room code on screen after a drop, beside the manual controls it restores", () => {
+    const hosted = dispatch(click(newState(VP, ports()), "room_code_host"), {
+      kind: "lobby",
+      command: { kind: "room_created", code: "A3F9K2" },
+    });
+    expect(hit.find(lobbyLayout(hosted), "copy_signal")).toBeNull();
+
+    const dropped = dispatch(hosted, { kind: "lobby", command: { kind: "room_dropped" } });
+    const currentLayout = lobbyLayout(dropped);
+    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("ROOM CODE  A3F9K2");
+    expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
+    expect(hit.find(currentLayout, "signal_out")).not.toBeNull();
   });
 });

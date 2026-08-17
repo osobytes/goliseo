@@ -72,11 +72,12 @@ function clickWidget(app: App, id: string): void {
   app.event({ kind: "click", x, y, button: 1 });
 }
 
+// Title -> team sheet -> match. This used to be six clicks across three
+// routes (squad -> formation -> tactic); it is one screen and one commit now.
 function reachFakeMatch(app: App): void {
   clickWidget(app, "play");
-  clickWidget(app, "next");
+  expect(app.currentRoute()).toBe("team_sheet");
   clickWidget(app, "formation_1-1-2");
-  clickWidget(app, "next");
   clickWidget(app, "tactic_press_high");
   clickWidget(app, "kickoff");
   expect(app.currentRoute()).toBe("match");
@@ -113,7 +114,7 @@ describe("product application flow", () => {
     expect(app.session.lastResult?.seed).toBe(3);
 
     clickWidget(app, "change_plan");
-    expect(app.currentRoute()).toBe("formation");
+    expect(app.currentRoute()).toBe("team_sheet");
     expect(app.session.formationId).toBe("1-1-2");
     expect(app.session.tacticId).toBe("press_high");
     expect(app.session.starterIds.length).toBe(5);
@@ -123,37 +124,42 @@ describe("product application flow", () => {
     const app = newApp();
     reachFakeMatch(app);
     clickWidget(app, "complete");
-    clickWidget(app, "change_lineup");
-    expect(app.currentRoute()).toBe("squad");
+    clickWidget(app, "change_plan");
+    expect(app.currentRoute()).toBe("team_sheet");
     expect(app.session.starterIds.length).toBe(5);
 
-    app.handleAction({ go: "formation", starterIds: app.session.starterIds });
-    app.handleAction({ go: "tactic", formationId: app.session.formationId });
-    app.handleAction({ go: "match", tacticId: app.session.tacticId });
+    clickWidget(app, "kickoff");
+    expect(app.currentRoute()).toBe("match");
     clickWidget(app, "complete");
     clickWidget(app, "main_menu");
     expect(app.currentRoute()).toBe("title");
   });
 
-  it("preserves formation and tactic choices while navigating backward", () => {
+  it("carries every committed choice back into the team sheet it was made on", () => {
     const app = newApp();
     clickWidget(app, "play");
-    clickWidget(app, "next");
     clickWidget(app, "formation_1-1-2");
-    clickWidget(app, "back");
-    expect(app.currentRoute()).toBe("squad");
-    expect(app.session.formationId).toBe("1-1-2");
-
-    clickWidget(app, "next");
-    clickWidget(app, "next");
     clickWidget(app, "tactic_counter");
     clickWidget(app, "back");
-    expect(app.currentRoute()).toBe("formation");
+    expect(app.currentRoute()).toBe("title");
+
+    // The session only learns the choices at kick off, so a Back that never
+    // committed leaves it untouched.
+    clickWidget(app, "play");
+    expect(app.currentRoute()).toBe("team_sheet");
+    clickWidget(app, "formation_1-1-2");
+    clickWidget(app, "tactic_counter");
+    clickWidget(app, "kickoff");
+    expect(app.session.formationId).toBe("1-1-2");
     expect(app.session.tacticId).toBe("counter");
-    clickWidget(app, "next");
+
+    clickWidget(app, "complete");
+    clickWidget(app, "change_plan");
     const layout = menuLayout(app.stack.current());
-    const widget = layout ? hit.find(layout, "tactic_counter") : null;
-    expect((widget as { readonly selected?: boolean } | null)?.selected).toBe(true);
+    const selected = layout ? hit.find(layout, "tactic_counter") : null;
+    expect((selected as { readonly selected?: boolean } | null)?.selected).toBe(true);
+    const shape = layout ? hit.find(layout, "formation_1-1-2") : null;
+    expect((shape as { readonly selected?: boolean } | null)?.selected).toBe(true);
   });
 
   it("maps keyboard and gamepad through nested shell routes", () => {
@@ -166,29 +172,63 @@ describe("product application flow", () => {
     expect(app.currentRoute()).toBe("title");
   });
 
-  it("keeps the showcase combat-disabled and exposes a separate prototype path", () => {
+  it("ships combat on, and lets the team sheet's toggle turn it off", () => {
     const app = newApp();
-    clickWidget(app, "combat_prototype");
-    expect(app.currentRoute()).toBe("squad");
+    reachFakeMatch(app);
     expect(app.session.combatEnabled).toBe(true);
     const withCombat = session.buildRequest(MATCH_CONTRACT_CONTENT, app.session, 4);
     expect(withCombat.ok && withCombat.value.combat_enabled).toBe(true);
 
-    app.showTitle();
-    clickWidget(app, "play");
+    clickWidget(app, "cancel");
+    expect(app.currentRoute()).toBe("team_sheet");
+    clickWidget(app, "combat");
+    clickWidget(app, "kickoff");
     expect(app.session.combatEnabled).toBe(false);
     const withoutCombat = session.buildRequest(MATCH_CONTRACT_CONTENT, app.session, 5);
     expect(withoutCombat.ok && withoutCombat.value.combat_enabled).toBe(false);
   });
 
-  it("backs out of credits and handles quit deliberately", () => {
+  it("reaches credits through Settings -> About, not from the front door", () => {
     const app = newApp();
+    const titleLayout = menuLayout(app.stack.current());
+    expect(titleLayout ? hit.find(titleLayout, "credits") : null).toBeNull();
+
+    clickWidget(app, "settings");
     clickWidget(app, "credits");
     expect(app.currentRoute()).toBe("credits");
     app.event({ kind: "key", key: "escape" });
-    expect(app.currentRoute()).toBe("title");
-    clickWidget(app, "quit");
+    expect(app.currentRoute()).toBe("settings");
+  });
+
+  it("has no Quit button, and still honours the window-close gesture", () => {
+    const app = newApp();
+    const titleLayout = menuLayout(app.stack.current());
+    expect(titleLayout ? hit.find(titleLayout, "quit") : null).toBeNull();
+    app.event({ kind: "key", key: "escape" });
     expect(app.quitRequested).toBe(true);
+  });
+
+  it("opens the multiplayer front door instead of throwing at a dev lobby", () => {
+    const app = newApp();
+    clickWidget(app, "multiplayer");
+    expect(app.currentRoute()).toBe("multiplayer");
+    clickWidget(app, "back");
+    expect(app.currentRoute()).toBe("title");
+  });
+
+  it("shows a dead online session its reason, instead of dropping to the title", () => {
+    const app = newApp();
+    app.routes = ["online_match"];
+    app.handleAction({ go: "online_ended", terminal: { reason: "host_left" } });
+    expect(app.currentRoute()).toBe("session_ended");
+    const layout = menuLayout(app.stack.current());
+    const headline = layout ? hit.find(layout, "headline") : null;
+    expect((headline as { readonly text?: string } | null)?.text).toContain("host left");
+    const detail = layout ? hit.find(layout, "detail") : null;
+    expect((detail as { readonly text?: string } | null)?.text).toContain("host_left");
+
+    clickWidget(app, "main_menu");
+    expect(app.currentRoute()).toBe("title");
   });
 
   it("persists settings and resumes a paused fake fixture", () => {
@@ -269,11 +309,11 @@ describe("fake match adapter", () => {
     expect(first.home_stats.possession).toBe(second.home_stats.possession);
   });
 
-  it("cancels back to tactical setup", () => {
+  it("cancels back to the team sheet", () => {
     const app = newApp();
     reachFakeMatch(app);
     clickWidget(app, "cancel");
-    expect(app.currentRoute()).toBe("tactic");
+    expect(app.currentRoute()).toBe("team_sheet");
     expect(app.session.formationId).toBe("1-1-2");
     expect(app.session.tacticId).toBe("press_high");
   });

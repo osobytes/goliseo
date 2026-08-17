@@ -19,7 +19,12 @@ export { viewport } from "./viewport.ts";
 export type { ViewportTransform } from "./viewport.ts";
 export { hit } from "./hit.ts";
 export { focus } from "./focus.ts";
-export type { GraphicsBackend, DrawMode, Dimensions } from "./graphics_backend.ts";
+export type {
+  GraphicsBackend,
+  DrawMode,
+  Dimensions,
+  TextBlockMetrics,
+} from "./graphics_backend.ts";
 export { draw } from "./draw.ts";
 export { TuningPanel } from "./tuning_panel.ts";
 export type { Knob, PanelStorage, TuningPreset, TuningSource } from "./tuning_panel.ts";

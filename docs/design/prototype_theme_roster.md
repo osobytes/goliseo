@@ -1,5 +1,13 @@
 # Design: GOLISEO prototype theme roster
 
+> **Superseded 2026-08-14.** The three-theme (Medieval Fantasy / Galactic
+> Sci-Fi / Toybox) prototype content budget below no longer reflects the
+> accepted direction — see
+> [`docs/design/gladiator_pivot.md`](gladiator_pivot.md). This document needs
+> its own rescope to a single colosseum/gladiator roster before it drives
+> production again; until then it is historical record, not a current
+> contract.
+
 - **Status:** accepted prototype content contract
 - **Accepted:** 2026-07-23
 - **Delivery:** post-showcase rigged and combat proofs

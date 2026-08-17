@@ -20,11 +20,12 @@ describe("game session", () => {
     expect(request.formation_id).toBe("1-1-2");
     expect(request.tactic_id).toBe("press_high");
     expect(request.show_onboarding).toBe(true);
-    expect(request.combat_enabled).toBe(false);
+    // Combat ships on now; the team sheet's toggle is what turns it off.
+    expect(request.combat_enabled).toBe(true);
 
-    session.setCombatEnabled(state, true);
-    const withCombat = session.buildRequest(MATCH_CONTRACT_CONTENT, state, 10);
-    expect(withCombat.ok && withCombat.value.combat_enabled).toBe(true);
+    session.setCombatEnabled(state, false);
+    const withoutCombat = session.buildRequest(MATCH_CONTRACT_CONTENT, state, 10);
+    expect(withoutCombat.ok && withoutCombat.value.combat_enabled).toBe(false);
 
     state.firstMatch = false;
     const afterFirstMatch = session.buildRequest(MATCH_CONTRACT_CONTENT, state, 10);
@@ -35,8 +36,7 @@ describe("game session", () => {
     const state = session.new(NEBULA);
     const original = state.starterIds[0];
     expect(session.routeForResult("rematch")).toBe("match");
-    expect(session.routeForResult("change_plan")).toBe("formation");
-    expect(session.routeForResult("change_lineup")).toBe("squad");
+    expect(session.routeForResult("change_plan")).toBe("team_sheet");
     expect(session.routeForResult("main_menu")).toBe("title");
     expect(state.starterIds[0]).toBe(original);
   });

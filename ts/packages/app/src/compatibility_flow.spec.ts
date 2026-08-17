@@ -35,13 +35,8 @@ describe("compatibility flow", () => {
 
     expect(app.currentRoute()).toBe("result");
     expect(flow.finished).toBe(true);
-    const expected = [
-      "compat_click_play",
-      "compat_click_next",
-      "compat_click_next",
-      "compat_click_kickoff",
-      "compat_click_complete",
-    ];
+    // Two fewer clicks than before: the pre-match trio is one screen.
+    const expected = ["compat_click_play", "compat_click_kickoff", "compat_click_complete"];
     expect(inputs).toEqual(expected);
   });
 

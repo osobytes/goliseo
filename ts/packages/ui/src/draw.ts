@@ -23,29 +23,63 @@ const COLORS = theme.colors;
 const PREVIEW_INSET = 7;
 const PREVIEW_DOT_RADIUS = 4;
 
-// [fractional x, fractional y, kind]. kind 2 stars are bigger and cyan; the
-// same number is reused as both the "is special" flag and the circle
-// radius.
-type StarPoint = readonly [x: number, y: number, kind: 1 | 2];
+// --- backdrop geometry, in virtual (960x540) pixels -------------------------
+//
+// The menu backdrop is the coliseum seen from the pitch: a row of arches
+// along the upper bowl, an amber fascia line under them, and brazier light
+// pooling on the arena floor. It replaces a starfield of thirteen hardcoded
+// stars that predated the building.
 
-const STAR_POINTS: readonly StarPoint[] = [
-  [0.06, 0.12, 1],
-  [0.13, 0.78, 1],
-  [0.21, 0.28, 2],
-  [0.28, 0.9, 1],
-  [0.36, 0.16, 1],
-  [0.44, 0.72, 1],
-  [0.52, 0.08, 2],
-  [0.61, 0.86, 1],
-  [0.68, 0.23, 1],
-  [0.75, 0.67, 2],
-  [0.84, 0.14, 1],
-  [0.91, 0.82, 1],
-  [0.96, 0.38, 1],
-];
+/** Vertical bands the sky gradient is quantized into. The backend has no gradient primitive. */
+const SKY_BANDS = 16;
+/** The arcade occupies the top of the frame; arches are cut into it. */
+const ARCADE_BOTTOM = 68;
+/** One pier + one arch opening. */
+const ARCH_PITCH = 58;
+const ARCH_WIDTH = 30;
+const ARCH_INSET = 14;
+/** The pitch ellipse: centre, then radii. Its top arc sweeps the lower frame. */
+const FLOOR_CX = 480;
+const FLOOR_CY = 511;
+const FLOOR_RX = 380;
+const FLOOR_RY = 75;
+/** The brazier pool, centred below the frame so only its upper half shows. */
+const BRAZIER_CY = 637;
+const BRAZIER_RX = 1152;
+const BRAZIER_RY = 421;
+/** Steps in a soft radial pool. More is smoother and costs one ellipse each. */
+const GLOW_STEPS = 6;
 
 function setColor(backend: GraphicsBackend, color: RgbColor, alpha = 1): void {
   backend.setColor(color[0], color[1], color[2], alpha);
+}
+
+/**
+ * Draw `text` inside `rect`, vertically centred on measured metrics.
+ *
+ * This replaced three different rules that all got it wrong in their own way:
+ * `rect.y + rect.h / 2 - 7` for a short button (a LÖVE-calibrated half-line
+ * height for a font this build does not ship — #408), a flat `rect.y + 10`
+ * for a card, and a bare `rect.y` for a label. None of them knew how many
+ * lines the text would wrap to, so multi-line text hung out of its box while
+ * single-line text sat high in it.
+ *
+ * Returns the height the text actually occupied, so a caller can tell whether
+ * it fitted.
+ */
+function printCentred(
+  backend: GraphicsBackend,
+  text: string,
+  rect: Rect,
+  align: TextAlign,
+  insetLeft: number,
+  insetRight: number = insetLeft,
+): number {
+  const width = Math.max(0, rect.w - insetLeft - insetRight);
+  const metrics = backend.measureText(text, width);
+  const top = rect.y + Math.max(0, (rect.h - metrics.height) / 2);
+  backend.printf(text, rect.x + insetLeft, top, width, align);
+  return metrics.height;
 }
 
 function requireRect(widget: Widget): Rect {
@@ -104,9 +138,7 @@ function drawButton(backend: GraphicsBackend, widget: Widget): void {
     backend.setFont("body");
     setColor(backend, disabled ? COLORS.textMuted : COLORS.text, disabled ? 0.55 : 1);
     const align: TextAlign = widget.data?.align ?? "center";
-    const inset = align === "left" ? 16 : 0;
-    const textY = rect.h > 50 ? rect.y + 10 : rect.y + rect.h / 2 - 7;
-    backend.printf(widget.text, rect.x + inset, textY, rect.w - inset * 2, align);
+    printCentred(backend, widget.text, rect, align, align === "left" ? 16 : 0);
   }
 }
 
@@ -160,19 +192,14 @@ function drawCard(backend: GraphicsBackend, widget: Widget): void {
     backend.printf("LOCKED", rect.x + rect.w - 70, rect.y + 9, 56, "right");
   }
   if (widget.selected === true) {
-    setColor(backend, COLORS.cyan);
+    // Selection is amber; only focus is cyan. See theme.ts's header.
+    setColor(backend, COLORS.amber);
     backend.circle("fill", rect.x + rect.w - 13, rect.y + rect.h - 13, 4);
   }
   if (widget.text !== undefined) {
     backend.setFont("body");
     setColor(backend, COLORS.text);
-    backend.printf(
-      widget.text,
-      rect.x + textInset,
-      rect.y + 10,
-      rect.w - textInset - 12,
-      data.align ?? "left",
-    );
+    printCentred(backend, widget.text, rect, data.align ?? "left", textInset, 12);
   }
   drawFocus(backend, widget);
 }
@@ -190,18 +217,22 @@ function drawLabel(backend: GraphicsBackend, widget: Widget): void {
     color = COLORS.text;
   } else if (widget.kind === "eyebrow") {
     fontKind = "eyebrow";
-    color = COLORS.cyan;
+    color = COLORS.amber;
   } else if (data.tone === "muted") {
     color = COLORS.textMuted;
   }
 
   backend.setFont(fontKind);
+  const text = widget.text ?? "";
+  const align = data.align ?? "left";
   if (widget.kind === "hero_title") {
-    setColor(backend, COLORS.cyan, 0.22);
-    backend.printf(widget.text ?? "", rect.x + 2, rect.y + 3, rect.w, data.align ?? "left");
+    // A brazier-lit halo behind the title, not a cyan one. Offset from the
+    // centred position, so the halo tracks the glyphs rather than the box.
+    setColor(backend, COLORS.amber, 0.22);
+    printCentred(backend, text, { ...rect, x: rect.x + 2, y: rect.y + 3 }, align, 0);
   }
   setColor(backend, color);
-  backend.printf(widget.text ?? "", rect.x, rect.y, rect.w, data.align ?? "left");
+  printCentred(backend, text, rect, align, 0);
 }
 
 function anchorPosition(rect: Rect, anchor: Anchor): readonly [x: number, y: number] {
@@ -218,7 +249,7 @@ function drawFormationPreview(backend: GraphicsBackend, widget: Widget): void {
     `formation_preview widget "${widget.id}" is missing keeper/outfield data`,
   );
   panelFill(backend, rect, widget.selected ? COLORS.panelSelected : COLORS.panelRaised);
-  panelLine(backend, rect, widget.selected ? COLORS.cyan : COLORS.border, 0.85);
+  panelLine(backend, rect, widget.selected ? COLORS.amber : COLORS.border, 0.85);
 
   const pitch: Rect = {
     x: rect.x + PREVIEW_INSET,
@@ -258,18 +289,81 @@ function drawFormationPreview(backend: GraphicsBackend, widget: Widget): void {
   });
 }
 
-function drawBackdrop(backend: GraphicsBackend, width: number, height: number): void {
-  setColor(backend, COLORS.space);
-  backend.rectangle("fill", 0, 0, width, height);
-  setColor(backend, COLORS.nebula, 0.22);
-  backend.ellipse("fill", width * 0.16, height * 0.18, width * 0.34, height * 0.22);
-  backend.ellipse("fill", width * 0.86, height * 0.82, width * 0.28, height * 0.2);
-  for (const [sx, sy, kind] of STAR_POINTS) {
-    setColor(backend, kind === 2 ? COLORS.cyan : COLORS.text, kind === 2 ? 0.7 : 0.38);
-    backend.circle("fill", sx * width, sy * height, kind);
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function mixColor(a: RgbColor, b: RgbColor, t: number): RgbColor {
+  return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+}
+
+/**
+ * A soft radial pool, approximated as nested ellipses of decreasing alpha
+ * because `GraphicsBackend` has no gradient primitive. Alpha falls off
+ * linearly rather than smoothly; at these sizes the banding is not visible.
+ */
+function glow(
+  backend: GraphicsBackend,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  color: RgbColor,
+  peakAlpha: number,
+): void {
+  for (let i = GLOW_STEPS; i >= 1; i -= 1) {
+    const t = i / GLOW_STEPS;
+    setColor(backend, color, (peakAlpha / GLOW_STEPS) * (1 - t + 1 / GLOW_STEPS));
+    backend.ellipse("fill", cx, cy, rx * t, ry * t);
   }
-  setColor(backend, COLORS.borderSoft, 0.25);
+}
+
+/** The sky, quantized into horizontal bands: zenith at the top, horizon at the bottom. */
+function drawSky(backend: GraphicsBackend, width: number, height: number): void {
+  const bandHeight = height / SKY_BANDS;
+  for (let i = 0; i < SKY_BANDS; i += 1) {
+    const t = i / (SKY_BANDS - 1);
+    // Zenith -> mid over the top third, mid -> horizon over the rest, matching
+    // stadium_sky.ts's two-stage mix.
+    const color =
+      t < 0.35
+        ? mixColor(COLORS.zenith, COLORS.skyMid, t / 0.35)
+        : mixColor(COLORS.skyMid, COLORS.sky, (t - 0.35) / 0.65);
+    setColor(backend, color);
+    // Bands overlap by a pixel so no seam shows at fractional scales.
+    backend.rectangle("fill", 0, i * bandHeight, width, bandHeight + 1);
+  }
+}
+
+/** The upper bowl: stone piers with lit arch openings between them. */
+function drawArcade(backend: GraphicsBackend, width: number): void {
+  for (let x = ARCH_INSET; x < width; x += ARCH_PITCH) {
+    // The arch is a rounded opening: a rectangle capped by a semicircle, drawn
+    // as one rounded rectangle since only its top corners read at this size.
+    setColor(backend, COLORS.sand, 0.13);
+    backend.rectangle("fill", x, 0, ARCH_WIDTH, ARCADE_BOTTOM, ARCH_WIDTH / 2, ARCH_WIDTH / 2);
+  }
+  // The fascia trim under the arcade — a thin accent line, not a light source,
+  // matching stadium_bowl.ts's own note about staying below the bloom threshold.
+  setColor(backend, COLORS.amber, 0.3);
+  backend.rectangle("fill", 0, ARCADE_BOTTOM, width, 2);
+}
+
+/** Brazier light pooling on the arena floor, and the pitch ellipse it lands on. */
+function drawFloor(backend: GraphicsBackend, width: number, height: number): void {
+  glow(backend, width / 2, BRAZIER_CY, BRAZIER_RX, BRAZIER_RY, COLORS.amber, 0.2);
+  glow(backend, FLOOR_CX, FLOOR_CY - FLOOR_RY, FLOOR_RX, FLOOR_RY, COLORS.keeper, 0.07);
+  setColor(backend, COLORS.keeper, 0.16);
+  backend.setLineWidth(1);
+  backend.ellipse("line", FLOOR_CX, FLOOR_CY, FLOOR_RX, FLOOR_RY);
+  setColor(backend, COLORS.borderSoft, 0.3);
   backend.line(0, height - 20, width, height - 20);
+}
+
+function drawBackdrop(backend: GraphicsBackend, width: number, height: number): void {
+  drawSky(backend, width, height);
+  drawArcade(backend, width);
+  drawFloor(backend, width, height);
 }
 
 /** Render a layout into its virtual viewport, letterboxed into the current window. */
@@ -283,7 +377,7 @@ function layout(
   const base = viewportSize ?? { w: 960, h: 540 };
   const transform = viewport.create(dims.width, dims.height, base.w, base.h);
 
-  setColor(backend, COLORS.void);
+  setColor(backend, COLORS.zenith);
   backend.rectangle("fill", 0, 0, dims.width, dims.height);
   backend.push();
   backend.translate(transform.offsetX, transform.offsetY);
@@ -303,9 +397,9 @@ function layout(
   }
   if (transition !== undefined && transition < 1) {
     const [wipeX, wipeW] = motion.wipe(transition, base.w);
-    setColor(backend, COLORS.void, 0.96);
+    setColor(backend, COLORS.zenith, 0.96);
     backend.rectangle("fill", wipeX, 0, wipeW, base.h);
-    setColor(backend, COLORS.cyan, 0.75);
+    setColor(backend, COLORS.amber, 0.75);
     backend.rectangle("fill", wipeX - 2, 0, 2, base.h);
   }
 

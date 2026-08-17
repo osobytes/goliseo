@@ -425,8 +425,8 @@ bootstrap only when its explicit flag is present. Native evidence disables
 window/audio modules; browser evidence retains the ordinary love.js window and
 yields through `love.update`.
 
-The full headless suite continues to cover the title → squad → formation →
-tactic → result → rematch loop, repeated rematches, result exits, the real
+The full headless suite continues to cover the title → team sheet → match →
+result → rematch loop, repeated rematches, result exits, the real
 match adapter, and browser compatibility flow. The required compatibility
 commands are:
 

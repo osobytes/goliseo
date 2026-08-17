@@ -246,6 +246,15 @@ fn combat_pose_sample_from_json(json: &Json) -> Result<CombatPoseSample, String>
         phase,
         forced_state,
         forced_ticks: json.field_i64("forced_ticks").unwrap_or(0),
+        // Mirrors `CombatPoseSample::immunity_fraction`'s own units (an
+        // already-normalised `[0, 1]`, not a raw tick count): this bridge's
+        // whole point is to hand `select` the exact value it would see from
+        // a live session, and that value is a fraction on this side of the
+        // wall too (see `gc_render::frame::combat_model`).
+        immunity_fraction: json
+            .field("immunity_fraction")
+            .and_then(Json::as_f64)
+            .unwrap_or(0.0),
     })
 }
 
@@ -283,7 +292,7 @@ fn pose_source_wire(source: PlayerPoseSource) -> &'static str {
 ///   "player": { "id": "nebula_02", "is_keeper": false, ... },
 ///   // All three optional/omittable, mirroring `player_pose::select`'s own
 ///   // `Option` parameters -- omit exactly when the caller has none.
-///   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4 },
+///   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6 },
 ///   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
 ///   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
 /// }

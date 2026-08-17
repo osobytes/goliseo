@@ -1,13 +1,19 @@
 # Vision
 
-GOLISEO is a 5v5 **arcade combat-soccer game with a manager's point of view**.
-Its characters, equipment, and arenas can come from incompatible eras, genres,
-and worlds. A medieval crossbow, an energy blade, a fantasy creature, and an
-unarmed martial artist can share one team.
+GOLISEO is a 5v5 **arcade combat-soccer game with a manager's point of view**,
+staged as a single gladiatorial spectacle: **the colosseum.** Every character
+is a gladiator. Variety comes from weapon family and cultural fighting style,
+not from mixing unrelated genres — a sword-and-shield Roman gladiator and a
+Nordic-styled axe gladiator can share a team the way a Murmillo and a Thraex
+shared an arena.
 
-**GOLISEO is the name of the game, not the name of an in-world arena, league,
-sport, or character class.** The crossover does not need to collapse into one
-historical or science-fiction theme.
+**GOLISEO is the name of the game and, now, the name of its world.** The
+2026-07-23 six-theme "crossover spectacle" — mixing Medieval Fantasy,
+Galactic Sci-Fi, and other genres on one team — is retired. The accepted
+decision and its rationale are in
+[`docs/design/gladiator_pivot.md`](design/gladiator_pivot.md); the superseded
+direction remains as historical record in
+[`docs/design/goliseo_theme_pivot.md`](design/goliseo_theme_pivot.md).
 
 You make a few fast, legible decisions before kickoff, then personally execute
 them in a short match. Formation, tactics, player strengths, and eventually
@@ -28,15 +34,18 @@ match.
 
 - **Soccer first:** goals decide the match. Combat creates space, interrupts
   possession, and changes positioning; it is not a separate deathmatch.
-- **Crossover spectacle:** original characters and equipment from any era or
-  genre may meet on the same pitch.
+- **One arena, many gladiators:** every character fights in the colosseum.
+  Weapon family (ranged, guard, light melee, and — pending design, see
+  `docs/design/gladiator_pivot.md` — two-handed) and cultural fighting style
+  (Roman, and documented future directions such as a Nordic axe gladiator)
+  are the axes of variety, not genre-mixing.
 - **Arcade readability:** short, exaggerated, controllable matches with
   telegraphed actions and fast recovery.
 - **Fast management:** one meaningful setup beat, not recurring busywork.
 - **Players as characters:** names, roles, stats, loadouts, and recognizable
   silhouettes. Species or origin may add flavor, but is not the mandatory
   organizing system.
-- **Competitive broadcast:** the mixed themes are presented with one confident
+- **Competitive broadcast:** the colosseum is presented with one confident
   sports language: team colors, clear equipment families, and readable match
   states.
 - **Engineering as part of the craft:** deterministic pure simulation,
@@ -55,24 +64,24 @@ The accepted post-showcase proof sequence asks:
    performance budgets?
 2. Does a fixed-loadout combat prototype make soccer decisions more
    interesting without creating stun-locks or attack spam?
-3. Can Medieval Fantasy, Galactic Sci-Fi, and Toybox presentation samples
-   establish one coherent art language before the remaining initial themes
-   enter production?
+3. Can a Roman gladiator presentation sample establish a coherent colosseum
+   art language before any further cultural silhouette enters production?
 
 These three questions run through two proof streams. Milestone 10 evaluates
-rigged-3D performance and three-theme presentation coherence; milestone 11
+rigged-3D performance and gladiator presentation coherence; milestone 11
 evaluates fixed-loadout combat within the deterministic soccer match.
 
-The authoritative direction is in `docs/design/goliseo_theme_pivot.md`. The
-bounded three-theme character, equipment, and animation content contract is in
-`docs/design/prototype_theme_roster.md`.
+The authoritative direction is in `docs/design/gladiator_pivot.md`. The prior
+three-theme character, equipment, and animation content contract in
+`docs/design/prototype_theme_roster.md` is superseded and needs its own
+rescope to a single gladiator roster before it drives production again.
 
 ## Long-term direction
 
 If both proof streams succeed, GOLISEO can deepen in this order:
 
-1. A small original roster drawing from the six initial themes and shared
-   equipment families.
+1. A small original gladiator roster drawing from Roman weapon families and,
+   later, documented cultural silhouettes such as a Nordic axe gladiator.
 2. More teams and a short competition.
 3. Player growth and equipment acquisition with visible one-match
    consequences.
@@ -87,7 +96,8 @@ The list above is direction, not a shipping commitment.
 - Combat causes short states such as guard, stagger, knockback, and ball loss;
   no health bars, death loop, or long incapacitation.
 - Weapon appearance is content; shared equipment families define mechanics.
-  A crossbow and a blaster may use the same readable ranged rules.
+  A gladius and a Nordic-styled axe may use the same readable light-melee
+  rules even when their cultural silhouettes differ.
 - Loadouts are horizontal sidegrades. The first proof uses a bounded fixed
   lineup, not a success-to-money-to-power ladder.
 - Boot-to-kickoff should be fast; setup should not outlast the match.
