@@ -17,9 +17,11 @@
 // which this file does not reinterpret.
 
 import type { Dimensions, DrawMode, GraphicsBackend, TextAlign } from "@gc/ui";
-import { theme, type FontKind } from "@gc/ui";
+import { theme, type FontKind, type TextBlockMetrics } from "@gc/ui";
 
 const FONT_FAMILY = "system-ui, sans-serif";
+/** `printf`'s baseline-to-baseline advance, as a multiple of the font size. */
+const LINE_HEIGHT_RATIO = 1.25;
 
 function toCssColor(r: number, g: number, b: number, a: number): string {
   const byte = (c: number): number => Math.max(0, Math.min(255, Math.round(c * 255)));
@@ -58,8 +60,25 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
 
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
-    this.ctx.textBaseline = "top";
     this.setFont("body");
+  }
+
+  /**
+   * Top-baseline every text draw, immediately before it.
+   *
+   * This used to be set once in the constructor, which does not survive:
+   * assigning `canvas.width`/`height` resets the whole 2D context to its
+   * defaults, and `browser_main.ts`'s `resize()` does exactly that at boot and
+   * on every window resize. So `textBaseline` was always back to `alphabetic`
+   * by the time anything rendered, and every string drew with its baseline —
+   * not its top — at `y`, sitting roughly one ascent too high in its box.
+   *
+   * `font` survived the same reset only because `draw.ts` calls `setFont`
+   * before each text draw; `textBaseline` had no such second chance. Setting
+   * it here gives it one, and costs an assignment of an already-equal value.
+   */
+  private topBaseline(): void {
+    this.ctx.textBaseline = "top";
   }
 
   getDimensions(): Dimensions {
@@ -145,12 +164,40 @@ export class CanvasGraphicsBackend implements GraphicsBackend {
   }
 
   print(text: string, x: number, y: number): void {
+    this.topBaseline();
     this.ctx.fillText(text, x, y);
   }
 
-  printf(text: string, x: number, y: number, wrapWidth: number, align: TextAlign): void {
+  /**
+   * Measured through the same `wrapLines` `printf` uses, so a measurement can
+   * never disagree with what is then drawn.
+   *
+   * The FONT's box, not this string's: `fontBoundingBox*` describes the face,
+   * so two labels of differing glyphs ("ZYRO" and "pending") centre
+   * identically. `actualBoundingBox*` would centre each string on its own ink
+   * and make a row of labels visibly ragged. Falls back to the em box where a
+   * runtime reports neither.
+   */
+  measureText(text: string, wrapWidth: number): TextBlockMetrics {
     const lines = wrapLines(this.ctx, text, wrapWidth);
-    const lineHeight = this.fontSize * 1.25;
+    const lineHeight = this.fontSize * LINE_HEIGHT_RATIO;
+    const metrics = this.ctx.measureText(text);
+    const ascent = metrics.fontBoundingBoxAscent ?? this.fontSize * 0.8;
+    const descent = metrics.fontBoundingBoxDescent ?? this.fontSize * 0.2;
+    const glyphHeight = Number.isFinite(ascent + descent) ? ascent + descent : this.fontSize;
+    return {
+      lines: lines.length,
+      lineHeight,
+      // `printf` renders top-baselined, so the block runs from the first
+      // line's top to the last line's top plus one glyph box.
+      height: (lines.length - 1) * lineHeight + glyphHeight,
+    };
+  }
+
+  printf(text: string, x: number, y: number, wrapWidth: number, align: TextAlign): void {
+    this.topBaseline();
+    const lines = wrapLines(this.ctx, text, wrapWidth);
+    const lineHeight = this.fontSize * LINE_HEIGHT_RATIO;
     lines.forEach((line, index) => {
       const lineWidth = this.ctx.measureText(line).width;
       let lineX = x;

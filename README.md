@@ -1,9 +1,10 @@
 # GOLISEO
 
-GOLISEO is a 5v5 arcade combat-soccer game built for impossible matchups. A
-knight can guard midfield beside a space ranger. A wind-up striker can slip
-past a pirate. An energy blade and a foam sword can share the same clear,
-competitive rules.
+GOLISEO is a 5v5 arcade combat-soccer game staged in a single gladiatorial
+colosseum. Every character is a gladiator; variety comes from weapon family
+and cultural fighting style, not from mixing unrelated genres. A
+sword-and-shield Roman gladiator can guard midfield beside a Nordic-styled
+axe gladiator the way a Murmillo and a Thraex once shared the same arena.
 
 Before kickoff, you assemble a five-character squad and choose its shape,
 tactic, and—once the combat systems pass their prototype gates—equipment.
@@ -16,20 +17,24 @@ second victory condition. Every action must create a soccer consequence.
 
 ## The GOLISEO identity
 
-- **Crossover spectacle:** characters from Medieval Fantasy, Galactic Sci-Fi,
-  Street Sports, High Seas Adventure, Martial Legends, and Toybox can share a
-  team.
+- **One arena, many gladiators:** every character fights in the colosseum.
+  Weapon family (ranged, guard, light melee, and — pending design — two-handed)
+  and cultural fighting style (Roman in production now; a Nordic axe
+  gladiator is a documented future direction) are the axes of variety.
 - **Fast, controllable matches:** exaggerated arcade movement and immediate
   player control keep the action readable.
 - **Tactical contact:** telegraphed equipment actions create passing lanes,
   interrupt possession, and reward counterplay rather than attack spam.
 - **Meaningful setup:** squad, formation, tactic, player strengths, and
   loadout choices must make a visible difference in the next match.
-- **One competitive language:** wildly different themes still obey the same
-  soccer rules, team colors, action families, and broadcast presentation.
+- **One competitive language:** every gladiator style obeys the same soccer
+  rules, team colors, action families, and broadcast presentation.
 
 The accepted product direction is documented in
 [docs/vision.md](docs/vision.md) and
+[docs/design/gladiator_pivot.md](docs/design/gladiator_pivot.md). The
+previously accepted six-theme "crossover spectacle" direction is superseded
+and kept as historical record in
 [docs/design/goliseo_theme_pivot.md](docs/design/goliseo_theme_pivot.md).
 
 ## Playable today
@@ -58,7 +63,7 @@ It currently includes:
 - Strict types on both sides — `deny(missing_docs)` Rust and `strict`
   TypeScript — and hundreds of headless logic, UI, flow, and rendering tests.
 
-The multi-theme roster and equipment combat are the accepted direction, but
+The gladiator roster and equipment combat are the accepted direction, but
 they are not being advertised as finished features. They enter production
 through bounded performance, readability, and gameplay proofs.
 
@@ -76,8 +81,8 @@ test GOLISEO's new identity:
    performance budget.
 2. Fixed equipment loadouts must make soccer decisions more interesting
    without creating stun-locks, damage races, or attack spam.
-3. Medieval Fantasy, Galactic Sci-Fi, and Toybox samples must look like one
-   game before the wider theme roster enters production.
+3. A Roman gladiator presentation sample must look coherent before any
+   further cultural silhouette enters production.
 
 Significant additions should be discussed in a GitHub issue so new breadth
 does not outrun the playable core.
@@ -269,7 +274,7 @@ prototype name that produced them.
 The game was originally written in Lua on LÖVE. That tree was deleted once the
 Rust + TypeScript port reached parity, so some documents under `docs/` still
 describe the old implementation and its file paths; `ARCHITECTURE.md` is
-current and authoritative. Combat and the multi-theme roster remain bounded
+current and authoritative. Combat and the gladiator roster remain bounded
 proof work rather than shipped features. Career mode, economies, progression,
 large competitions, and other broader systems come only after the core match
 and new identity prove themselves.
