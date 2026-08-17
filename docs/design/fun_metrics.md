@@ -966,6 +966,77 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-17 — the keeper save-fatigue pool and its catch band, plus the
+  new `rebound_rate` metric (#490, first slice).** `baseline_version`
+  **12 → 13**, `identity.snapshot_version` **13 → 14**
+  (`MatchPlayer::keeper_fatigue`), `identity.tuning_hash`
+  `bdd4c81d6c254bf9` → `c786c29e021f3f6a` (seven new registered knobs),
+  `identity.fixture_hash` `382c7b5fef061985` → `f78965f8bbf14200`;
+  `identity.content_hash` and `identity.config_hash` unchanged — no content
+  and no match config moved. Re-frozen via `record_outfield_ai_baseline`.
+
+  What changed in the simulation: below `KEEPER_CATCH_THRESHOLD`, or above
+  `KEEPER_CATCH_POWER_CEILING`, a save that would have been a clean catch now
+  resolves as a parry instead. A parry was already a real, live rebound, so
+  the ball stays in play where it used to end in the keeper's gloves. No RNG
+  draw was added, moved or removed on the save path.
+
+  | metric | frozen (v12) | re-frozen (v13) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.322688 | 0.351098 | +0.028410 |
+  | `goals_total` | 1.916667 | 2.000000 | +0.083333 |
+  | `goals_home` | 0.733333 | 0.783333 | +0.050000 |
+  | `goals_away` | 1.183333 | 1.216667 | +0.033333 |
+  | `shots` | 31.966667 | 32.250000 | +0.283333 |
+  | `shots_per_goal` | 19.378182 | 18.860000 | −0.518182 |
+  | `save_rate` | 0.902887 | 0.900795 | −0.002093 |
+  | `passes` | 30.016667 | 29.566667 | −0.450000 |
+  | `pass_completion` | 0.519213 | 0.514826 | −0.004387 |
+  | `turnovers_per_min` | 8.937462 | 8.751533 | −0.185929 |
+  | `possession_balance` | 0.532096 | 0.532070 | −0.000026 |
+  | `longest_drought_s` | 11.691111 | 11.554444 | −0.136667 |
+  | `decided_late` | 0.676499 | 0.712038 | +0.035539 |
+  | `lead_changes` | 0.083333 | 0.066667 | −0.016667 |
+  | `margin` | 1.150000 | 1.066667 | −0.083333 |
+  | `duration` | 117.596667 | 116.478889 | −1.117778 |
+  | `ai_dribble_carry_s` | 25.561389 | 25.485000 | −0.076389 |
+  | `ai_dribble_close_share` | 0.815167 | 0.817909 | +0.002742 |
+  | `ai_dribble_sprint_share` | 0.162368 | 0.162747 | +0.000379 |
+  | `ai_dribble_juke_share` | 0.097733 | 0.096214 | −0.001519 |
+  | `ai_dribble_touches_per_min` | 120.756420 | 119.296190 | −1.460230 |
+  | `ai_dribble_heavy_losses_per_min` | 0.507549 | 0.437725 | −0.069824 |
+  | `ai_jukes` | 35.550000 | 35.250000 | −0.300000 |
+
+  **THE `fun` RISE IS DILUTION, NOT IMPROVEMENT, AND THE ARITHMETIC SAYS SO.**
+  The score is a geometric mean over the registered metrics, so registering a
+  thirteenth that scores well pulls the mean up on its own. Holding every
+  other metric fixed and folding in one new one at desirability 1.0 predicts
+  `0.322688 ^ (12/13) = 0.352021` — against an observed `0.351098`, which
+  back-solves to a mean `rebound_rate` desirability of **0.966**. In other
+  words the entire +0.0284 is accounted for by the new metric's own
+  membership; the twelve pre-existing metrics moved by amounts that very
+  nearly cancel. Do not read this entry as evidence that the keeper change
+  improved balance. It is the same interim-state inflation
+  `pass_aim_error`/`pass_lead_time`/`whiff_rate` already carry, blocked on
+  the same missing probation mechanism (#528), and stated here in the one
+  place a future reader would otherwise be misled.
+
+  **`save_rate` did NOT move, and that is the honest headline for the slice.**
+  0.9029 → 0.9008 on this fixture, against a 0.45–0.75 band. Fatigue gates
+  whether the keeper can HOLD a shot, never whether they can reach it (that
+  is #490's own acceptance criterion 1, proved in
+  `gc-sim/tests/keeper_fatigue.rs`), so it CANNOT lower the save rate by
+  construction. What it converts is held balls into live ones. Making the
+  keeper beatable is #490's criterion 2 — reach-based save resolution — which
+  this slice does not implement.
+
+  `gc_sim::keeper_shadow_classifier`'s frozen 60-seed counts moved in the
+  same commit, for the same reason: `candidates` 9746 → 9941 (more parried
+  balls stay live, so more sequences come back to a keeper),
+  `agree_true` 3364 → 3490, `agree_false` 6089 → 6197,
+  `disagree_deferred` 268 → 230, `disagree_height` 25 → 24, `new_only`
+  unchanged at 0.
+
 - **2026-08-14 — nine `gc-sim`/`gc-data` transcendental call sites converted
   to `gc_core::deterministic_math::cos_sin` or a precomputed constant, so
   native and the compiled wasm module compute the same simulation state

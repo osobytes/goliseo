@@ -725,3 +725,202 @@ fn time_to_reverse_is_none_rather_than_zero_when_nothing_reversed() {
     assert_eq!(m.reversals, 0);
     assert_eq!(m.time_to_reverse, None);
 }
+
+// ---------------------------------------------------------------------
+// #490 -- rebound_rate: parries an attacker got on the end of, over total
+// saves.
+// ---------------------------------------------------------------------
+
+/// A parry followed by the attacking side's outfielder taking the ball inside
+/// the window is the whole mechanic: the save happened, and the attack
+/// survived it.
+#[test]
+fn rebound_rate_counts_a_parry_an_attacker_reached_inside_the_window() {
+    let tuning = Tuning::new();
+    let mut s = fake_state();
+    let mut c = metrics::new(&s);
+
+    // The home keeper parries, so the ATTACKER is away.
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            events: vec![event("parry", Some("h_keeper"))],
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    // An away outfielder follows it in, well inside REBOUND_WINDOW_S.
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            owner: Some(4), // "a1"
+            dt: 0.5,
+            ..Default::default()
+        },
+        &tuning,
+    );
+
+    let m = metrics::finish(&mut c, &s);
+    assert_eq!(c.rebounds, 1);
+    assert_eq!(
+        m.rebound_rate,
+        Some(1.0),
+        "one parry, one save, one rebound"
+    );
+}
+
+/// The window is what makes the numerator mean "followed the rebound in"
+/// rather than "attacked again at some point".
+#[test]
+fn rebound_rate_ignores_a_touch_after_the_window_shuts() {
+    let tuning = Tuning::new();
+    let mut s = fake_state();
+    let mut c = metrics::new(&s);
+
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            events: vec![event("parry", Some("h_keeper"))],
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            dt: metrics::REBOUND_WINDOW_S + 0.5,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            owner: Some(4),
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+
+    let m = metrics::finish(&mut c, &s);
+    assert_eq!(c.rebounds, 0);
+    assert_eq!(
+        m.rebound_rate,
+        Some(0.0),
+        "the save happened, the rebound did not"
+    );
+}
+
+/// Who reaches it matters. The keeper's own side recovering their clearance,
+/// and the keeper themselves, are not an attacker following in.
+#[test]
+fn rebound_rate_ignores_the_defending_side_and_the_keeper_recovering_the_parry() {
+    let tuning = Tuning::new();
+    let mut s = fake_state();
+    let mut c = metrics::new(&s);
+
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            events: vec![event("parry", Some("h_keeper"))],
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    // A home defender clears it: same side as the keeper, not a rebound.
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            owner: Some(1), // "h1"
+            events: vec![event("touch", Some("h1"))],
+            dt: 0.2,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    // And the AWAY KEEPER collecting it upfield is not an attacker either.
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            owner: Some(3), // "a_keeper"
+            events: vec![event("touch", Some("a_keeper"))],
+            dt: 0.2,
+            ..Default::default()
+        },
+        &tuning,
+    );
+
+    assert_eq!(c.rebounds, 0);
+    assert_eq!(metrics::finish(&mut c, &s).rebound_rate, Some(0.0));
+}
+
+/// A catch shuts an open window: the keeper has the ball, so nothing the
+/// previous parry put on the floor is live any more. And a catch is still a
+/// save, so it still counts in the denominator.
+#[test]
+fn rebound_rate_denominator_is_every_save_and_a_catch_shuts_an_open_window() {
+    let tuning = Tuning::new();
+    let mut s = fake_state();
+    let mut c = metrics::new(&s);
+
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            events: vec![event("parry", Some("h_keeper"))],
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            events: vec![event("catch", Some("h_keeper"))],
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+    // Even though an attacker gets the ball immediately after, the window the
+    // parry opened was shut by the catch.
+    frame(
+        &mut c,
+        &mut s,
+        Frame {
+            owner: Some(4),
+            dt: 0.1,
+            ..Default::default()
+        },
+        &tuning,
+    );
+
+    let m = metrics::finish(&mut c, &s);
+    assert_eq!(c.saves, 2, "a catch and a parry are both saves");
+    assert_eq!(c.rebounds, 0);
+    assert_eq!(m.rebound_rate, Some(0.0));
+}
+
+/// `None`, not zero, when the keeper never made a save: the fold skips an
+/// absent measurement rather than scoring a perfect one nobody observed.
+#[test]
+fn rebound_rate_is_absent_when_the_match_contained_no_save() {
+    let tuning = Tuning::new();
+    let mut s = fake_state();
+    let mut c = metrics::new(&s);
+    frame(&mut c, &mut s, Frame::default(), &tuning);
+    assert_eq!(metrics::finish(&mut c, &s).rebound_rate, None);
+}
