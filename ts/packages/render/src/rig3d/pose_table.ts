@@ -449,10 +449,18 @@ export interface LocomotionBlend {
 // Mirrors `view_state.ts`'s own constants. Declared here rather than imported
 // so this module stays free of `view_state.ts`'s mutable module-level `state`
 // map; the two are pinned equal by `pose_table.spec.ts`.
-const WALK_SPEED = 90;
-const RUN_SPEED = 260;
-const WALK_STRIDE = 100;
-const RUN_STRIDE = 185;
+//
+// Exported since #574 so `foot_contact.spec.ts` can measure the foot against
+// the speeds it is actually authored for, rather than restating them a third
+// time.
+/** Speed at which the walk clip is at full weight, world units/sec. */
+export const WALK_SPEED = 90;
+/** Speed at which the run clip is at full weight, world units/sec. */
+export const RUN_SPEED = 260;
+/** Ground covered by one full two-step walk cycle, world units. */
+export const WALK_STRIDE = 100;
+/** Ground covered by one full two-step run cycle, world units. */
+export const RUN_STRIDE = 185;
 
 function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));

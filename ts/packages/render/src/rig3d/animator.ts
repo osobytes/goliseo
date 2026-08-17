@@ -96,7 +96,20 @@ export interface AnimatorOptions extends actionPose.ActionPoseOptions {
 // Playback rate for the idle clip, in clip-seconds per real second. Breathing
 // and a weight shift have no ground-speed meaning, so idle is the one action
 // here that runs off the wall clock rather than off distance travelled.
-const IDLE_RATE = 0.35;
+//
+// THIS IS A SCALE CUE, NOT A TASTE SETTING (#574). Perceived body size is read
+// from motion FREQUENCY, not from rendered size: limb swing scales as
+// 1/sqrt(length), which is why a slowed-down human reads as a giant. The idle
+// clip is 3.4 s of one breath and one weight shift, so the rate IS the breath
+// rate: at the old 0.35 the loop ran 9.7 s -- one breath every ten seconds,
+// two to three times slower than a calm human's 3-5 s -- on every stationary
+// player, at kickoff and in every dead ball. That single number was the purest
+// "giant" signal on screen, and it was reachable before any other fix.
+//
+// 0.8 puts the loop at 4.25 s, mid-band. Deliberately not faster: above ~1.1
+// (a 3 s loop) the weight shift starts to read as fidgeting rather than as a
+// fighter at rest, which is the opposite failure and just as visible.
+export const IDLE_RATE = 0.8;
 
 // How long a stance takes to fade OUT when the pose it belonged to is replaced
 // by one with no action of its own (a dive, a stumble, plain locomotion).

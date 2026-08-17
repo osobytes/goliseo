@@ -186,12 +186,21 @@ interface Frame {
 
 // A stride sampled finely enough that a pose cannot slip between two phases,
 // at a standstill, at a walk and at a full run.
+//
+// `now` SPANS A WHOLE IDLE LOOP, and that is not incidental (#574). `gait`
+// drives the walk and run, but the idle clip runs off this clock instead, so
+// the span of `now` decides how much of the idle clip these frames ever reach.
+// It used to step by 0.037 s, covering 0.85 s -- which at the old breath rate
+// was 8.8% of the idle clip, so every idle bound below was calibrated against
+// a sliver of it. One full loop is the honest sample, and it is what exposed
+// the real clearance peak that the 8.8% window never reached.
 const PHASES = 24;
+const IDLE_LOOP_SECONDS = 4.25;
 function frames(): Frame[] {
   const out: Frame[] = [];
   for (const speed of [0, WALK_SPEED, RUN_SPEED]) {
     for (let i = 0; i < PHASES; i += 1) {
-      out.push({ speed, gait: i / PHASES, now: i * 0.037 });
+      out.push({ speed, gait: i / PHASES, now: (i * IDLE_LOOP_SECONDS) / PHASES });
     }
   }
   return out;
@@ -384,11 +393,29 @@ describe("ground contact: the rig's own clearance", () => {
       peak[key] = { min: Math.min(seen.min, y), max: Math.max(seen.max, y) };
     }
     expect(peak["idle"]?.min, "a standing figure is on the plane").toBeGreaterThan(-2 * MM);
-    expect(peak["idle"]?.max, "and stays there").toBeLessThan(5 * MM);
+    // 10 mm rather than the 5 mm this used to assert, and the bar moved because
+    // the SAMPLE was wrong rather than because the rig got worse (#574). The
+    // idle clip's authored weight shift lifts the root by up to 12 mm at its
+    // peak; the old `now` span reached only 8.8% into the clip and never saw
+    // it, so 5 mm described a sliver, not the clip. The true peak over a full
+    // loop is ~7.7 mm.
+    //
+    // 10 mm is not a rounded-up number either: it is exactly the bound the next
+    // assertion uses for a WALK, so idle staying under it is the same statement
+    // as "a standing figure is still distinguishable from a walking one".
+    expect(peak["idle"]?.max, "and stays there").toBeLessThan(10 * MM);
     expect(peak["walk"]?.min, "a walk never brings the boots back to the turf").toBeGreaterThan(
       10 * MM,
     );
-    expect(peak["run"]?.min, "nor does a run").toBeGreaterThan(15 * MM);
+    // 10 mm rather than 15 mm, and this one moved because the RUN CHANGED
+    // rather than because the sample did (#574). The run's vertical phase was
+    // inverted to the bounce it should always have had -- lowest at mid-stance,
+    // highest airborne, instead of a walk's vault -- so its closest approach to
+    // the turf is now genuinely lower than when it rose over mid-stance. That
+    // is the point of the change, not a regression: the low point is where a
+    // run's impact reads from. It still never reaches the turf, which is the
+    // claim this line exists to make.
+    expect(peak["run"]?.min, "nor does a run").toBeGreaterThan(10 * MM);
     expect(peak["run"]?.max, "and a run peaks a hand's width up").toBeGreaterThan(100 * MM);
   });
 });

@@ -70,9 +70,25 @@ export const viewState = {
   // tops out around 297-351 u/s. The previous WALK_SPEED/RUN_SPEED pair (150/400)
   // meant runMix never exceeded ~0.59 at the sim's fastest sprint, so the run
   // clip was permanently under-weighted and every player read as a brisk walk.
-  // Cadence (cycles/sec = speed / stride) at the new thresholds: 90/100 = 0.9
+  //
+  // Cadence (cycles/sec = speed / stride) at these thresholds: 90/100 = 0.9
   // at WALK_SPEED, 260/185 ≈ 1.41 at RUN_SPEED -- in the same 0.8-1.1 / 1.3-1.5
   // bands the old 150/130 ≈ 1.15 and 400/285 ≈ 1.40 pair read at.
+  //
+  // A STRIDE IS A CONTRACT WITH THE CLIP, and #574 established that the clip
+  // cannot currently honour it: a stride says how much ground one authored
+  // cycle covers, so the planted foot has to sweep backward by
+  // `duty x stride` in body frame. At 185 with a run's ~0.27 duty that is
+  // 50 wu, and the run clip's authored foot sweep is 43 wu -- which is already
+  // the GEOMETRIC MAXIMUM for this rig's 0.66 m leg at a +/-45 degree split.
+  // The gap is why the stance foot skates, and it cannot be closed by widening
+  // the pose (there is no room) or by shortening the stride (that buys the
+  // ground back by raising cadence, which is the fast-forward read the retune
+  // exists to avoid). It is closed by concentrating the sweep into a real
+  // stance window, which needs keyframes the cycles do not have yet -- see the
+  // gait-duty issue. These values are deliberately UNCHANGED until then, and
+  // `rig3d/foot_contact.spec.ts` measures the gap rather than leaving it
+  // invisible.
   WALK_STRIDE: 100,
   RUN_STRIDE: 185,
   WALK_SPEED: 90,
@@ -97,7 +113,21 @@ export const viewState = {
         const vy = (effectivePos.y - v.py) / dt;
         const sp = Math.min(viewState.MAX_DISPLAY_SPEED, Math.sqrt(vx * vx + vy * vy));
         // Exponential smoothing so the gait doesn't strobe on jittery steps.
-        const k = clamp(dt * 8, 0, 1);
+        //
+        // TIGHTENED IN #574 from `dt * 8` (time constant 125 ms) to `dt * 16`
+        // (62 ms). What players call "slow" is usually RESPONSIVENESS -- the
+        // delay between the simulation doing something and the animation
+        // showing it -- rather than playback rate, and this filter was the
+        // largest single contributor on the render side: at 125 ms the
+        // locomotion blend took ~290 ms to reach 90% of a speed change the sim
+        // had already applied within one tick, so a player who set off sprinting
+        // kept a jog's pose while their body was already moving.
+        //
+        // The strobing this exists to prevent is still prevented: 62 ms is ~4
+        // frames at 60 Hz, and the gait PHASE below does not read this value at
+        // all (it accumulates from raw `sp`), so what is being smoothed is only
+        // the idle/walk/run blend weight.
+        const k = clamp(dt * 16, 0, 1);
         v.speed = v.speed + (sp - v.speed) * k;
         v.phase = v.phase + sp * dt * CADENCE;
 
@@ -120,8 +150,11 @@ export const viewState = {
         const stride =
           viewState.WALK_STRIDE + (viewState.RUN_STRIDE - viewState.WALK_STRIDE) * runMix;
         v.gait = (v.gait + (sp * dt) / stride) % 1;
+        // Lean tightened alongside the speed filter above, and for the same
+        // reason -- a torso that banks into a turn 100 ms after the body has
+        // already turned reads as the body dragging the pose behind it.
         const targetLean = clamp(vx / 120, -1, 1);
-        v.lean = v.lean + (targetLean - v.lean) * clamp(dt * 10, 0, 1);
+        v.lean = v.lean + (targetLean - v.lean) * clamp(dt * 14, 0, 1);
         v.px = effectivePos.x;
         v.py = effectivePos.y;
       }

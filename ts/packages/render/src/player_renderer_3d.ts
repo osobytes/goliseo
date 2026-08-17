@@ -417,8 +417,13 @@ export function poseFor(
   // phase drives both and they stay in step through the blend.
   const cycles = view?.gait ?? 0;
 
+  // Idle rate READ FROM THE ANIMATOR, not restated. This function is the A/B
+  // parity reference for the mixer path (see this file's ANIMATION PLAYBACK
+  // header note), so a hardcoded copy here is not a duplicate constant, it is a
+  // way for the reference to silently stop referencing. It held 0.35 while
+  // #574 retuned the breath to 0.8, and the parity spec caught it.
   let pose: actionPose.MutablePose = clips.layer(
-    clips.sample(idle, now * 0.35),
+    clips.sample(idle, now * animator.IDLE_RATE),
     clips.sample(walk, cycles * walk.duration),
     masks.FULL_BODY,
     walkMix,
