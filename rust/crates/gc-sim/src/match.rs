@@ -2085,17 +2085,23 @@ fn keeper_hold_pos(s: &MatchState, keeper_idx: i64) -> Vec2 {
 /// (whichever verb, whichever phase) clears unconditionally, because
 /// `action_slot::clear` does not ask which verb it is clearing.
 ///
-/// Every assignment to a `MatchState::owner` field anywhere in this crate
-/// goes through this function instead of writing the field directly —
+/// Every change to a `MatchState::owner` field anywhere in this crate goes
+/// through this function instead of touching the field directly —
 /// including the three outside this module (`crate::combat`'s ball spill,
 /// and `crate::rollback_validation`'s two scenario builders), which is why
-/// this is `pub(crate)` rather than private.
+/// this is `pub(crate)` rather than private. The one exception is the
+/// `owner: None` initialiser in [`new`]'s `MatchState` literal, where there
+/// is no outgoing owner to clear because the state does not exist yet.
+///
 /// `tests/action_slot_possession_invariant.rs` is the structural proof of
-/// that sentence: it scans every source file in this crate and fails on
-/// any `.owner` assignment outside this function's body, so a future
+/// that paragraph: it scans every source file in this crate and fails on
+/// any assignment, mutating `Option` call, `&mut` borrow, or
+/// `MatchState { owner: … }` literal outside those two windows, so a future
 /// verb's bypass is a red test rather than a silent regression. A spot
 /// check of one scripted possession change could not say the same — see
-/// that file's module doc.
+/// that file's module doc, which also records the scan's own two limits and
+/// the two construction-time `owner` writes in `gc-wasm` that sit outside
+/// the invariant's scope.
 ///
 /// ## Ordering, for a verb whose own execution ends the possession
 ///

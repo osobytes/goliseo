@@ -336,6 +336,13 @@ fn pose(state: &mut match_snapshot::MatchState, shape: &FixtureShape) {
         player.run_vel = Vec2::new(0.0, 0.0);
     }
     let carrier = AWAY_OUTFIELD[0];
+    // Construction-time, so outside #489's possession invariant and its
+    // `gc_sim::r#match::set_owner` choke point (which clears the outgoing
+    // owner's committed action slot): the only caller is
+    // `capture_boundary_zero`, between `r#match::new` and
+    // `match_snapshot::capture`, so no tick has run and every action slot is
+    // still idle. There is no outgoing owner whose commitment could need
+    // clearing. A mid-scenario owner change must not be added here.
     state.owner = Some(carrier);
     state.ball = state.players[(carrier - 1) as usize].pos;
     state.ball_vel = Vec2::new(0.0, 0.0);

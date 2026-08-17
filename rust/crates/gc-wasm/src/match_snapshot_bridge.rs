@@ -132,6 +132,14 @@ pub(crate) fn vec2_from_json(json: &Json) -> Result<Vec2, String> {
 /// ```
 fn apply_overrides(state: &mut MatchState, overrides: &Json) -> Result<(), String> {
     if let Some(owner) = overrides.get("owner") {
+        // Construction-time, so outside #489's possession invariant and its
+        // `gc_sim::r#match::set_owner` choke point (which clears the
+        // outgoing owner's committed action slot): the only caller is
+        // `match_snapshot_build`, between `sim_match::new` and the first
+        // `match_snapshot::capture`, so no tick has run and every action
+        // slot is still idle. There is no outgoing owner whose commitment
+        // could need clearing. A mid-match owner change must not be added
+        // here.
         state.owner = if owner.is_null() {
             None
         } else {

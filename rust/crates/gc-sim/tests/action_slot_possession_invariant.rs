@@ -29,6 +29,35 @@
 //! demonstration: it feeds the scanner a synthetic bypass and requires it
 //! to be found, so a scanner that silently stopped matching anything would
 //! fail here rather than pass everything.
+//!
+//! ## What the scan covers, and what it does not
+//!
+//! Four ways to change ownership are flagged: assignment (`s.owner = …`),
+//! a mutating `Option` call ([`MUTATORS`]), a `&mut` borrow of the field,
+//! and initialising `owner` inside a `MatchState { … }` literal — the last
+//! because `MatchState { owner: Some(3), ..s }` and its `owner` shorthand
+//! contain no `.owner` token at all, so a receiver-anchored scan is
+//! structurally blind to them. Every one of those forms is planted in
+//! `scanner_reports_a_planted_bypass`; a form that is not planted there is
+//! not evidence, whatever the scan claims to handle.
+//!
+//! Two limits, stated rather than papered over:
+//!
+//! - **`MUTATORS` is a list, not a proof.** It is the set of `Option`
+//!   methods that can install a value or hand out a `&mut` at the pinned
+//!   toolchain. A future method could join `Option` and this scan would not
+//!   know.
+//! - **This scan walks `gc-sim/src` only.** `MatchState::owner` is `pub`
+//!   (it is read by `gc-render`, `gc-wasm`, `match_snapshot` and the env
+//!   observation layers), and two production sites in `gc-wasm` write it:
+//!   `match_snapshot_bridge::apply_overrides` and
+//!   `online_combat_phases_bridge::pose`. Both are construction-time — each
+//!   runs between `r#match::new` and the first `match_snapshot::capture`,
+//!   before any `step`, on a state whose every action slot is still idle —
+//!   which is the same category as `rollback_validation`'s two scenario
+//!   builders, and each carries a comment saying so. They are out of the
+//!   invariant's scope because there is no outgoing owner to clear, not
+//!   because the scan cannot see them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,9 +68,41 @@ const CHOKE_POINT_FILE: &str = "match.rs";
 /// The exact signature line this scan anchors the choke point's body to.
 const CHOKE_POINT_SIGNATURE: &str = "pub(crate) fn set_owner(";
 
+/// The one constructor allowed to author a `MatchState` literal, and so the
+/// one place `owner` may be initialised without a possession change having
+/// happened: there is no outgoing owner to clear when the state does not
+/// exist yet.
+const CONSTRUCTOR_SIGNATURE: &str = "pub fn new(opts: NewMatchOptions<'_>) -> MatchState {";
+
 /// Mutating `Option` methods that would change ownership without ever
 /// writing `= …`, and so would slip past a write-only scan.
-const MUTATORS: [&str; 5] = ["take(", "replace(", "insert(", "get_or_insert", "as_mut("];
+///
+/// Every entry is exercised by `scanner_reports_a_planted_bypass`, so a
+/// typo in one of these strings fails a test rather than quietly opening a
+/// hole. The list is still not a proof of exhaustiveness — it is the set of
+/// `Option` methods that can install a new value or hand out a `&mut` to
+/// the old one, checked against the `Option` API at the pinned toolchain.
+const MUTATORS: [&str; 6] = [
+    "take(",
+    "take_if(",
+    "replace(",
+    "insert(",
+    "get_or_insert",
+    "as_mut(",
+];
+
+/// What kind of ownership access was flagged. They are exempted in
+/// different places — a write belongs inside [`CHOKE_POINT_SIGNATURE`]'s
+/// body, a struct-literal initialiser inside [`CONSTRUCTOR_SIGNATURE`]'s —
+/// so the scan has to tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessKind {
+    /// `s.owner = …`, a mutating `Option` call, or a `&mut` borrow.
+    Write,
+    /// `owner` initialised as a field of a `MatchState { … }` literal,
+    /// including the shorthand and functional-update (`..s`) forms.
+    Literal,
+}
 
 /// One flagged access to a `.owner` field, with enough context to act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,8 +113,10 @@ struct OwnerAccess {
     line: usize,
     /// The trimmed source line, for the failure message.
     text: String,
-    /// Byte offset of the `.owner` token within the file.
+    /// Byte offset of the flagged token within the file.
     offset: usize,
+    /// Which exemption span, if any, could legitimately contain it.
+    kind: AccessKind,
 }
 
 /// Every `.rs` file under this crate's `src/`, in a deterministic order.
@@ -198,13 +261,120 @@ fn is_ident(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Every access to a `.owner` field in `src` that could CHANGE it: a
-/// direct assignment, a mutating `Option` method, or a `&mut` borrow of
-/// the field. Reads (`s.owner == …`, `s.owner.map(…)`) are not flagged.
+/// Index of the `}` matching the `{` at `open`.
+fn matching_brace(masked: &str, open: usize) -> usize {
+    let bytes = masked.as_bytes();
+    assert_eq!(bytes.get(open), Some(&b'{'), "matching_brace wants a brace");
+    let mut depth = 0i32;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        if b == b'{' {
+            depth += 1;
+        } else if b == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return i;
+            }
+        }
+    }
+    panic!("unbalanced braces from byte {open}");
+}
+
+/// Build one flagged access, resolving its line and source text.
+fn access(src: &str, masked: &str, file: &str, at: usize, kind: AccessKind) -> OwnerAccess {
+    let line = masked[..at].bytes().filter(|&c| c == b'\n').count() + 1;
+    OwnerAccess {
+        file: file.to_string(),
+        line,
+        text: src
+            .lines()
+            .nth(line - 1)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        offset: at,
+        kind,
+    }
+}
+
+/// `owner` initialised as a field of a `MatchState { … }` struct literal —
+/// the form a receiver-anchored `.owner` scan is structurally blind to,
+/// because `MatchState { owner: Some(3), ..s }` and its `owner` shorthand
+/// contain no `.owner` at all. Rebuilding the state around a new owner is
+/// an ownership change like any other, so it is flagged here and exempted
+/// only inside [`CONSTRUCTOR_SIGNATURE`]'s body.
+fn struct_literal_inits(src: &str, masked: &str, file: &str) -> Vec<OwnerAccess> {
+    let bytes = masked.as_bytes();
+    let mut found = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = masked[from..].find("MatchState") {
+        let at = from + rel;
+        from = at + "MatchState".len();
+        // `CombatMatchState` ends in `MatchState`; a field/method name
+        // could too.
+        if at > 0 && is_ident(bytes[at - 1]) {
+            continue;
+        }
+        // Walk back over any path prefix (`match_snapshot::MatchState`) and
+        // the whitespace before it: `-> MatchState {` is a return type and
+        // `struct`/`impl MatchState {` is a definition, and neither of the
+        // three braces they open is a struct literal.
+        let mut before = at;
+        while before > 0 && (is_ident(bytes[before - 1]) || bytes[before - 1] == b':') {
+            before -= 1;
+        }
+        while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+            before -= 1;
+        }
+        let head = &masked[..before];
+        if head.ends_with("->") || head.ends_with("struct") || head.ends_with("impl") {
+            continue;
+        }
+        let mut open = from;
+        while bytes.get(open).is_some_and(u8::is_ascii_whitespace) {
+            open += 1;
+        }
+        if bytes.get(open) != Some(&b'{') {
+            continue;
+        }
+        let close = matching_brace(masked, open);
+        // Field keys sit at depth 1 of the literal; a nested `Rect { … }`
+        // or a `ByTeam { … }` of its own is somebody else's business.
+        let mut depth = 0i32;
+        let mut i = open;
+        while i < close {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            if depth == 1
+                && masked[i..].starts_with("owner")
+                && !is_ident(bytes[i + "owner".len()])
+                && (i == 0 || !is_ident(bytes[i - 1]))
+            {
+                let mut key_end = i + "owner".len();
+                while bytes.get(key_end).is_some_and(u8::is_ascii_whitespace) {
+                    key_end += 1;
+                }
+                // `owner: …` (explicit), `owner,` / `owner }` (shorthand).
+                if matches!(bytes.get(key_end), Some(&b':' | &b',' | &b'}')) {
+                    found.push(access(src, masked, file, i, AccessKind::Literal));
+                }
+            }
+            i += 1;
+        }
+    }
+    found
+}
+
+/// Every access to a `MatchState`'s `owner` in `src` that could CHANGE it:
+/// a direct assignment, a mutating `Option` method, a `&mut` borrow, or a
+/// struct-literal initialiser. Reads (`s.owner == …`, `s.owner.map(…)`)
+/// are not flagged.
 fn ownership_writes(src: &str, file: &str) -> Vec<OwnerAccess> {
     let masked = blank_noise(src);
     let bytes = masked.as_bytes();
-    let mut found = Vec::new();
+    let mut found = struct_literal_inits(src, &masked, file);
     let mut from = 0usize;
     while let Some(rel) = masked[from..].find(".owner") {
         let at = from + rel;
@@ -234,52 +404,28 @@ fn ownership_writes(src: &str, file: &str) -> Vec<OwnerAccess> {
         if !(assigns || mutates || borrowed) {
             continue;
         }
-        let line = masked[..at].bytes().filter(|&c| c == b'\n').count() + 1;
-        let text = src
-            .lines()
-            .nth(line - 1)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        found.push(OwnerAccess {
-            file: file.to_string(),
-            line,
-            text,
-            offset: at,
-        });
+        found.push(access(src, &masked, file, at, AccessKind::Write));
     }
+    found.sort_by_key(|a| a.offset);
     found
 }
 
-/// The byte range of `set_owner`'s body (the braces included), located by
-/// its signature rather than a line number so ordinary edits above it do
-/// not silently move the window.
-fn choke_point_body(masked: &str) -> (usize, usize) {
-    let sig = masked.find(CHOKE_POINT_SIGNATURE).unwrap_or_else(|| {
+/// The byte range of the single function `signature` names (its braces
+/// included), located by that signature rather than a line number so
+/// ordinary edits above it do not silently move the window.
+fn body_span(masked: &str, signature: &str) -> (usize, usize) {
+    let sig = masked.find(signature).unwrap_or_else(|| {
         panic!(
-            "`{CHOKE_POINT_SIGNATURE}` not found in {CHOKE_POINT_FILE} -- \
-             the ownership choke point was renamed or its visibility changed; update this \
-             test rather than deleting it"
+            "`{signature}` not found in {CHOKE_POINT_FILE} -- it was renamed, or its \
+             visibility or parameters changed; update this test rather than deleting it"
         )
     });
     assert!(
-        !masked[sig + CHOKE_POINT_SIGNATURE.len()..].contains(CHOKE_POINT_SIGNATURE),
-        "more than one `set_owner` definition: the invariant needs exactly one choke point"
+        !masked[sig + signature.len()..].contains(signature),
+        "more than one `{signature}`: this scan's exemption window must be unambiguous"
     );
-    let open = sig + masked[sig..].find('{').expect("set_owner must have a body");
-    let bytes = masked.as_bytes();
-    let mut depth = 0i32;
-    for (i, &b) in bytes.iter().enumerate().skip(open) {
-        if b == b'{' {
-            depth += 1;
-        } else if b == b'}' {
-            depth -= 1;
-            if depth == 0 {
-                return (open, i + 1);
-            }
-        }
-    }
-    panic!("unbalanced braces while walking set_owner's body");
+    let open = sig + masked[sig..].find('{').expect("the function needs a body");
+    (open, matching_brace(masked, open) + 1)
 }
 
 #[test]
@@ -287,10 +433,13 @@ fn set_owner_is_the_only_writer_of_ball_ownership_in_this_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let choke_source = fs::read_to_string(root.join("src").join(CHOKE_POINT_FILE))
         .unwrap_or_else(|e| panic!("read src/{CHOKE_POINT_FILE}: {e}"));
-    let (body_start, body_end) = choke_point_body(&blank_noise(&choke_source));
+    let masked = blank_noise(&choke_source);
+    let choke = body_span(&masked, CHOKE_POINT_SIGNATURE);
+    let ctor = body_span(&masked, CONSTRUCTOR_SIGNATURE);
 
     let mut outside: Vec<OwnerAccess> = Vec::new();
-    let mut inside = 0usize;
+    let mut writes_in_choke = 0usize;
+    let mut inits_in_ctor = 0usize;
     for path in source_files() {
         let rel = path
             .strip_prefix(root)
@@ -299,28 +448,38 @@ fn set_owner_is_the_only_writer_of_ball_ownership_in_this_crate() {
             .into_owned();
         let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
         for access in ownership_writes(&src, &rel) {
-            let in_choke =
-                rel.ends_with(CHOKE_POINT_FILE) && (body_start..body_end).contains(&access.offset);
-            if in_choke {
-                inside += 1;
-            } else {
-                outside.push(access);
+            let here = rel.ends_with(CHOKE_POINT_FILE);
+            match access.kind {
+                AccessKind::Write if here && (choke.0..choke.1).contains(&access.offset) => {
+                    writes_in_choke += 1;
+                }
+                AccessKind::Literal if here && (ctor.0..ctor.1).contains(&access.offset) => {
+                    inits_in_ctor += 1;
+                }
+                _ => outside.push(access),
             }
         }
     }
 
     assert_eq!(
-        inside, 1,
+        writes_in_choke, 1,
         "expected exactly one ownership write, inside set_owner's body"
+    );
+    assert_eq!(
+        inits_in_ctor, 1,
+        "expected exactly one `owner` initialiser, in the `MatchState` literal inside \
+         `r#match::new` -- a second one there would be a possession change wearing a \
+         constructor's clothes"
     );
     assert!(
         outside.is_empty(),
         "#489's possession invariant is applied once, in `r#match::set_owner`, which clears \
-         the outgoing owner's committed action slot. These {} write(s) change ball ownership \
-         without going through it, so a committed Shot/Pass/Tackle would survive losing the \
-         ball there. Route them through `set_owner` (it is `pub(crate)`), or -- if a site \
-         genuinely must not clear the slot -- change the invariant deliberately and say so \
-         here:\n{}",
+         the outgoing owner's committed action slot. These {} site(s) change ball ownership \
+         without going through it -- by assignment, by a mutating `Option` call, by a `&mut` \
+         borrow, or by rebuilding the `MatchState` around a new `owner` -- so a committed \
+         Shot/Pass/Tackle would survive losing the ball there. Route them through \
+         `set_owner` (it is `pub(crate)`), or -- if a site genuinely must not clear the slot \
+         -- change the invariant deliberately and say so here:\n{}",
         outside.len(),
         outside
             .iter()
@@ -336,7 +495,7 @@ fn the_choke_point_still_clears_the_outgoing_owners_action_slot() {
     let src = fs::read_to_string(root.join("src").join(CHOKE_POINT_FILE))
         .unwrap_or_else(|e| panic!("read src/{CHOKE_POINT_FILE}: {e}"));
     let masked = blank_noise(&src);
-    let (start, end) = choke_point_body(&masked);
+    let (start, end) = body_span(&masked, CHOKE_POINT_SIGNATURE);
     let body = &masked[start..end];
     assert!(
         body.contains("action_slot::clear("),
@@ -366,17 +525,37 @@ fn hand_the_ball_over(s: &mut MatchState) {
     assert_eq!(hits[0].line, 3, "and report where it is: {hits:?}");
 
     for form in [
+        // Every `MUTATORS` entry, so a typo in one of those strings fails
+        // here rather than opening a hole nobody notices.
         "fn f(s: &mut MatchState) { s.owner.take(); }",
+        "fn f(s: &mut MatchState) { s.owner.take_if(|o| *o == 2); }",
         "fn f(s: &mut MatchState) { s.owner.replace(2); }",
+        "fn f(s: &mut MatchState) { s.owner.insert(2); }",
+        "fn f(s: &mut MatchState) { s.owner.get_or_insert(2); }",
+        "fn f(s: &mut MatchState) { s.owner.as_mut(); }",
         "fn f(s: &mut MatchState) { let r = &mut s.owner; }",
         "fn f(s: &mut MatchState) { self.state.owner = None; }",
+        // The struct-literal forms: no `.owner` appears anywhere in either,
+        // so a receiver-anchored scan alone is blind to both. This is the
+        // blind spot the scan was reviewed for -- keep these cases.
+        "fn f(s: MatchState) -> MatchState { MatchState { owner: Some(3), ..s } }",
+        "fn f(s: MatchState, owner: Option<i64>) -> MatchState { MatchState { owner, ..s } }",
+        "fn f(s: MatchState) -> MatchState { match_snapshot::MatchState { owner: None, ..s } }",
     ] {
         assert_eq!(
             ownership_writes(form, "planted.rs").len(),
             1,
-            "a bypass that avoids `=` must still be flagged: {form}"
+            "a bypass that avoids a plain `s.owner = …` must still be flagged: {form}"
         );
     }
+
+    // And the literal form is reported as a literal, so the main scan
+    // exempts it against the constructor's body rather than set_owner's.
+    let literal = ownership_writes(
+        "fn f(s: MatchState) -> MatchState { MatchState { owner: Some(3), ..s } }",
+        "planted.rs",
+    );
+    assert_eq!(literal[0].kind, AccessKind::Literal, "{literal:?}");
 }
 
 #[test]
@@ -389,7 +568,14 @@ fn scanner_ignores_reads_comments_strings_and_neighbouring_fields() {
         "    let _ = s.ownership;\n",
         "    let _ = s.owner_team;\n",
         "    let _ = s.owner.map(|o| o + 1);\n",
+        "    let _ = CombatMatchState { owner: 1 };\n",
         "    s.owner == Some(1)\n",
+        "}\n",
+        "pub struct MatchState {\n",
+        "    pub owner: Option<i64>,\n",
+        "}\n",
+        "impl MatchState {\n",
+        "    fn owner(&self) -> Option<i64> { self.owner }\n",
         "}\n",
     );
     assert_eq!(
