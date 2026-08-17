@@ -243,6 +243,12 @@ fn ten_players(owner_pos: Vec2, others_far_away: bool) -> Vec<MatchPlayer> {
 /// structural guarantee rather than a per-call-site spot check: a future
 /// verb adopting this module inherits the same guarantee for free, at the
 /// one call site, without writing its own clearing code.
+///
+/// That parenthesis is the load-bearing half, and this test cannot check
+/// it: a possession change routed AROUND `set_owner` never reaches this
+/// fixture's keeper smother, so eight such bypasses shipped green past it.
+/// `tests/action_slot_possession_invariant.rs` is the half that checks
+/// "every `s.owner` assignment"; keep the two together.
 #[test]
 fn possession_change_clears_a_committed_action_from_every_phase_no_matter_the_verb() {
     for phase in [

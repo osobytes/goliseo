@@ -227,11 +227,28 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // shield rather than surrendering the ball, so play reaches the keeper
     // more often. The agree/disagree split shifts with it; `new_only` stays
     // structurally 0, which is the assertion that would have been a finding.
-    assert_eq!(total.candidates, 9941);
-    assert_eq!(total.agree_true, 3490);
-    assert_eq!(total.agree_false, 6197);
-    assert_eq!(total.disagree_deferred, 230);
-    assert_eq!(total.disagree_height, 24);
+    // Re-pinned by #572, completing #489's possession invariant, in the SAME
+    // commit as `gc_data::outfield_ai_baseline`'s v13 -> v14 re-freeze, for
+    // the reason the paragraph above already gives.
+    //
+    // candidates 9941 -> 9970: seven ownership writes (eight with `combat`'s
+    // ball spill) were silently exempt from the rule that a possession change
+    // clears the outgoing owner's committed action slot, and now are not. A
+    // presser that whiffs a standing poke and then loses the ball no longer
+    // serves out its miss recovery, so it re-presses sooner. Unlike this
+    // artifact's previous re-pins the candidate count moves only slightly and
+    // UPWARD, while the agree/disagree split moves considerably more
+    // (agree_true 3490 -> 3307, agree_false 6197 -> 6429, disagree_deferred
+    // 230 -> 207, disagree_height 24 -> 27): the change reshuffles WHEN a
+    // shot reaches the keeper far more than it changes HOW OFTEN, which is
+    // the signature this file's module doc gives for a timing shift rather
+    // than a volume one. `new_only` stays structurally 0, which is the
+    // assertion that would have been a finding rather than a re-pin.
+    assert_eq!(total.candidates, 9970);
+    assert_eq!(total.agree_true, 3307);
+    assert_eq!(total.agree_false, 6429);
+    assert_eq!(total.disagree_deferred, 207);
+    assert_eq!(total.disagree_height, 27);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -318,7 +335,16 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // larger and now dominant bucket by an even wider margin, consistent with
     // `disagree_deferred` more than doubling above while `disagree_height`
     // fell.
-    assert_eq!(matches_with_disagree, 13);
-    assert_eq!(matches_with_deferred, 32);
-    assert_eq!(matches_with_either, 37);
+    //
+    // Re-pinned by #572 alongside the counts above: `disagree_height` alone
+    // touches 14/60 matches (23%), and folding in `disagree_deferred` reaches
+    // 34/60 (57%). Deferred episodes remain the larger bucket, by a narrower
+    // margin than the previous re-pin recorded -- consistent with
+    // `disagree_deferred` falling and `disagree_height` rising above. An
+    // earlier-cleared miss recovery is exactly the one-tick-earlier-or-later
+    // RNG-stream shift this file's module doc names as `disagree_deferred`'s
+    // signature. No historical byte-divergent split to compare against.
+    assert_eq!(matches_with_disagree, 14);
+    assert_eq!(matches_with_deferred, 28);
+    assert_eq!(matches_with_either, 34);
 }

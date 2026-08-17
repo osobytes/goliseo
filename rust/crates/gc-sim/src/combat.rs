@@ -1057,7 +1057,21 @@ fn apply_unguarded_outcome(
     });
 
     if outcome.ball_spill && state.owner == Some(contact.target_index) {
-        state.owner = None;
+        // A spill is a possession change like any other, so it goes
+        // through the one choke point that applies #489's invariant
+        // (`crate::r#match::set_owner`): being knocked off the ball
+        // cancels whatever the carrier had committed.
+        //
+        // This adds an edge back into `r#match`, which already calls into
+        // this module, so the two are now mutually referential. Legal Rust,
+        // and not an AGENTS.md §2 concern (that rule is about crate edges,
+        // and both modules live inside `gc-sim`), but the alternative is
+        // worth recording: hoisting `set_owner` into `match_snapshot`,
+        // beside the `MatchState` it guards, would leave both modules with
+        // one downward edge and keep the intra-crate module graph acyclic.
+        // Deliberately not done here — it would drag `action_slot` into
+        // `match_snapshot` with it.
+        crate::r#match::set_owner(state, None);
         state.pickup_cd = state.pickup_cd.max(fixed_clock::TICK_SECONDS);
         combat_state.events.push(CombatEvent {
             kind: CombatEventKind::BallSpill,
