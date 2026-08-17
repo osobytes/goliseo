@@ -806,7 +806,7 @@ fn place_kickoff(s: &mut MatchState, kicking: Team) {
     s.ball_vel = Vec2::new(0.0, 0.0);
     s.ball_z = 0.0;
     s.ball_vz = 0.0;
-    s.owner = Some(kicker);
+    set_owner(s, Some(kicker));
     s.pickup_cd = 0.0;
     s.block_grace = 0.0;
     s.aerial_lock = 0.0;
@@ -1291,7 +1291,7 @@ fn release_shot(
         keeper_depth: event_keeper_depth,
         on_target: Some(on_target),
     });
-    s.owner = None;
+    set_owner(s, None);
     s.kickoff_hold = 0.0;
     s.ball_vel = launch_velocity;
     s.ball_z = 0.0;
@@ -1437,7 +1437,7 @@ fn release_pass(
         keeper_depth: None,
         on_target: None,
     });
-    s.owner = None;
+    set_owner(s, None);
     s.kickoff_hold = 0.0;
     s.ball_z = 0.0;
     s.ball_spin = 0.0;
@@ -2083,12 +2083,36 @@ fn keeper_hold_pos(s: &MatchState, keeper_idx: i64) -> Vec2 {
 /// The single choke point for changing ball ownership (#489). Applies the
 /// possession invariant here, once: the OUTGOING owner's committed action
 /// (whichever verb, whichever phase) clears unconditionally, because
-/// `action_slot::clear` does not ask which verb it is clearing. Every
-/// `s.owner` assignment in this module goes through this function instead
-/// of writing the field directly — `tests/action_slot_possession_invariant.rs`
-/// proves no call site bypasses it by construction: it walks every
-/// possession-changing entry point and confirms the same behaviour.
-fn set_owner(s: &mut MatchState, new_owner: Option<i64>) {
+/// `action_slot::clear` does not ask which verb it is clearing.
+///
+/// Every assignment to a `MatchState::owner` field anywhere in this crate
+/// goes through this function instead of writing the field directly —
+/// including the three outside this module (`crate::combat`'s ball spill,
+/// and `crate::rollback_validation`'s two scenario builders), which is why
+/// this is `pub(crate)` rather than private.
+/// `tests/action_slot_possession_invariant.rs` is the structural proof of
+/// that sentence: it scans every source file in this crate and fails on
+/// any `.owner` assignment outside this function's body, so a future
+/// verb's bypass is a red test rather than a silent regression. A spot
+/// check of one scripted possession change could not say the same — see
+/// that file's module doc.
+///
+/// ## Ordering, for a verb whose own execution ends the possession
+///
+/// Tackle — the only verb wired to the slot today — never holds the ball
+/// while it charges or executes, so this clear never lands on the actor:
+/// `resolve_tackle` calls `win_ball` (which sets the owner) and only then
+/// resolves the CHALLENGER's slot, and the challenger is the incoming
+/// owner, not the outgoing one. A verb that releases the ball itself (the
+/// shot and pass migrations #489 anticipates) inverts that: the actor IS
+/// the outgoing owner, so `release_shot`/`release_pass` would clear the
+/// actor's own slot out from under it, and `action_slot::resolve_success`
+/// / `resolve_miss` would then panic on the `Executing` phase the clear
+/// erased. That is a real decision for the migration — resolve the slot
+/// before handing possession over, or give this function an explicit
+/// actor exemption — and it is left open here rather than pre-decided by
+/// a verb that cannot exercise it.
+pub(crate) fn set_owner(s: &mut MatchState, new_owner: Option<i64>) {
     if s.owner != new_owner
         && let Some(outgoing) = s.owner
     {
@@ -4855,7 +4879,7 @@ fn keeper_dropkick_clearance(s: &mut MatchState, keeper: &MatchPlayer, fwd: f64)
         keeper_depth: None,
         on_target: None,
     });
-    s.owner = None;
+    set_owner(s, None);
     s.ball_z = 0.0;
     s.ball_spin = 0.0;
     s.pickup_cd = RELEASE_CD;
@@ -5512,7 +5536,7 @@ fn resolve_pending_save(s: &mut MatchState, dt: f64) -> Option<crate::match_snap
                     on_target: None,
                 });
                 s.ball = keeper_hold_pos(s, keeper_idx);
-                s.owner = Some(keeper_idx);
+                set_owner(s, Some(keeper_idx));
                 s.ball_vel = Vec2::new(0.0, 0.0);
                 s.ball_z = 0.0;
                 s.ball_vz = 0.0;
@@ -6477,7 +6501,8 @@ fn update_ball(
                 for player in &mut s.players {
                     player.keeper_set = 0.0;
                 }
-                s.owner = None; // the touch got away from the feet: it's loose now
+                // The touch got away from the feet: it's loose now.
+                set_owner(s, None);
                 return; // no owner actions this frame; the ball plays loose next
             }
         }
@@ -6823,7 +6848,7 @@ fn update_ball(
                     s.players[(best - 1) as usize].settle_timer = tune.value("CARRIER_SETTLE");
                 }
             }
-            s.owner = Some(best);
+            set_owner(s, Some(best));
             s.ball_vel = Vec2::new(0.0, 0.0);
             s.ball_spin = 0.0;
             let best_mut = &mut s.players[(best - 1) as usize];

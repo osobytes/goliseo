@@ -1057,7 +1057,11 @@ fn apply_unguarded_outcome(
     });
 
     if outcome.ball_spill && state.owner == Some(contact.target_index) {
-        state.owner = None;
+        // A spill is a possession change like any other, so it goes
+        // through the one choke point that applies #489's invariant
+        // (`crate::r#match::set_owner`): being knocked off the ball
+        // cancels whatever the carrier had committed.
+        crate::r#match::set_owner(state, None);
         state.pickup_cd = state.pickup_cd.max(fixed_clock::TICK_SECONDS);
         combat_state.events.push(CombatEvent {
             kind: CombatEventKind::BallSpill,
