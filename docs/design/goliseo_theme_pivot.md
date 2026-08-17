@@ -1,5 +1,13 @@
 # Design: GOLISEO theme and combat-soccer pivot
 
+> **Superseded 2026-08-14.** The "Crossover spectacle" identity pillar and the
+> six-theme portfolio below are no longer the accepted direction. See
+> [`docs/design/gladiator_pivot.md`](gladiator_pivot.md), which commits
+> GOLISEO to a single colosseum/gladiator setting instead. This document is
+> kept as the historical record of that decision and its research (the
+> KayKit audit, ESA representation guardrails, and asset/license notes below
+> remain useful reference); do not treat the theme slate as current.
+
 - **Status:** accepted product and prototype contract
 - **Accepted:** 2026-07-23
 - **Delivery:** post-showcase proofs
