@@ -255,6 +255,13 @@ fn combat_pose_sample_from_json(json: &Json) -> Result<CombatPoseSample, String>
             .field("immunity_fraction")
             .and_then(Json::as_f64)
             .unwrap_or(0.0),
+        // Same already-normalised-`[0, 1]` contract as `immunity_fraction`
+        // (#576): progress through the current timed combat phase, not a raw
+        // tick count. `select` never reads it, so the default costs nothing.
+        phase_fraction: json
+            .field("phase_fraction")
+            .and_then(Json::as_f64)
+            .unwrap_or(0.0),
     })
 }
 
@@ -292,7 +299,7 @@ fn pose_source_wire(source: PlayerPoseSource) -> &'static str {
 ///   "player": { "id": "nebula_02", "is_keeper": false, ... },
 ///   // All three optional/omittable, mirroring `player_pose::select`'s own
 ///   // `Option` parameters -- omit exactly when the caller has none.
-///   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6 },
+///   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6, "phase_fraction": 0.25 },
 ///   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
 ///   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
 /// }
