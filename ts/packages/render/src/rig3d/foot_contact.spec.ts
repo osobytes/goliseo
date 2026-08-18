@@ -110,7 +110,8 @@ describe("rig3d locomotion: what the feet do against the ground", () => {
   it("sweeps the grounded foot at a STEADY rate instead of lurching between stop and whip", () => {
     // This is the cue #574's easing change actually bought, and it is worth
     // stating precisely because it is not the same claim as "the foot is
-    // planted" (see the skate test below, which is still red-by-design).
+    // planted" (see the skate test below, which #575 turned from a pinned
+    // deficit into an acceptance).
     //
     // Under the old unconditional smoothstep every rotation channel eased at
     // both ends of every segment, so the toe's sweep rate swung from ~0 at each
@@ -120,16 +121,20 @@ describe("rig3d locomotion: what the feet do against the ground", () => {
     // rotations makes the sweep steady; the residual variation is the honest
     // trigonometry of a leg swinging through an arc.
     //
-    // Measured both ways before the bars below were chosen, so they separate
-    // the two regimes rather than merely admitting today's numbers:
+    // Measured across all three regimes before the bars below were chosen, so
+    // they separate them rather than merely admitting today's numbers:
     //
-    //                     spread/mean          sweep range
-    //   old smoothstep    walk 1.51 run 1.57   0.06 .. 1.10
-    //   per-channel ease  walk 0.39 run 0.56   0.37 .. 0.74
+    //                          spread/mean          sweep range
+    //   old smoothstep         walk 1.51 run 1.57   0.06 .. 1.10
+    //   per-channel ease #574  walk 0.39 run 0.56   0.37 .. 0.74
+    //   duty-factor keys #575  walk 0.10 run 0.18   0.67 .. 0.97
     //
     // The old range is the whole story: a foot going from 0.06x body speed to
     // 1.10x within one contact is stopping dead and then whipping, twice per
-    // step, on every player on screen.
+    // step, on every player on screen. #575's stance keys are authored so the
+    // grounded toe z falls LINEARLY across the stance window, which is why the
+    // spread tightened again: the sweep is now constant by construction, not
+    // merely un-eased.
     for (const speed of [poseTable.WALK_SPEED, poseTable.RUN_SPEED]) {
       const t = track(speed);
       const window = stance(t);
@@ -153,26 +158,37 @@ describe("rig3d locomotion: what the feet do against the ground", () => {
     // Both were authored the walk's way round, which is why a sprint read as a
     // hurried walk: no impact bottom and no airborne top. Measured on the
     // composed result rather than asserted on the keyframe.
+    //
+    // COMPARED MODULO HALF A CYCLE: the clip is authored once and mirrored, so
+    // the hips bottom out at BOTH mid-stances -- two equal minima half a cycle
+    // apart -- and which one `indexOf` lands on is decided by floating-point
+    // noise in the baked tracks, not by the animation. Folding by the mirror
+    // period asserts the claim that matters (the bottom is a mid-stance, not a
+    // contact or an apex) without betting on that noise.
     const t = track(poseTable.RUN_SPEED);
     const window = stance(t);
     const midStance = window[Math.floor(window.length / 2)] ?? 0;
     const lowest = t.hipY.indexOf(Math.min(...t.hipY));
-    const apart = Math.abs(midStance - lowest) / SAMPLES;
+    const half = SAMPLES / 2;
+    const apart = Math.abs(midStance - lowest) % half;
     expect(
-      Math.min(apart, 1 - apart),
-      "the run's lowest hip should coincide with mid-stance",
+      Math.min(apart, half - apart) / SAMPLES,
+      "the run's lowest hip should coincide with a mid-stance",
     ).toBeLessThan(0.12);
   });
 
   it("still vaults the walk, which is correct for a walk and must not be swept along", () => {
+    // Folded modulo half a cycle for the same reason as the run's bounce test
+    // above: the vault apexes twice, once per mirrored mid-stance.
     const t = track(poseTable.WALK_SPEED);
     const window = stance(t);
     const midStance = window[Math.floor(window.length / 2)] ?? 0;
     const highest = t.hipY.indexOf(Math.max(...t.hipY));
-    const apart = Math.abs(midStance - highest) / SAMPLES;
+    const half = SAMPLES / 2;
+    const apart = Math.abs(midStance - highest) % half;
     expect(
-      Math.min(apart, 1 - apart),
-      "the walk's highest hip should coincide with mid-stance",
+      Math.min(apart, half - apart) / SAMPLES,
+      "the walk's highest hip should coincide with a mid-stance",
     ).toBeLessThan(0.12);
   });
 
@@ -188,34 +204,68 @@ describe("rig3d locomotion: what the feet do against the ground", () => {
     expect(walkHz).toBeLessThan(1.2);
   });
 
-  it("records the foot-sweep deficit the clips cannot yet close", () => {
-    // THIS TEST PINS A KNOWN GAP RATHER THAN A FIX, deliberately, because the
-    // gap was invisible before it was measured and that is how it survived.
+  it("plants the run's stance foot: skate under 20% of body speed (#575)", () => {
+    // THE TEST THAT USED TO PIN THE DEFICIT, rewritten because the deficit
+    // closed -- which is exactly the rewrite its old comment demanded.
     //
-    // For a foot to be plantable the clip must sweep it backward by
-    // `duty x stride` during stance. The run's authored sweep is ~43 wu, which
-    // is already the geometric maximum for this rig's 0.66 m leg at a +/-45
-    // degree split -- the pose cannot reach further. At RUN_STRIDE 185 and a
-    // run's ~0.27 duty the requirement is ~50 wu, so the clip is ~14% short
-    // even before the 4-key cycle spreads that sweep across half the cycle
-    // instead of concentrating it into a real stance window.
+    // For a foot to be plantable the clip must sweep it backward at body speed
+    // while it is grounded. The old 4-key cycle spread the run's sweep across
+    // half the cycle, so the grounded foot moved at ~0.63x body speed -- a 37%
+    // skate on every runner. #575 concentrated the sweep into a real stance
+    // window (contact at t = 0, mid-stance at 0.075, toe-off at 0.15 of the
+    // 0.6 s cycle: duty 0.25), authored so the grounded toe z falls linearly
+    // across it. The mean grounded sweep is now ~0.91x body speed: ~9% skate,
+    // within the ~20% acceptance, at the SAME stride and the SAME cadence.
     //
-    // Neither lever available here fixes it: widening the pose has no room, and
-    // shortening the stride buys the ground back by raising cadence, which is
-    // the exact fast-forward read the fix is required to avoid. The remaining
-    // lever is a longer stance window, i.e. keyframes these cycles do not have.
-    // Asserted as a RANGE so that closing the gap fails this test and forces
-    // the comment to be rewritten, rather than passing quietly.
+    // The pose still cannot reach past the rig's own legs -- pinned below so a
+    // retune that quietly shrinks the reach (and pays for it with a higher
+    // duty) still has to answer to this test.
     const t = track(poseTable.RUN_SPEED);
+    const window = stance(t);
+    const rates = window.map((i) => t.sweep[i] ?? 0);
+    const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
+    expect(mean, "run stance-foot skate must stay under ~20% of body speed").toBeGreaterThan(0.8);
+    expect(mean, "and the foot must not overtake the ground it stands on").toBeLessThan(1.1);
+
     const reachWu = (Math.max(...t.z) - Math.min(...t.z)) / M_PER_WU;
     const legReachWu =
       (2 * (RIG.seg.upperleg + RIG.seg.lowerleg) * Math.sin(Math.PI / 4)) / M_PER_WU;
     expect(reachWu, "the run pose is at its own geometric ceiling").toBeGreaterThan(
       0.98 * legReachWu,
     );
+  });
 
-    const needed = 0.27 * poseTable.RUN_STRIDE;
-    expect(reachWu / needed, "known deficit: see this test's comment").toBeGreaterThan(0.8);
-    expect(reachWu / needed, "known deficit: see this test's comment").toBeLessThan(0.95);
+  it("records the walk's remaining foot-sweep deficit, which CANNOT close on this rig", () => {
+    // THIS TEST PINS A KNOWN GAP RATHER THAN A FIX, deliberately, because the
+    // gap was invisible before it was measured and that is how it survived.
+    //
+    // A walk's duty is ~0.55 -- both feet are down around each contact -- so at
+    // WALK_STRIDE 100 the stance must cover ~55 wu, against the ~43 wu
+    // geometric ceiling of this rig's 0.66 m leg at a +/-45 degree split. The
+    // run closes because its duty is low; the walk cannot: even a stance pose
+    // at the ceiling leaves a ~22% skate, and the walk's poses stop short of
+    // the ceiling because a walking figure doing full splits is a worse read
+    // than a mild skate. #575 widened the reach (~30 -> ~38 wu) and keyed a
+    // real double-support window (toe-off at 1/30 s after the opposite
+    // contact), which brought the skate from ~34% to ~29%; the rest is the
+    // rig's legs (42% of body height where a human's are ~50%), and
+    // lengthening them is a roster decision, not a render fix -- see
+    // `docs/design/prototype_theme_roster.md`.
+    //
+    // Asserted as a RANGE, and BOTH bounds are load-bearing. The upper bound
+    // fails if the gap ever closes -- longer legs, a shorter walk stride, a
+    // duty retune -- and forces this comment to be rewritten rather than
+    // passing quietly. The lower bound fails if the duty factor regresses:
+    // the pre-#575 4-key cycle measures 0.6564 on this exact path, which a
+    // first draft of this pin at 0.6 quietly admitted -- a band that lets the
+    // old gap back in pins nothing -- so the bound sits above that measured
+    // value by construction. Today's authored cycle measures ~0.713, between
+    // the two.
+    const t = track(poseTable.WALK_SPEED);
+    const window = stance(t);
+    const rates = window.map((i) => t.sweep[i] ?? 0);
+    const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
+    expect(mean, "walk duty regressed toward the pre-#575 4-key cycle").toBeGreaterThan(0.68);
+    expect(mean, "the walk deficit closed: rewrite this test's comment").toBeLessThan(0.78);
   });
 });
