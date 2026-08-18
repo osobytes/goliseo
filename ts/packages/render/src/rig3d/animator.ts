@@ -125,9 +125,16 @@ export const IDLE_RATE = 0.8;
 // is only the fallback for a character whose first observed frame is already
 // a fade-out.
 //
-// 0.16 -> 0.12 (#576): trimmed with the combat recovery's own exit fade, and
-// for the same reason -- an exit longer than the action it exits reads as the
-// action dissolving. Still comfortably above a 60 fps frame, so nothing pops.
+// 0.16 -> 0.12 (#576): trimmed alongside the combat recovery's exit fade.
+// REACH, STATED PRECISELY so the trim is not read as a global retune: every
+// real fade-out uses `previous.fadeSeconds`, which chains back to the
+// crossfade the OUTGOING ACTION was engaged with (`entry.crossfade` below),
+// never to this constant. This value only seeds the state of a character
+// whose very first observed frame has no action -- and that frame snaps to
+// EMPTY weights (`snapCrossfade(null)`), so there is nothing for the seeded
+// duration to fade. Non-combat exits (dives, stumbles, keeper stances) are
+// therefore untouched by the trim; each keeps its own action's authored
+// crossfade.
 const DEFAULT_FADE_SECONDS = 0.12;
 
 // Longest gap between two frames the crossfade will integrate. A tab that was
@@ -282,14 +289,35 @@ export const SWING_FOLLOW_SECONDS = 0.66;
 // 60 fps the delivery is roughly one rendered frame and the hold is the rest:
 // with a 4-tick window's tick-quantised fractions {0, .25, .5, .75}, 0.25
 // puts the second rendered frame exactly ON the contact key and holds it for
-// the remaining two -- the >= 2-frame hold the issue asks for, with a frame
-// to spare.
+// the remaining two.
+//
+// THE ACTIVE WINDOW ALONE CANNOT GUARANTEE THE HOLD. A single-tick window
+// (ranged is 18/1/27) only ever reports fraction 0, so its whole active
+// phase renders the travel's start and contributes zero strike frames; the
+// >= 2-frame contact hold is guaranteed by `STRIKE_HOLD_FRACTION` below, not
+// here.
 export const STRIKE_TRAVEL_FRACTION = 0.25;
 
-// How much of the RECOVERY window the strike -> follow-through release
-// occupies before the follow-through holds and the guard stance's crossfade
-// takes over. A quarter of the shortest authored recovery (12 ticks) is ~3
-// rendered frames of release -- momentum spent, not teleported.
+// How much of the RECOVERY window keeps HOLDING the contact key before the
+// release begins (#576 review). This is the minimum-hold floor: the active
+// window's own hold scales with its tick count, and a 1-tick active window
+// (ranged, 18/1/27) reports fraction 0 for its single rendered frame, so
+// without this band its strike key would show for exactly one frame -- the
+// first recovery frame -- and be gone. Extending the contact into early
+// recovery is where the hold physically fits: recovery is every family's
+// longest phase (12/21/27 ticks authored), so a 0.1 band buys
+// ceil(0.1 * recovery_ticks) rendered frames at 60 fps -- 2 (unarmed, 12),
+// 3 (light melee, 21), 3 (ranged, 27) -- which keeps every authored family
+// at or above the issue's >= 2-frame contact hold even when the active
+// window contributes nothing. Keyed to a fraction of the recovery rather
+// than a wall-clock time so it stays sim-timer-derived and rollback-safe.
+export const STRIKE_HOLD_FRACTION = 0.1;
+
+// How much of the RECOVERY window the strike -> follow-through release then
+// occupies (starting after `STRIKE_HOLD_FRACTION`) before the follow-through
+// holds and the guard stance's crossfade takes over. A quarter of the
+// shortest authored recovery (12 ticks) is ~3 rendered frames of release --
+// momentum spent, not teleported.
 export const RELEASE_FRACTION = 0.25;
 
 /**
@@ -335,7 +363,11 @@ export function strikeClipTime(
     if (phaseFraction === undefined) {
       return SWING_FOLLOW_SECONDS;
     }
-    const release = clamp(phaseFraction / RELEASE_FRACTION, 0, 1);
+    // The contact key keeps holding through the recovery's opening band --
+    // the minimum-hold floor that covers single-tick active windows (see
+    // STRIKE_HOLD_FRACTION) -- and only then releases into the
+    // follow-through.
+    const release = clamp((phaseFraction - STRIKE_HOLD_FRACTION) / RELEASE_FRACTION, 0, 1);
     return SWING_STRIKE_SECONDS + release * (SWING_FOLLOW_SECONDS - SWING_STRIKE_SECONDS);
   }
   // Soccer windup, and the outgoing swing under any later pose: coil while

@@ -347,6 +347,14 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "repeat",
     "parity with POSE_CLIP",
   ),
+  // NOTE: `combat_recovery` deliberately does NOT name the `strike` phase
+  // source, even though its window is part of the strike's arc. Its
+  // hold-then-release segment reaches the screen through the OUTGOING swing
+  // action -- the crossfade keeps sampling the fading `swing` at
+  // `PHASE_BY_ACTION.swing` (`strike`), whose `combat_recovery` branch does
+  // the hold and release -- while this entry fades the guard stance back IN
+  // over it. Wiring this entry to `strike` directly would drive
+  // `guard_stance`'s clip with the sweep as well and double-apply it.
   combat_recovery: stance(
     "guard_stance",
     masks.UPPER_BODY,

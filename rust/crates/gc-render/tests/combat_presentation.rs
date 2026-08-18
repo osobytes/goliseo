@@ -277,6 +277,70 @@ fn the_combat_model_normalises_phase_ticks_into_elapsed_phase_progress() {
     assert_eq!(model.players[2].phase_fraction, 0.0);
 }
 
+/// Driven-sequence coverage for every authored melee-capable family (#576
+/// review): walking each timed phase tick by tick through `combat_model`
+/// reports exactly the `{0, 1/total, ..., (total-1)/total}` sequence the
+/// animator's per-family driven-clip-time specs replay on the TypeScript
+/// side (`animator.spec.ts`'s `FAMILY_TIMINGS`). Guard is deliberately
+/// absent: it authors no `active_ticks` and its pose path never engages the
+/// swing.
+///
+/// The single-tick edge is the reason this test names families at all: a
+/// 1-tick active window (ranged, 18/1/27) can only ever report 0.0, so the
+/// renderer's contact hold cannot come from the active phase there --- that
+/// is what `STRIKE_HOLD_FRACTION`'s recovery-side hold floor exists for.
+#[test]
+fn the_combat_model_reports_tick_quantised_progress_for_every_authored_family() {
+    use gc_data::action_families::{self, ActionFamilyId};
+
+    for family_id in [
+        ActionFamilyId::Unarmed,
+        ActionFamilyId::LightMelee,
+        ActionFamilyId::Ranged,
+    ] {
+        let family = action_families::get(family_id);
+        let mut state = fixture();
+        let mut combat = combat::new_state(&mut state, None);
+        combat.players[1].family_id = Some(family_id);
+
+        let phases = [
+            (CombatActionPhase::Windup, family.windup_ticks),
+            (
+                CombatActionPhase::Active,
+                family
+                    .active_ticks
+                    .expect("every family here authors active_ticks"),
+            ),
+            (CombatActionPhase::Recovery, family.recovery_ticks),
+        ];
+        for (phase, total) in phases {
+            for elapsed in 0..total {
+                combat.players[1].phase = phase;
+                combat.players[1].phase_ticks = total - elapsed;
+                let model = frame::combat_model(&state, &combat);
+                assert_eq!(
+                    model.players[1].phase_fraction,
+                    elapsed as f64 / total as f64,
+                    "{family_id:?} {phase:?}: elapsed {elapsed} of {total}"
+                );
+            }
+        }
+
+        if family.active_ticks == Some(1) {
+            // Stated as its own assertion so the edge cannot silently vanish
+            // if the loop above is refactored: a single-tick active window
+            // reports zero progress on its only rendered tick.
+            combat.players[1].phase = CombatActionPhase::Active;
+            combat.players[1].phase_ticks = 1;
+            let model = frame::combat_model(&state, &combat);
+            assert_eq!(
+                model.players[1].phase_fraction, 0.0,
+                "{family_id:?}: a 1-tick active window only ever reports 0.0"
+            );
+        }
+    }
+}
+
 /// The per-player column at the `frame::build` seam (#576): the fraction the
 /// combat model reports for a slot is the fraction the built frame's
 /// structure-of-arrays carries for it, and a frame without combat carries a
