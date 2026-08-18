@@ -699,15 +699,27 @@ fn outfield_ai_baseline_reproduces_the_frozen_fixture_exactly() {
 /// and an entry in `docs/design/fun_metrics.md`'s drift log. A red baseline is
 /// a FINDING first: investigate what moved before reaching for this.
 ///
-/// Run:
+/// Run — and **splice**, do not redirect. `serialize` emits the module doc
+/// header and the `pub const RECORD` block ONLY; the type definitions
+/// between them live in the target file and are not regenerated, exactly as
+/// `gc_data::outfield_ai_baseline`'s own module doc says. Overwriting the
+/// whole file with this output deletes
+/// `OutfieldAiBaselineStat`/`Identity`/`Stats`/`Record` and does not
+/// compile. The redirect below used to do precisely that, and the `$p`
+/// range also swallowed libtest's own trailing status lines; #572 hit both
+/// while re-freezing and corrected them here.
 ///
 /// ```text
 /// cd rust
 /// cargo test -p gc-sim --test outfield_ai_baseline -- \
 ///     --ignored --nocapture record_outfield_ai_baseline \
-///   | sed -n '/^\/\/! Frozen/,$p' \
-///   > crates/gc-data/src/outfield_ai_baseline.rs
+///   | sed -n '/^\/\/! Frozen/,/^};$/p' \
+///   > /tmp/outfield_ai_baseline.rs
 /// ```
+///
+/// Then replace the target file's `/// The frozen baseline recording.` +
+/// `pub const RECORD … };` block with the one in `/tmp`, leaving everything
+/// above it in place, and re-run this test file to verify.
 #[test]
 #[ignore = "recorder: prints a baseline for a human to capture, never asserts"]
 fn record_outfield_ai_baseline() {

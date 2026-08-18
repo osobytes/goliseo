@@ -436,8 +436,15 @@ mod tests {
         // documented two-step re-record command does not mention this file;
         // a re-record that stops at the JSON leaves `gc-data`'s own unit test
         // red, which is how this line came to be updated here.
+        // #572 moved only the SECOND of these two, and did so on both the
+        // pre- and post-#573 base. The final boundary is full time -- clock
+        // expired, ball dead at the centre spot -- and completing #489's
+        // possession invariant does not reach it, so `expected_final_hash`
+        // holds while the chain that arrives there does not. That asymmetry
+        // is exactly why a sequence digest exists alongside a final hash: a
+        // final-hash-only gate would have called that change inert.
         assert_eq!(f.expected_final_hash, "0e41232666bc8568");
-        assert_eq!(f.expected_sequence_digest, "8e7da14b3908191a");
+        assert_eq!(f.expected_sequence_digest, "fcdaac058c967e68");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
