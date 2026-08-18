@@ -432,20 +432,28 @@ const WALK_RAW: RawClip = {
 // ---------------------------------------------------------------------------
 // Clip 3: RUN
 // ---------------------------------------------------------------------------
-// DUTY FACTOR (#575), the run's half. A run's stance is ~0.27 of the cycle:
-// contact at t = 0.00, mid-stance at 0.08, toe-off at 0.16, then flight until
-// the mirrored contact at 0.30. The old 4-key cycle had no toe-off or flight
-// keys, so the 43 wu of authored foot sweep was spread across half the cycle
-// and the grounded foot moved at ~0.6x body speed -- a visible skate on every
-// runner. Concentrating the same sweep into the real stance window buys the
-// ground back at the CURRENT stride and CURRENT cadence, which is the one
-// lever #574 left (widening the pose has no room -- the contact split is
-// already at the rig's geometric ceiling -- and shortening the stride raises
-// cadence, the exact fast-forward read the retune was told to avoid).
+// DUTY FACTOR (#575), the run's half. The stance is authored at 0.25 of the
+// cycle: contact at t = 0.00, mid-stance at 0.075, toe-off at 0.15, then
+// flight until the mirrored contact at 0.30 -- key times on `mixer.BAKE_FPS`'s
+// 1/120 grid, like the walk's, so the baked tracks hit each key exactly (the
+// issue's ~0.27 sketch snapped to 0.25 for the grid; the shorter window only
+// tightens the sweep). At duty 0.25 and RUN_STRIDE 185 a planted foot must
+// cover 46.25 wu; the grounded reach below is ~41.6 wu, a ~10% skate. The old
+// 4-key cycle had no toe-off or flight keys, so the same reach was spread
+// across half the cycle and the grounded foot moved at ~0.6x body speed -- a
+// visible skate on every runner. Concentrating the sweep into the real stance
+// window buys the ground back at the CURRENT stride and CURRENT cadence,
+// which is the one lever #574 left (widening the pose has no room -- the
+// contact split is already at the rig's geometric ceiling -- and shortening
+// the stride raises cadence, the exact fast-forward read the retune was told
+// to avoid).
 //
-// The four added moments ride on sparse keys (#580): legs and root only, so
-// the arms and torso keep their two-keys-per-cycle schedule from the contact
-// keys instead of being re-keyed at every leg time.
+// The added moments ride on sparse keys (#580), so nothing had to be re-keyed
+// at every leg time: the mid-stance and flight keys are legs and root only,
+// and the toe-off keys -- which sit at t = 0.15/0.45, exactly where the old
+// cycle's dense `passing` keys sat -- also carry that key's original arm and
+// torso pose, so the arm swing and torso bob keep the pre-#575 four-key
+// timeline value for value.
 
 // Each pose comments the RIGHT leg's fraction `p` through its own cycle; the
 // left leg rides along at p + 0.5. As with the walk, the stance poses' toe z
@@ -472,11 +480,24 @@ function runMidStanceLegs(): Record<string, EulerTriple> {
   return step(-16, 44, -12, -6, -38, 95, -12, -10);
 }
 
-function runToeOffLegs(): Record<string, EulerTriple> {
+function runToeOff(): Record<string, EulerTriple> {
   // R at p = 0.25, extended back and leaving the ground (toe z -18.5, the
   // grounded backward reach); L at p = 0.75, thigh at peak flexion, shin
   // unfolding toward the landing.
-  return step(40, 14, -30, -30, -45, 60, 0, -14);
+  //
+  // NOT legs-only, unlike the other sparse poses: this key sits where the old
+  // cycle's dense `passing` key sat (t = 0.15), so it also restates that
+  // key's arm and torso pose. Dropping them would halve the arm-swing key
+  // density and straight-line the swing through the mid-cycle -- upper_arm.L
+  // would pass -6 degrees where the authored passing pose held -14.
+  return {
+    ...step(40, 14, -30, -30, -45, 60, 0, -14, {
+      hips: [0, 0, 0],
+      spine: [11, 0, 0],
+      chest: [4, 0, 0],
+    }),
+    ...arms(-14, 82, 6, 80),
+  };
 }
 
 function runFlightLegs(): Record<string, EulerTriple> {
@@ -525,7 +546,7 @@ const RUN_RAW: RawClip = {
     {
       t: 0.15,
       sparse: true,
-      rot: runToeOffLegs(),
+      rot: runToeOff(),
       move: { root: [0, 0.03, 0] },
       ease: { rot: "linear", move: "decel" },
     },
@@ -552,7 +573,7 @@ const RUN_RAW: RawClip = {
     {
       t: 0.45,
       sparse: true,
-      rot: mirror(runToeOffLegs()),
+      rot: mirror(runToeOff()),
       move: { root: [0, 0.03, 0] },
       ease: { rot: "linear", move: "decel" },
     },

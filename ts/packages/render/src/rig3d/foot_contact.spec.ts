@@ -252,14 +252,20 @@ describe("rig3d locomotion: what the feet do against the ground", () => {
     // lengthening them is a roster decision, not a render fix -- see
     // `docs/design/prototype_theme_roster.md`.
     //
-    // Asserted as a RANGE so that closing the gap -- longer legs, a shorter
-    // walk stride, or a duty retune -- fails this test and forces this comment
-    // to be rewritten, rather than passing quietly.
+    // Asserted as a RANGE, and BOTH bounds are load-bearing. The upper bound
+    // fails if the gap ever closes -- longer legs, a shorter walk stride, a
+    // duty retune -- and forces this comment to be rewritten rather than
+    // passing quietly. The lower bound fails if the duty factor regresses:
+    // the pre-#575 4-key cycle measures 0.6564 on this exact path, which a
+    // first draft of this pin at 0.6 quietly admitted -- a band that lets the
+    // old gap back in pins nothing -- so the bound sits above that measured
+    // value by construction. Today's authored cycle measures ~0.713, between
+    // the two.
     const t = track(poseTable.WALK_SPEED);
     const window = stance(t);
     const rates = window.map((i) => t.sweep[i] ?? 0);
     const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
-    expect(mean, "known walk deficit: see this test's comment").toBeGreaterThan(0.6);
-    expect(mean, "known walk deficit: see this test's comment").toBeLessThan(0.8);
+    expect(mean, "walk duty regressed toward the pre-#575 4-key cycle").toBeGreaterThan(0.68);
+    expect(mean, "the walk deficit closed: rewrite this test's comment").toBeLessThan(0.78);
   });
 });
