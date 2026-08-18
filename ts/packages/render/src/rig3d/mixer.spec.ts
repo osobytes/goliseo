@@ -132,6 +132,55 @@ describe("rig3d/mixer.MixerLayer", () => {
     }
   });
 
+  // #580: three.js tracks are per-bone already, and `bake` reads
+  // `clips.sample`'s output rather than the keyframes, so a per-bone key
+  // schedule should bake with no code change here. "Should by construction"
+  // is still pinned, on a clip where one bone carries keys another does not.
+  it("reproduces clips.sample on a per-bone key schedule, within the same resampling error", () => {
+    const clip = clips.prepare({
+      name: "test_sparse_bake",
+      loop: true,
+      root_motion: false,
+      duration: 0.8,
+      keys: [
+        {
+          t: 0,
+          rot: { chest: [3, 0, 0], "thigh.R": [-26, 0, 0] },
+          move: { root: [0, 0, 0] },
+          ease: { rot: "linear", move: "decel" },
+        },
+        { t: 0.2, sparse: true, rot: { "thigh.R": [6, 0, 0] }, ease: "linear" },
+        {
+          t: 0.4,
+          sparse: true,
+          rot: { "thigh.R": [22, 0, 0] },
+          move: { root: [0, 0.05, 0] },
+          ease: "accel",
+        },
+        { t: 0.8, rot: { chest: [3, 0, 0], "thigh.R": [-26, 0, 0] }, move: { root: [0, 0, 0] } },
+      ],
+    });
+    const layer = new MixerLayer([{ id: "c", clip }]);
+    let worstRot = 0;
+    let worstMove = 0;
+    for (let i = 0; i < 40; i += 1) {
+      const t = (i / 40) * clip.duration;
+      layer.silence();
+      layer.set("c", t, 1);
+      const mixed = layer.evaluate();
+      const sampled = clips.sample(clip, t);
+      worstRot = Math.max(worstRot, quatDelta(mixed.rot, sampled.rot));
+      for (let c = 0; c < 3; c += 1) {
+        worstMove = Math.max(
+          worstMove,
+          Math.abs((mixed.move["root"]?.[c] ?? 0) - (sampled.move["root"]?.[c] ?? 0)),
+        );
+      }
+    }
+    expect(worstRot).toBeLessThan(1.5e-3);
+    expect(worstMove).toBeLessThan(1e-3);
+  });
+
   it("blends its own actions the way clips.layer would, when their weights sum to 1", () => {
     const layer = new MixerLayer([
       { id: "idle", clip: clips.IDLE },

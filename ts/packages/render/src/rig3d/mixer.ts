@@ -53,6 +53,14 @@
 // like, the baked tracks cannot disagree with it by construction, and the
 // output is the shape an imported asset would arrive in anyway (#424).
 //
+// Per-bone key schedules (#580) need nothing extra here, by the same
+// construction rather than by luck: `bake` never reads a clip's keyframes, it
+// reads `clips.sample`'s output on a fixed grid and writes each bone's value
+// at every grid point into that bone's own three.js track. Whatever
+// bone-local timing `sample` resolves is captured verbatim. `mixer.spec.ts`
+// pins the parity on a sparse-keyed clip anyway, because "falls out by
+// construction" is exactly the kind of claim that should also be a test.
+//
 // ---------------------------------------------------------------------------
 // WHY MASKING IS STILL `rig3d/masks.ts`
 // ---------------------------------------------------------------------------

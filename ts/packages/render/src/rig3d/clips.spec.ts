@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quat } from "@gc/core";
+import { quat, type Quat } from "@gc/core";
 import * as clips from "./clips.ts";
 import * as masks from "./masks.ts";
 
@@ -255,5 +255,330 @@ describe("rig3d clips", () => {
         "socket must accompany its hand",
       ).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-bone key schedules (#580): a keyframe marked `sparse: true` speaks only
+// for the bones it names, so each bone interpolates between ITS OWN
+// neighbouring keys and keyframe density becomes a per-bone choice.
+// ---------------------------------------------------------------------------
+
+const DEG = Math.PI / 180;
+
+// Asserts a sampled quaternion against an expected one, component-wise.
+function expectQuat(got: Quat | undefined, want: Quat, label: string): void {
+  expect(got, label).toBeDefined();
+  if (!got) return;
+  for (let i = 0; i < 4; i++) {
+    expect(comp(got, i), `${label} [${i}]`).toBeCloseTo(comp(want, i), 9);
+  }
+}
+
+// The pre-#580 sampler, verbatim: one segment search over the CLIP's keys,
+// every bone slerped across that same segment, absent bones read as rest.
+// Kept here as the reference the new per-track sampler must reproduce bit for
+// bit on all-dense clips -- which is every clip the module ships.
+function legacySample(
+  clip: clips.Clip,
+  time: number,
+): { rot: Record<string, Quat>; move: Record<string, clips.EulerTriple> } {
+  const ease = (u: number, kind: clips.Easing): number => {
+    switch (kind) {
+      case "linear":
+        return u;
+      case "accel":
+        return u * u;
+      case "decel":
+        return u * (2 - u);
+      case "smooth":
+        return u * u * (3 - 2 * u);
+    }
+  };
+  const IDENTITY: Quat = quat.identity();
+  const ZERO: clips.EulerTriple = [0, 0, 0];
+  const t = time % clip.duration;
+  const keys = clip.keys;
+  let i = 0;
+  while (i < keys.length - 2) {
+    const next = keys[i + 1];
+    if (!next || next.t > t) {
+      break;
+    }
+    i += 1;
+  }
+  const a = keys[i];
+  const b = keys[i + 1];
+  if (!a || !b) {
+    throw new Error(`${clip.name}: clip has no keyframes to sample`);
+  }
+  const span = b.t - a.t;
+  const u = span > 1e-6 ? (t - a.t) / span : 0;
+  const uRot = ease(u, a.easeRot);
+  const rot: Record<string, Quat> = {};
+  for (const name of clip.rotBones) {
+    rot[name] = quat.slerp(a.q[name] ?? IDENTITY, b.q[name] ?? IDENTITY, uRot);
+  }
+  const uMove = ease(u, a.easeMove);
+  const move: Record<string, clips.EulerTriple> = {};
+  for (const name of clip.moveBones) {
+    const av = a.move[name] ?? ZERO;
+    const bv = b.move[name] ?? ZERO;
+    move[name] = [
+      av[0] + (bv[0] - av[0]) * uMove,
+      av[1] + (bv[1] - av[1]) * uMove,
+      av[2] + (bv[2] - av[2]) * uMove,
+    ];
+  }
+  return { rot, move };
+}
+
+describe("rig3d clips per-bone key schedules (#580)", () => {
+  // THE BACKWARDS-COMPATIBILITY CLAIM, verified at full strength: on a clip
+  // with only dense keys, every bone's track carries the clip's own key times,
+  // so the per-track sampler runs the identical arithmetic in the identical
+  // order and the poses are BIT-identical, not merely close. `toBe` is
+  // Object.is, so even a stray -0 would fail here.
+  it("reproduces the pre-#580 sampler bit for bit on every shipped clip", () => {
+    const all = [
+      clips.IDLE,
+      clips.WALK,
+      clips.RUN,
+      clips.GUARD_STANCE,
+      clips.CHARGE,
+      clips.KEEPER_GATHER,
+      clips.KEEPER_SLING,
+      clips.SWING,
+    ];
+    for (const clip of all) {
+      for (let k = 0; k <= 97; k += 1) {
+        // 1.37 also exercises the wrap, and 97 lands between keys, on no
+        // authored key spacing.
+        const time = (k / 97) * clip.duration * 1.37;
+        const ours = clips.sample(clip, time);
+        const legacy = legacySample(clip, time);
+        expect(Object.keys(ours.rot).sort()).toEqual(Object.keys(legacy.rot).sort());
+        expect(Object.keys(ours.move).sort()).toEqual(Object.keys(legacy.move).sort());
+        for (const [bone, q] of Object.entries(legacy.rot)) {
+          const got = ours.rot[bone];
+          expect(got, `${clip.name}/${bone} at ${time}`).toBeDefined();
+          if (!got) continue;
+          for (let i = 0; i < 4; i++) {
+            expect(comp(got, i), `${clip.name}/${bone}[${i}] at ${time}`).toBe(comp(q, i));
+          }
+        }
+        for (const [bone, v] of Object.entries(legacy.move)) {
+          const got = ours.move[bone];
+          expect(got, `${clip.name}/${bone} at ${time}`).toBeDefined();
+          if (!got) continue;
+          for (let i = 0; i < 3; i++) {
+            expect(got[i], `${clip.name}/${bone}[${i}] at ${time}`).toBe(v[i]);
+          }
+        }
+      }
+    }
+  });
+
+  // THE ACCEPTANCE CASE: one bone keyed at a time another bone is not, with
+  // correct independent interpolation on both channels.
+  it("interpolates each bone between its own keys: a sparse key bends only the bones it names", () => {
+    const clip = clips.prepare({
+      name: "test_two_schedules",
+      loop: false,
+      root_motion: false,
+      fallback: "idle",
+      duration: 1,
+      keys: [
+        {
+          t: 0,
+          rot: { coarse: [0, 0, 0], fine: [0, 0, 0] },
+          move: { root: [0, 0, 0] },
+          ease: "linear",
+        },
+        { t: 0.25, sparse: true, rot: { fine: [40, 0, 0] }, ease: "linear" },
+        { t: 1, rot: { coarse: [80, 0, 0], fine: [0, 0, 0] }, move: { root: [0, 0.2, 0] } },
+      ],
+    });
+
+    // `fine` hits its own key exactly, and interpolates between ITS
+    // neighbours on either side of it.
+    expectQuat(clips.sample(clip, 0.25).rot["fine"], quat.fromEuler(40 * DEG, 0, 0), "fine@0.25");
+    expectQuat(clips.sample(clip, 0.125).rot["fine"], quat.fromEuler(20 * DEG, 0, 0), "fine@0.125");
+    expectQuat(clips.sample(clip, 0.625).rot["fine"], quat.fromEuler(20 * DEG, 0, 0), "fine@0.625");
+
+    // `coarse` has no key at 0.25: it is 25% along its own single segment
+    // there, NOT at rest -- the pre-#580 sampler would have read the absent
+    // bone as IDENTITY and parked it at rest at that time.
+    expectQuat(
+      clips.sample(clip, 0.25).rot["coarse"],
+      quat.fromEuler(20 * DEG, 0, 0),
+      "coarse@0.25",
+    );
+    expectQuat(clips.sample(clip, 0.5).rot["coarse"], quat.fromEuler(40 * DEG, 0, 0), "coarse@0.5");
+
+    // The move channel is independent the same way: `root` has no entry on
+    // the sparse key, so it runs one linear segment from 0 to 0.2.
+    expect(clips.sample(clip, 0.25).move["root"]?.[1], "root@0.25").toBeCloseTo(0.05, 12);
+    expect(clips.sample(clip, 0.75).move["root"]?.[1], "root@0.75").toBeCloseTo(0.15, 12);
+  });
+
+  it("scopes a sparse key's easing to the bones it names -- the segment is bone-local", () => {
+    const clip = clips.prepare({
+      name: "test_bone_local_ease",
+      loop: false,
+      root_motion: false,
+      fallback: "idle",
+      duration: 1,
+      keys: [
+        { t: 0, rot: { coarse: [0, 0, 0], fine: [40, 0, 0] }, ease: "linear" },
+        { t: 0.5, sparse: true, rot: { fine: [0, 0, 0] }, ease: "accel" },
+        { t: 1, rot: { coarse: [80, 0, 0], fine: [40, 0, 0] } },
+      ],
+    });
+    // `fine`'s segment [0.5, 1] runs the sparse key's `accel`: at u = 0.5 the
+    // eased progress is 0.25, so it has covered 10 of its 40 degrees.
+    expectQuat(clips.sample(clip, 0.75).rot["fine"], quat.fromEuler(10 * DEG, 0, 0), "fine@0.75");
+    // `coarse`'s one segment [0, 1] still runs the dense key's `linear`
+    // straight through the sparse key's time: 75% along at t = 0.75.
+    expectQuat(
+      clips.sample(clip, 0.75).rot["coarse"],
+      quat.fromEuler(60 * DEG, 0, 0),
+      "coarse@0.75",
+    );
+  });
+
+  // #575's shape: the leg chain carries 5 keys per cycle while the torso
+  // keeps 2, without the torso being re-keyed at any leg time. NOT the
+  // shipped walk -- authoring that clip is #575's job -- just the proof the
+  // format expresses it.
+  it("expresses #575's leg densification without re-keying the torso", () => {
+    const clip = clips.prepare({
+      name: "test_leg_densify",
+      loop: true,
+      root_motion: false,
+      duration: 0.8,
+      keys: [
+        { t: 0, rot: { chest: [3, 0, 0], "thigh.R": [-26, 0, 0] }, move: {}, ease: "linear" },
+        { t: 0.2, sparse: true, rot: { "thigh.R": [6, 0, 0] }, ease: "linear" },
+        { t: 0.4, sparse: true, rot: { "thigh.R": [22, 0, 0] }, ease: "linear" },
+        { t: 0.6, sparse: true, rot: { "thigh.R": [-10, 0, 0] }, ease: "linear" },
+        { t: 0.8, rot: { chest: [3, 0, 0], "thigh.R": [-26, 0, 0] }, move: {} },
+      ],
+    });
+    // The leg hits every one of its five keys...
+    expectQuat(clips.sample(clip, 0.2).rot["thigh.R"], quat.fromEuler(6 * DEG, 0, 0), "thigh@0.2");
+    expectQuat(clips.sample(clip, 0.4).rot["thigh.R"], quat.fromEuler(22 * DEG, 0, 0), "thigh@0.4");
+    expectQuat(
+      clips.sample(clip, 0.6).rot["thigh.R"],
+      quat.fromEuler(-10 * DEG, 0, 0),
+      "thigh@0.6",
+    );
+    // ...while the torso holds its own two-key schedule, unmoved at each leg
+    // key time instead of dipping toward rest there.
+    for (const t of [0, 0.2, 0.4, 0.6, 0.79]) {
+      expectQuat(clips.sample(clip, t).rot["chest"], quat.fromEuler(3 * DEG, 0, 0), `chest@${t}`);
+    }
+  });
+
+  // #576's shape: a follow-through refinement key on the striking arm alone,
+  // after the hit lands. Adding it must leave every OTHER bone's motion
+  // bit-identical -- that is what "without re-keying uninvolved bones" means.
+  it("expresses #576's arm follow-through: the extra key leaves other bones bit-identical", () => {
+    const k0: clips.RawKeyframe = {
+      t: 0,
+      rot: { spine: [-7, 0, 0], "upper_arm.R": [-125, 0, 0] },
+      ease: "accel",
+    };
+    const k1: clips.RawKeyframe = {
+      t: 0.5,
+      rot: { spine: [15, 0, 0], "upper_arm.R": [-45, 0, 0] },
+      ease: "decel",
+    };
+    const k2: clips.RawKeyframe = { t: 1.4, rot: { spine: [0, 0, 0], "upper_arm.R": [-18, 0, 0] } };
+    const followThrough: clips.RawKeyframe = {
+      // 190ms after contact, on the striking limb alone.
+      t: 0.69,
+      sparse: true,
+      rot: { "upper_arm.R": [-10, 0, 0] },
+      ease: "decel",
+    };
+    const shared = { loop: false, root_motion: false, fallback: "idle", duration: 1.4 } as const;
+    const base = clips.prepare({ ...shared, name: "test_swing_base", keys: [k0, k1, k2] });
+    const refined = clips.prepare({
+      ...shared,
+      name: "test_swing_refined",
+      keys: [k0, k1, followThrough, k2],
+    });
+
+    // The arm passes through its new refinement key exactly...
+    expectQuat(
+      clips.sample(refined, 0.69).rot["upper_arm.R"],
+      quat.fromEuler(-10 * DEG, 0, 0),
+      "arm@0.69",
+    );
+    // ...and really moved: the base clip has it elsewhere at that time.
+    const baseArm = clips.sample(base, 0.69).rot["upper_arm.R"];
+    const refinedArm = clips.sample(refined, 0.69).rot["upper_arm.R"];
+    expect(
+      baseArm && refinedArm && Math.abs(comp(baseArm, 0) - comp(refinedArm, 0)),
+    ).toBeGreaterThan(0.01);
+
+    // Every bone the sparse key does not name is bit-identical across the two
+    // clips at every sampled time.
+    for (let k = 0; k <= 55; k += 1) {
+      const t = (k / 55) * 1.4;
+      const a = clips.sample(base, t).rot["spine"];
+      const b = clips.sample(refined, t).rot["spine"];
+      expect(a, `spine@${t}`).toBeDefined();
+      if (!a || !b) continue;
+      for (let i = 0; i < 4; i++) {
+        expect(comp(b, i), `spine[${i}]@${t}`).toBe(comp(a, i));
+      }
+    }
+  });
+
+  it("rejects a sparse first or last key and out-of-order keys, loudly", () => {
+    const dense = (t: number): clips.RawKeyframe => ({ t, rot: { a: [0, 0, 0] } });
+    expect(() =>
+      clips.prepare({
+        name: "bad_first",
+        loop: true,
+        root_motion: false,
+        duration: 1,
+        keys: [{ t: 0, sparse: true, rot: { a: [0, 0, 0] } }, dense(1)],
+      }),
+    ).toThrow(/dense/);
+    expect(() =>
+      clips.prepare({
+        name: "bad_last",
+        loop: true,
+        root_motion: false,
+        duration: 1,
+        keys: [dense(0), { t: 1, sparse: true, rot: { a: [0, 0, 0] } }],
+      }),
+    ).toThrow(/dense/);
+    expect(() =>
+      clips.prepare({
+        name: "bad_order",
+        loop: true,
+        root_motion: false,
+        duration: 1,
+        keys: [dense(0), dense(0.6), { t: 0.4, sparse: true, rot: { a: [10, 0, 0] } }, dense(1)],
+      }),
+    ).toThrow(/increasing/);
+  });
+
+  it("rejects a clip with fewer than two keys", () => {
+    // The only shape that reaches this guard: with a nonzero duration a lone
+    // key at t = 0 fails "last key must be at the duration" first.
+    expect(() =>
+      clips.prepare({
+        name: "one_key",
+        loop: true,
+        root_motion: false,
+        duration: 0,
+        keys: [{ t: 0, rot: { a: [0, 0, 0] } }],
+      }),
+    ).toThrow(/two keys/);
   });
 });

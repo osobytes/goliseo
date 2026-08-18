@@ -4,6 +4,17 @@
 // pose: `rot` gives bone rotations in degrees, `move` gives additive
 // translations. A bone a clip never mentions stays at its rest transform.
 //
+// Key schedules are PER BONE, not per clip (#580). A keyframe is DENSE by
+// default: it speaks for every bone the clip touches, and a bone it does not
+// name heads to rest at that time -- which is what every key meant before
+// #580, so an all-dense clip behaves exactly as it always did. A keyframe
+// marked `sparse: true` speaks ONLY for the bones it names: every other bone
+// interpolates between its own neighbouring keys as if the sparse key did not
+// exist. That is what lets one limb carry a refinement key -- a follow-through
+// on the striking arm, a toe-off on the legs -- without re-keying every other
+// bone at that time. `prepare` flattens the authored keys into one key track
+// per bone, and `sample` walks each bone's own track.
+//
 // Sign conventions (the warrior faces +Z):
 //   rot.x  The sign depends on which way the bone POINTS, which is the single
 //          easiest thing to get wrong here:
@@ -24,9 +35,11 @@
 // Channels are interpolated independently, and each SEGMENT chooses its own
 // easing via the keyframe's `ease` (defaulting to `smooth`, the smoothstep
 // every segment used to get unconditionally -- see `ease` for why that default
-// was the whole problem when it was the only option). Euler angles are
-// interpolated component-wise: fine here because no joint passes through a
-// gimbal-locking orientation.
+// was the whole problem when it was the only option). Since #580 a segment is
+// a BONE-LOCAL concept: it runs between one bone's own neighbouring keys, and
+// the `ease` on a sparse key governs only the named bones' segments starting
+// there. Euler angles are interpolated component-wise: fine here because no
+// joint passes through a gimbal-locking orientation.
 
 import { quat, type Quat } from "@gc/core";
 import type { Pose } from "./skeleton.ts";
@@ -63,16 +76,29 @@ export type Easing = "smooth" | "linear" | "accel" | "decel";
  */
 export type SegmentEasing = Easing | { readonly rot?: Easing; readonly move?: Easing };
 
-interface RawKeyframe {
+/** One authored keyframe. Exported for specs; clips are authored in this file. */
+export interface RawKeyframe {
   readonly t: number;
   readonly rot?: Readonly<Record<string, EulerTriple>>;
   readonly move?: Readonly<Record<string, EulerTriple>>;
   /**
    * Easing of the segment that STARTS at this key (so the last key's is never
    * read). Omitted means `smooth`, which is what every segment did
-   * unconditionally before #574.
+   * unconditionally before #574. On a sparse key this governs only the named
+   * bones' segments -- the segment is bone-local (#580).
    */
   readonly ease?: SegmentEasing;
+  /**
+   * A sparse key speaks ONLY for the bones it names: every other bone
+   * interpolates between its own neighbouring keys as if this key did not
+   * exist. Omitted, the key is DENSE and speaks for every bone the clip
+   * touches -- a bone it does not name heads to rest at this time, exactly as
+   * every key behaved before #580. Sparse keys are what make keyframe density
+   * a per-BONE choice: a refinement key on one limb no longer forces every
+   * other bone to be re-keyed at its time. The first and last keys of a clip
+   * must be dense, so every bone's own track spans the whole clip.
+   */
+  readonly sparse?: true;
 }
 
 // NO `stride` FIELD, deliberately (#574). The walk and run clips used to carry
@@ -82,7 +108,8 @@ interface RawKeyframe {
 // step cover" was both dead and wrong. The stride belongs to the gait, not to
 // the clip: `view_state.ts` derives phase from distance actually travelled,
 // and `pose_table.strideFor` is the single authority.
-interface RawClip {
+/** One authored clip. Exported for specs; clips are authored in this file. */
+export interface RawClip {
   readonly name: string;
   readonly loop: boolean;
   readonly root_motion: false;
@@ -99,6 +126,24 @@ interface PreparedKeyframe {
   readonly easeRot: Easing;
   /** Easing of the translation channels over the segment starting here. */
   readonly easeMove: Easing;
+  /** Whether this key spoke only for the bones it names. See `RawKeyframe`. */
+  readonly sparse: boolean;
+}
+
+// One key on one bone's own rotation track: the flattened form `sample` walks.
+interface RotTrackKey {
+  readonly t: number;
+  readonly q: Quat;
+  /** Easing of THIS BONE's segment starting here (the last key's is never read). */
+  readonly ease: Easing;
+}
+
+// One key on one bone's own translation track.
+interface MoveTrackKey {
+  readonly t: number;
+  readonly v: EulerTriple;
+  /** Easing of THIS BONE's segment starting here (the last key's is never read). */
+  readonly ease: Easing;
 }
 
 /** A clip ready to sample: keyframes baked to quaternions, channels indexed. */
@@ -107,10 +152,31 @@ export interface Clip {
   readonly loop: boolean;
   readonly duration: number;
   readonly fallback?: string;
+  /**
+   * The prepared keyframes, whole. `sample` never reads these -- it walks
+   * `rotTracks`/`moveTracks` (#580) -- but the characterization specs do: the
+   * frozen pre-#580 sampler that pins bit-identical backwards compatibility
+   * needs the clip-wide keyframe view, and the crouch-fold sweep audits keys
+   * as authored. Drop this field and those specs lose their subject.
+   */
   readonly keys: readonly PreparedKeyframe[];
   readonly rotBones: ReadonlySet<string>;
   readonly moveBones: ReadonlySet<string>;
+  /**
+   * Per-bone rotation key schedules (#580): for each bone in `rotBones`, its
+   * own keys in time order. Dense keyframes contribute an entry for every
+   * bone (rest where unnamed); sparse keyframes only for the bones they name.
+   */
+  readonly rotTracks: Readonly<Record<string, readonly RotTrackKey[]>>;
+  /** Per-bone translation key schedules; same construction as `rotTracks`. */
+  readonly moveTracks: Readonly<Record<string, readonly MoveTrackKey[]>>;
 }
+
+// Hoisted above the module-level `prepare` calls below: `prepare` reads both
+// when it fills a dense key's unnamed bones, so declaring them after the
+// exports would be a temporal-dead-zone crash at module load.
+const ZERO: EulerTriple = [0, 0, 0];
+const IDENTITY: Quat = quat.identity();
 
 // Shallow-merges `overrides` over `base` into a fresh object, so each keyframe
 // can state only what differs from the warrior's guard stance.
@@ -670,12 +736,17 @@ const KEEPER_SLING_RAW: RawClip = {
   ],
 };
 
-// Precomputes the set of bones a clip touches, so the sampler knows which
-// channels to emit without re-scanning every keyframe each frame. Also bakes
-// authored Euler into quaternions once: everything downstream -- sampling,
-// layering, crossfading -- works on quaternions; humans keep editing degrees
-// above.
-function prepare(raw: RawClip): Clip {
+/**
+ * Precomputes the set of bones a clip touches, bakes authored Euler into
+ * quaternions once (everything downstream -- sampling, layering, crossfading
+ * -- works on quaternions; humans keep editing degrees above), and flattens
+ * the keyframes into one key track per bone so `sample` can interpolate each
+ * bone between ITS OWN neighbouring keys (#580).
+ *
+ * Exported for specs, which need to build clips with per-bone schedules
+ * without shipping them; production clips are authored in this file.
+ */
+export function prepare(raw: RawClip): Clip {
   const firstKey = raw.keys[0];
   if (!firstKey || firstKey.t !== 0) {
     throw new Error(`${raw.name}: first key must be at t = 0`);
@@ -688,6 +759,26 @@ function prepare(raw: RawClip): Clip {
   const lastKey = raw.keys[raw.keys.length - 1];
   if (!lastKey || lastKey.t !== raw.duration) {
     throw new Error(`${raw.name}: last key must be at the duration`);
+  }
+  if (raw.keys.length < 2) {
+    throw new Error(`${raw.name}: a clip needs at least two keys`);
+  }
+  // Sparse keys refine an existing schedule; the schedule's ENDS have to be
+  // dense so every bone's own track spans the whole clip -- otherwise a bone
+  // named only in sparse keys would have no neighbour at the edges, and a
+  // looping clip would pop at the wrap.
+  if (firstKey.sparse || lastKey.sparse) {
+    throw new Error(`${raw.name}: first and last keys must be dense (not sparse)`);
+  }
+  // Sorted keys were always assumed; now they are load-bearing (a sparse key
+  // slotted at the wrong time would corrupt every named bone's track), so the
+  // assumption is checked. Programmer error, so it fails loud.
+  for (let i = 1; i < raw.keys.length; i += 1) {
+    const prev = raw.keys[i - 1];
+    const cur = raw.keys[i];
+    if (prev && cur && cur.t <= prev.t) {
+      throw new Error(`${raw.name}: keys must be in strictly increasing time order`);
+    }
   }
 
   const rotBones = new Set<string>();
@@ -708,10 +799,40 @@ function prepare(raw: RawClip): Clip {
     const spec = key.ease ?? "smooth";
     const easeRot = typeof spec === "string" ? spec : (spec.rot ?? "smooth");
     const easeMove = typeof spec === "string" ? spec : (spec.move ?? "smooth");
-    return { t: key.t, q, move: key.move ?? {}, easeRot, easeMove };
+    return { t: key.t, q, move: key.move ?? {}, easeRot, easeMove, sparse: key.sparse === true };
   });
 
-  return { ...raw, keys, rotBones, moveBones };
+  // Flatten into per-bone tracks. A dense key contributes an entry for EVERY
+  // bone the clip touches -- rest where it names none, which is exactly what
+  // `sample` used to synthesise at sampling time, so an all-dense clip's
+  // tracks reproduce the old behaviour value for value. A sparse key
+  // contributes entries only for the bones it names.
+  const rotTracks: Record<string, readonly RotTrackKey[]> = {};
+  for (const bone of rotBones) {
+    const track: RotTrackKey[] = [];
+    for (const key of keys) {
+      const q = key.q[bone];
+      if (key.sparse && q === undefined) {
+        continue;
+      }
+      track.push({ t: key.t, q: q ?? IDENTITY, ease: key.easeRot });
+    }
+    rotTracks[bone] = track;
+  }
+  const moveTracks: Record<string, readonly MoveTrackKey[]> = {};
+  for (const bone of moveBones) {
+    const track: MoveTrackKey[] = [];
+    for (const key of keys) {
+      const v = key.move[bone];
+      if (key.sparse && v === undefined) {
+        continue;
+      }
+      track.push({ t: key.t, v: v ?? ZERO, ease: key.easeMove });
+    }
+    moveTracks[bone] = track;
+  }
+
+  return { ...raw, keys, rotBones, moveBones, rotTracks, moveTracks };
 }
 
 export const IDLE: Clip = prepare(IDLE_RAW);
@@ -723,9 +844,6 @@ export const GUARD_STANCE: Clip = prepare(GUARD_STANCE_RAW);
 export const CHARGE: Clip = prepare(CHARGE_RAW);
 export const KEEPER_GATHER: Clip = prepare(KEEPER_GATHER_RAW);
 export const KEEPER_SLING: Clip = prepare(KEEPER_SLING_RAW);
-
-const ZERO: EulerTriple = [0, 0, 0];
-const IDENTITY: Quat = quat.identity();
 
 function lerp3(a: EulerTriple, b: EulerTriple, u: number): EulerTriple {
   return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
@@ -829,37 +947,60 @@ function ease(u: number, kind: Easing): number {
   }
 }
 
-// Samples a clip at `time`, wrapping so every clip loops seamlessly.
-export function sample(clip: Clip, time: number): Pose {
-  const t = time % clip.duration;
-  const keys = clip.keys;
-
+// Finds the segment of one bone's track containing `t`: the pair of
+// neighbouring keys around it and the normalised (un-eased) progress between
+// them. The scan is the exact shape the old whole-clip sampler used, applied
+// per track: the last segment absorbs any `t` at or past its start, so a
+// sample exactly on the final key lands at u = 1 of the segment before it.
+function segmentAt<K extends { readonly t: number }>(
+  track: readonly K[],
+  t: number,
+): readonly [K, K, number] | undefined {
   let i = 0;
-  while (i < keys.length - 2) {
-    const next = keys[i + 1];
+  while (i < track.length - 2) {
+    const next = track[i + 1];
     if (!next || next.t > t) {
       break;
     }
     i += 1;
   }
-  const a = keys[i];
-  const b = keys[i + 1];
+  const a = track[i];
+  const b = track[i + 1];
   if (!a || !b) {
-    throw new Error(`${clip.name}: clip has no keyframes to sample`);
+    return undefined;
   }
-
   const span = b.t - a.t;
   const u = span > 1e-6 ? (t - a.t) / span : 0;
+  return [a, b, u];
+}
 
-  const uRot = ease(u, a.easeRot);
+// Samples a clip at `time`, wrapping so every clip loops seamlessly.
+//
+// Each bone interpolates between ITS OWN neighbouring keys (#580): the
+// segment -- and therefore the easing -- is bone-local, so a sparse
+// refinement key on one limb bends that limb's timing and nobody else's.
+// For an all-dense clip every track shares the clip's key times and this
+// reproduces the old whole-clip sampler value for value.
+export function sample(clip: Clip, time: number): Pose {
+  const t = time % clip.duration;
+
   const rot: Record<string, Quat> = {};
   for (const name of clip.rotBones) {
-    rot[name] = quat.slerp(a.q[name] ?? IDENTITY, b.q[name] ?? IDENTITY, uRot);
+    const seg = segmentAt(clip.rotTracks[name] ?? [], t);
+    if (!seg) {
+      throw new Error(`${clip.name}: ${name} has no keyframes to sample`);
+    }
+    const [a, b, u] = seg;
+    rot[name] = quat.slerp(a.q, b.q, ease(u, a.ease));
   }
-  const uMove = ease(u, a.easeMove);
   const move: Record<string, EulerTriple> = {};
   for (const name of clip.moveBones) {
-    move[name] = lerp3(a.move[name] ?? ZERO, b.move[name] ?? ZERO, uMove);
+    const seg = segmentAt(clip.moveTracks[name] ?? [], t);
+    if (!seg) {
+      throw new Error(`${clip.name}: ${name} has no keyframes to sample`);
+    }
+    const [a, b, u] = seg;
+    move[name] = lerp3(a.v, b.v, ease(u, a.ease));
   }
   return { rot, move };
 }
