@@ -61,8 +61,17 @@ import { loadSimHost } from "./index.ts";
 // `0e41232666bc8568`, sequence `fcdaac058c967e68`; native, via
 // `cargo test -p gc-sim --test determinism_evidence`, the same two. They
 // AGREE, so this is not #517.
+//
+// #578 (a `Recovering` penalty survives the possession change) repeated
+// #572's exact shape: sequence digest alone, `final_hash` unmoved a second
+// time. Discriminating measurement re-run before this line moved — wasm,
+// via the header's one-liner against the freshly built
+// `dist/pkg/gc_wasm.cjs`: final `0e41232666bc8568`, sequence
+// `c165170216a8ec28`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`, the same two. They
+// AGREE, so this is not #517.
 const EXPECTED_FINAL_HASH = "0e41232666bc8568";
-const EXPECTED_SEQUENCE_DIGEST = "fcdaac058c967e68";
+const EXPECTED_SEQUENCE_DIGEST = "c165170216a8ec28";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

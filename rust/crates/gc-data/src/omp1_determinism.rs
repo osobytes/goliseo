@@ -443,8 +443,11 @@ mod tests {
         // holds while the chain that arrives there does not. That asymmetry
         // is exactly why a sequence digest exists alongside a final hash: a
         // final-hash-only gate would have called that change inert.
+        // #578 (Recovering survives the possession change) repeated the
+        // pattern: sequence digest fcdaac058c967e68 -> c165170216a8ec28,
+        // final hash unmoved a second time.
         assert_eq!(f.expected_final_hash, "0e41232666bc8568");
-        assert_eq!(f.expected_sequence_digest, "fcdaac058c967e68");
+        assert_eq!(f.expected_sequence_digest, "c165170216a8ec28");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
