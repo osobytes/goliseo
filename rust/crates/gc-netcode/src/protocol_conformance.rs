@@ -45,25 +45,35 @@ pub struct Golden {
 /// `protocol::manifest_id`/`transcript_id`/`encode` directly against
 /// `fixture::manifest(None)`/`fixture::messages()`, the same fixture this
 /// golden already pins.
+///
+/// Repinned again by #490, and the list of what moved is IDENTICAL to #489's
+/// above because the mechanism is: `match_snapshot::COMBAT_VERSION` bumps
+/// 14 -> 15 (`MatchPlayer::keeper_fatigue`), `manifest_id` and
+/// `transcript_id` move, and the eight manifest-carrying kinds move with
+/// them. The seven that carry no manifest id -- `Handshake`,
+/// `PeerAssignment`, `MatchPhase`, `HashReport`, `ResultAck`, `Abort`,
+/// `Disconnect` -- are unchanged below, and `vocabulary_id` with them. That is
+/// again the evidence that nothing but the manifest moved. Recorded the same
+/// way.
 pub const GOLDEN: Golden = Golden {
     vocabulary_id: "e13e3647001a0a7e",
-    manifest_id: "572bbff19cdfc603",
-    transcript_id: "a83439d3fe39fa52",
+    manifest_id: "90b90970080d7978",
+    transcript_id: "1b8407df3614a2cb",
     complete_kind: MessageKind::ManifestAccept,
-    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:572bbff19cdfc603s4:kinds15:\
+    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:90b90970080d7978s4:kinds15:\
 manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:\
 hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests: &[
         (MessageKind::Handshake, "2722abf054051350"),
-        (MessageKind::ManifestProposal, "a16e66840b834469"),
-        (MessageKind::ManifestAccept, "61cf18d63e6076e9"),
+        (MessageKind::ManifestProposal, "2a10a74246a5726e"),
+        (MessageKind::ManifestAccept, "d0907dd1786309f5"),
         (MessageKind::PeerAssignment, "fa48b31571dfe543"),
-        (MessageKind::SlotAssignment, "956e42e74b995ad9"),
-        (MessageKind::Ready, "ab1187cad581ee86"),
-        (MessageKind::PairPreference, "6ca49f34edf71a88"),
-        (MessageKind::PairPreferenceResult, "c0de33146372fa77"),
-        (MessageKind::Countdown, "12b32574af080ab9"),
-        (MessageKind::Start, "c1d8945760e1deae"),
+        (MessageKind::SlotAssignment, "1f7ffb57d280ab31"),
+        (MessageKind::Ready, "afc5d647cce1a54a"),
+        (MessageKind::PairPreference, "1c6b6fe00fe76e34"),
+        (MessageKind::PairPreferenceResult, "630f49fb19190887"),
+        (MessageKind::Countdown, "97c7990799ceab51"),
+        (MessageKind::Start, "5d499e95a75c125a"),
         (MessageKind::MatchPhase, "1671940891b78f1f"),
         (MessageKind::HashReport, "4405d9323b1e5b0f"),
         (MessageKind::ResultAck, "5f466e6740c6d4cf"),

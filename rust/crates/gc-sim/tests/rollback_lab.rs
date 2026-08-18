@@ -520,7 +520,18 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // Re-recorded again for #489, same reason: `identity.snapshot_version`
     // (12 -> 13, `MatchPlayer::action`) and the derived `boundary_hashes`
     // both moved in `gc-data/src/omp1_determinism.json`.
-    assert_eq!(rollback_lab::tape_digest(&tape), "7f9fea1e03562a5e");
+    //
+    // And again for #490, same reason a third time: snapshot_version 13 -> 14
+    // (`MatchPlayer::keeper_fatigue`) plus the derived `boundary_hashes`.
+    //
+    // And again for #572, completing #489's possession invariant. This time
+    // the derived `boundary_hashes` moved ALONE -- no schema change, no new
+    // field, `identity.snapshot_version` untouched at 14 -- which makes this
+    // the cleanest illustration of what this pin actually tracks: OMP-1's
+    // derived half and nothing else. Note the contrast with
+    // `expected_final_hash`, which did NOT move in that same re-record: this
+    // digest folds in every boundary, that one only the last.
+    assert_eq!(rollback_lab::tape_digest(&tape), "1610d58d94835361");
 }
 
 #[test]

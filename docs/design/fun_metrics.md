@@ -966,6 +966,240 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-17 — #489's possession invariant applied at every ownership
+  change instead of two of them (PR #572).** `baseline_version` **13 → 14**,
+  signature `264989032124a6b1` → `857c41df296746a8`; `identity.tuning_hash`,
+  `identity.content_hash`, `identity.fixture_hash`, `identity.config_hash`,
+  `policy_id` and `snapshot_version` all unchanged — no knob default, no
+  content, no AI policy and no schema moved. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol,
+  after the repository owner's explicit authorization. **Separate cause and
+  separate numbers from #490's entry below**, which landed first on the same
+  day; the two are not merged and neither supersedes the other.
+
+  **The mechanism.** `r#match::set_owner` is the single site that applies
+  #489's rule — a possession change clears the OUTGOING owner's committed
+  action slot, whichever verb and whichever phase. Its doc comment claimed
+  every `s.owner` assignment went through it. Seven did not (kickoff, shot
+  release, pass release, keeper dropkick, keeper gather, heavy touch, loose
+  ball pickup), an eighth outside the module did not either (`combat`'s ball
+  spill), plus two scenario builders in `rollback_validation`. Only
+  `win_ball` and the keeper smother were routed. PR #572 routes all of them
+  and adds the structural test the doc comment already cited but which did
+  not exist (`tests/action_slot_possession_invariant.rs`).
+
+  **The every-phase semantics was affirmed, not changed.** Clearing from
+  `Charging`, `Executing` AND `Recovering` was decided and tested in #548
+  (`tests/action_slot_integration.rs`'s
+  `possession_change_clears_a_committed_action_from_every_phase_no_matter_the_verb`);
+  this change only makes it actually apply. Neither `action_slot::clear` nor
+  that test was touched. The counter-argument — that refunding an earned
+  miss-recovery penalty is a cancel tech — was raised, considered, and filed
+  as a separate follow-up against #489 with its own measurements rather than
+  resolved here.
+
+  **Where the measured cost sits.** `#[track_caller]` instrumentation on
+  `set_owner` locates it: across the OMP-1 fixture the newly routed sites
+  clear a non-idle slot twice, both at the heavy-touch site, both
+  `phase=Recovering verb=Tackle`. A presser whiffs a standing poke, picks
+  the loose ball up while still in miss recovery, then loses it to a heavy
+  touch — and no longer serves out the recovery. It re-presses sooner. The
+  effect is small per event and compounds over 7,200 ticks.
+
+  | metric | frozen (v13) | re-frozen (v14) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.351098 | 0.262481 | −0.088616 |
+  | `goals_total` | 2.000000 | 1.800000 | −0.200000 |
+  | `goals_home` | 0.783333 | 0.666667 | −0.116667 |
+  | `goals_away` | 1.216667 | 1.133333 | −0.083333 |
+  | `shots` | 32.250000 | 32.500000 | +0.250000 |
+  | `shots_per_goal` | 18.860000 | 19.900000 | +1.040000 |
+  | `save_rate` | 0.900795 | 0.908359 | +0.007564 |
+  | `passes` | 29.566667 | 29.766667 | +0.200000 |
+  | `pass_completion` | 0.514826 | 0.504916 | −0.009910 |
+  | `turnovers_per_min` | 8.751533 | 8.970492 | +0.218959 |
+  | `possession_balance` | 0.532070 | 0.528481 | −0.003590 |
+  | `longest_drought_s` | 11.554444 | 11.495556 | −0.058889 |
+  | `decided_late` | 0.712038 | 0.725982 | +0.013945 |
+  | `lead_changes` | 0.066667 | 0.066667 | +0.000000 |
+  | `margin` | 1.066667 | 0.966667 | −0.100000 |
+  | `duration` | 116.478889 | 117.067222 | +0.588333 |
+  | `ai_dribble_carry_s` | 25.485000 | 25.856111 | +0.371111 |
+  | `ai_dribble_close_share` | 0.817909 | 0.816397 | −0.001511 |
+  | `ai_dribble_sprint_share` | 0.162747 | 0.162948 | +0.000201 |
+  | `ai_dribble_juke_share` | 0.096214 | 0.094650 | −0.001565 |
+  | `ai_dribble_touches_per_min` | 119.296190 | 119.458211 | +0.162021 |
+  | `ai_dribble_heavy_losses_per_min` | 0.437725 | 0.407558 | −0.030168 |
+  | `ai_jukes` | 35.250000 | 35.450000 | +0.200000 |
+
+  **These numbers replace an earlier measurement, and the delta's character
+  changed with the base.** This change was first measured against v12,
+  before #490's slice landed: `fun` 0.322688 → 0.254926 (−0.067761),
+  `duration` −1.723611, `ai_dribble_heavy_losses_per_min` −0.100883. Against
+  v13 the drop in `fun` is *larger* (−0.088616), `duration` moves the
+  *opposite* way (+0.588333), and the heavy-loss reduction is a third of
+  what it was. #490 added a 13th metric (`rebound_rate`) to the fold and a
+  keeper fatigue pool that changes which possessions reach a save at all, so
+  the fun scale and the interaction both moved underneath. The v13 → v14
+  column above is the only valid comparison; the v12-based figures are
+  recorded here solely so nobody reconciles the two.
+
+  Four other frozen artifacts moved in the same commit, for the same reason,
+  and were re-recorded with it: `gc_data::omp1_determinism`'s derived half
+  (`boundary_hashes`, `boundary_count`, `expected_sequence_digest`
+  `8e7da14b3908191a` → `fcdaac058c967e68` — `expected_final_hash` did NOT
+  move, on either base: full time is reached in the same state, the chain
+  arriving there is not, which is why a sequence digest exists alongside a
+  final hash); `gc-sim`'s `tests/fixtures/match_step_ai_ai_baseline.txt`;
+  `gc_sim::keeper_shadow_classifier`'s two frozen count blocks
+  (`candidates` 9941 → 9970, `agree_true` 3490 → 3307, `agree_false` 6197 →
+  6429, `disagree_deferred` 230 → 207, `disagree_height` 24 → 27,
+  `new_only` unchanged at 0); and the **four** redundant copies of the OMP-1
+  derived digests outside the JSON — `gc_data::omp1_determinism`'s own unit
+  test, `ts/packages/wasm/src/determinism.spec.ts`, `scripts/check.sh`, and
+  `rollback_lab.rs`'s tape digest (`1fd2190eb5f25387` → `1610d58d94835361`),
+  which folds those boundary hashes in and which the documented two-step
+  re-record command names no more than the other three do. OMP-1's
+  never-refreshed behavioral half (`event_counts`, `expected_score`) was not
+  touched.
+
+  **`PASS_ELIGIBLE_MAX` — a knob measurement recorded here, with no contract
+  committed.** Against `pass_completion` (down, n=96) this pairing sits
+  close to its floor on this base *independently of this change*: −0.0313 on
+  a 0.0280 threshold on `origin/main`, −0.0296 on 0.0279 with this change.
+  Both WIRED, so
+  `a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer`
+  passes and was left exactly as it is. Against `pass_aim_error` (down) the
+  knob measures **+0.0660 on 0.0632 at n=48 and +0.0739 on 0.0454 at n=96**
+  — magnitude clears comfortably at both, but the sign is the OPPOSITE of
+  the direction declared before measuring (`Decreases`, reasoned by mirror
+  symmetry with #553's `PASS_ELIGIBLE_MIN`). **No `pass_aim_error` contract
+  was committed**, because flipping a pre-declared direction after seeing
+  the data, in the same PR, is precisely what a declared direction exists to
+  prevent. There is an untested hypothesis that would explain both this and
+  #553's result — narrowing the eligible band from EITHER end shrinks the
+  candidate set, so the cone's best remaining option is worse-aimed — but it
+  was formed *after* the data refuted the first one and is recorded as a
+  hypothesis awaiting a fresh pre-registered prediction, not as a finding.
+  Nothing was written into phase 5's section for this knob. `PASS_ELIGIBLE_MIN`
+  × `pass_aim_error` was re-checked for the same degradation on this base and
+  does not degrade: +0.1141/0.0424 on `origin/main`, +0.1124/0.0416 with this
+  change, at n=96.
+
+- **2026-08-17 — the keeper save-fatigue pool and its catch band, plus the
+  new `rebound_rate` metric (#490, first slice).** `baseline_version`
+  **12 → 13**, `identity.snapshot_version` **13 → 14**
+  (`MatchPlayer::keeper_fatigue`), `identity.tuning_hash`
+  `bdd4c81d6c254bf9` → `c786c29e021f3f6a` (seven new registered knobs),
+  `identity.fixture_hash` `382c7b5fef061985` → `f78965f8bbf14200`;
+  `identity.content_hash` and `identity.config_hash` unchanged — no content
+  and no match config moved. Re-frozen via `record_outfield_ai_baseline`.
+
+  What changed in the simulation: below `KEEPER_CATCH_THRESHOLD`, or above
+  `KEEPER_CATCH_POWER_CEILING`, a save that would have been a clean catch now
+  resolves as a parry instead. A parry was already a real, live rebound, so
+  the ball stays in play where it used to end in the keeper's gloves. No RNG
+  draw was added, moved or removed on the save path.
+
+  | metric | frozen (v12) | re-frozen (v13) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.322688 | 0.351098 | +0.028410 |
+  | `goals_total` | 1.916667 | 2.000000 | +0.083333 |
+  | `goals_home` | 0.733333 | 0.783333 | +0.050000 |
+  | `goals_away` | 1.183333 | 1.216667 | +0.033333 |
+  | `shots` | 31.966667 | 32.250000 | +0.283333 |
+  | `shots_per_goal` | 19.378182 | 18.860000 | −0.518182 |
+  | `save_rate` | 0.902887 | 0.900795 | −0.002093 |
+  | `passes` | 30.016667 | 29.566667 | −0.450000 |
+  | `pass_completion` | 0.519213 | 0.514826 | −0.004387 |
+  | `turnovers_per_min` | 8.937462 | 8.751533 | −0.185929 |
+  | `possession_balance` | 0.532096 | 0.532070 | −0.000026 |
+  | `longest_drought_s` | 11.691111 | 11.554444 | −0.136667 |
+  | `decided_late` | 0.676499 | 0.712038 | +0.035539 |
+  | `lead_changes` | 0.083333 | 0.066667 | −0.016667 |
+  | `margin` | 1.150000 | 1.066667 | −0.083333 |
+  | `duration` | 117.596667 | 116.478889 | −1.117778 |
+  | `ai_dribble_carry_s` | 25.561389 | 25.485000 | −0.076389 |
+  | `ai_dribble_close_share` | 0.815167 | 0.817909 | +0.002742 |
+  | `ai_dribble_sprint_share` | 0.162368 | 0.162747 | +0.000379 |
+  | `ai_dribble_juke_share` | 0.097733 | 0.096214 | −0.001519 |
+  | `ai_dribble_touches_per_min` | 120.756420 | 119.296190 | −1.460230 |
+  | `ai_dribble_heavy_losses_per_min` | 0.507549 | 0.437725 | −0.069824 |
+  | `ai_jukes` | 35.550000 | 35.250000 | −0.300000 |
+
+  **THE `fun` RISE IS DILUTION, NOT IMPROVEMENT, AND THE ARITHMETIC SAYS SO.**
+  The score is a geometric mean over the registered metrics, so registering a
+  thirteenth that scores well pulls the mean up on its own. Holding every
+  other metric fixed and folding in one new one at desirability 1.0 predicts
+  `0.322688 ^ (12/13) = 0.352021` — against an observed `0.351098`, which
+  back-solves to a mean `rebound_rate` desirability of **0.966**. In other
+  words the entire +0.0284 is accounted for by the new metric's own
+  membership; the twelve pre-existing metrics moved by amounts that very
+  nearly cancel. Do not read this entry as evidence that the keeper change
+  improved balance. It is the same interim-state inflation
+  `pass_aim_error`/`pass_lead_time`/`whiff_rate` already carry, blocked on
+  the same missing probation mechanism (#528), and stated here in the one
+  place a future reader would otherwise be misled.
+
+  **`rebound_rate` WAS ALREADY NEAR THE TOP OF ITS BAND BEFORE THIS FEATURE
+  EXISTED, and that is the finding most likely to mislead a later reader.**
+  Measured with fatigue fully disabled — the pool never reaches the catch
+  band, so the code path this entry is about never fires — 96 full matches
+  put `rebound_rate` at **0.380**, against the metric's own proposed
+  0.15–0.40 good range. At the shipped defaults it converges to **0.400**,
+  i.e. sitting on the upper edge. Parries were producing live, followed-in
+  rebounds all along; what the issue's framing ("sustained pressure earns
+  nothing") is actually right about is *catches*, not this metric.
+
+  Two consequences worth stating before someone tunes against this number.
+  First, the band is a **prior**, authored from the issue's proposal, and the
+  measurement already argues with it; it was left as authored rather than
+  hand-fitted to what the code does, the same call `whiff_rate`'s own
+  `MetricDef` records and for the same reason. Second, a metric this close to
+  saturation has very little headroom left to register an improvement, so a
+  future change that genuinely makes rebounds better may show almost no
+  movement here and a later "no effect" conclusion drawn from it would be an
+  artefact of the ceiling, not a finding. Re-examine the band before treating
+  `rebound_rate` as evidence either way.
+
+  **A stronger configuration was measured and DELIBERATELY REJECTED, and the
+  reason was this band rather than the contract.** `KEEPER_FATIGUE_MAX=60`,
+  `KEEPER_FATIGUE_REGEN=2.5`, `KEEPER_CATCH_THRESHOLD=35` produced a larger
+  effect (`delta +0.0378`, WIRED at only 96 seeds where the shipped defaults
+  need 288) — a *better* knob-contract result on every axis the contract
+  measures. It was not shipped because it drove `rebound_rate` to **0.486**,
+  well past the band's upper edge: the keeper stops holding almost anything,
+  which is a different game rather than a keeper under pressure. The shipped
+  defaults (`100/4/45`) are the ones authored from the design pilot, and
+  nothing was tuned to make the contract pass. This is recorded because
+  choosing the weaker-but-in-band configuration is exactly the decision a
+  future reader would otherwise re-litigate from scratch, and because a
+  contract result is not by itself a reason to ship a value.
+
+  Neither measurement is reproducible from a committed test: both need a
+  base-configuration override that `gc_sim::knob_contract` does not expose
+  (`knob_moves_metric` and `noise_floor` both measure against
+  `Tuning::new()`). Adding that seam would make them rerunnable, and until
+  someone does, these two paragraphs are the record. See
+  `gc-sim/tests/knob_contract.rs`'s pilot doc comment, which says the same
+  thing beside the code.
+
+  **`save_rate` did NOT move, and that is the honest headline for the slice.**
+  0.9029 → 0.9008 on this fixture, against a 0.45–0.75 band. Fatigue gates
+  whether the keeper can HOLD a shot, never whether they can reach it (that
+  is #490's own acceptance criterion 1, proved in
+  `gc-sim/tests/keeper_fatigue.rs`), so it CANNOT lower the save rate by
+  construction. What it converts is held balls into live ones. Making the
+  keeper beatable is #490's criterion 2 — reach-based save resolution — which
+  this slice does not implement.
+
+  `gc_sim::keeper_shadow_classifier`'s frozen 60-seed counts moved in the
+  same commit, for the same reason: `candidates` 9746 → 9941 (more parried
+  balls stay live, so more sequences come back to a keeper),
+  `agree_true` 3364 → 3490, `agree_false` 6089 → 6197,
+  `disagree_deferred` 268 → 230, `disagree_height` 25 → 24, `new_only`
+  unchanged at 0.
+
 - **2026-08-14 — nine `gc-sim`/`gc-data` transcendental call sites converted
   to `gc_core::deterministic_math::cos_sin` or a precomputed constant, so
   native and the compiled wasm module compute the same simulation state

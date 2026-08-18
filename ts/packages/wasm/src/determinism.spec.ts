@@ -40,12 +40,29 @@ import { describe, expect, it } from "vitest";
 
 import { loadSimHost } from "./index.ts";
 
-// #489: re-recorded alongside the JSON fixture and gc_data::omp1_determinism's
-// own unit test. Verified wasm and native AGREE at this value (native:
-// `cargo test -p gc-sim --test determinism_evidence`; wasm: this file's own
-// gate run) before touching these two lines, per the doc comment above.
-const EXPECTED_FINAL_HASH = "4d002b60a635a76c";
-const EXPECTED_SEQUENCE_DIGEST = "45929ad5af7bf12a";
+// #490: re-recorded alongside the JSON fixture and gc_data::omp1_determinism's
+// own unit test, for the keeper catch band. THE DISCRIMINATING MEASUREMENT
+// THIS FILE'S HEADER DEMANDS WAS RUN FIRST, and it is the reason these two
+// lines were touched: wasm and native AGREE at these values (wasm, via the
+// header's own `node -e` one-liner against the freshly built
+// `dist/pkg/gc_wasm.cjs`: final `0e41232666bc8568`, sequence
+// `8e7da14b3908191a`; native, the same two values in
+// `crates/gc-data/src/omp1_determinism.json`). Both differ from the previous
+// constants, which is the "simply stale" case, not the #517 case.
+//
+// #489 re-recorded them before this, on the same terms.
+//
+// #572 (completing #489's possession invariant) then moved the SEQUENCE
+// DIGEST ALONE, leaving `final_hash` where #490 left it: full time is
+// reached in the same state, the chain arriving there is not. The
+// discriminating measurement was run again before this line moved, and
+// again it is the "simply stale" case — wasm, via the header's own `node -e`
+// one-liner against the freshly built `dist/pkg/gc_wasm.cjs`: final
+// `0e41232666bc8568`, sequence `fcdaac058c967e68`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`, the same two. They
+// AGREE, so this is not #517.
+const EXPECTED_FINAL_HASH = "0e41232666bc8568";
+const EXPECTED_SEQUENCE_DIGEST = "fcdaac058c967e68";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

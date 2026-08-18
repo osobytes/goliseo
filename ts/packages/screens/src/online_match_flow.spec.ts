@@ -572,14 +572,15 @@ function realManifest1v1(sessionId: string) {
     session_id: sessionId,
     protocol_version: 1,
     input_version: 2,
-    // #489: match_snapshot::COMBAT_VERSION 13 -> 14 (see gc-netcode's
-    // protocol_conformance::GOLDEN doc comment for the root cause). A real
-    // coordinator's protocol::validate_manifest rejects a manifest whose
-    // snapshot_version disagrees with the compiled build's, so a stale
-    // value here does not merely mismatch a golden byte -- it stalls the
-    // whole session, which is why "carries a 1v1 session from the lobby to
-    // an agreed result" never reached `ended` regardless of step budget.
-    snapshot_version: 14,
+    // #489: match_snapshot::COMBAT_VERSION 13 -> 14, and #490: 14 -> 15
+    // (see gc-netcode's protocol_conformance::GOLDEN doc comment for the
+    // root cause). A real coordinator's protocol::validate_manifest rejects
+    // a manifest whose snapshot_version disagrees with the compiled build's,
+    // so a stale value here does not merely mismatch a golden byte -- it
+    // stalls the whole session, which is why "carries a 1v1 session from the
+    // lobby to an agreed result" never reached `ended` regardless of step
+    // budget.
+    snapshot_version: 15,
     tape_version: 2,
     combat_schema_version: 3,
     build_id: REAL_BUILD_ID,

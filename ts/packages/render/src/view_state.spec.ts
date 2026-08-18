@@ -9,6 +9,38 @@ function playerAt(x: number, y = 0): readonly ViewStatePlayer[] {
   return [{ id: "p1", pos: { x, y } }];
 }
 
+describe("view_state.viewState responsiveness", () => {
+  // #574. What players report as "slow animation" is usually RESPONSIVENESS:
+  // the lag between the simulation doing something and the animation showing
+  // it. The sim acts on an input within one tick (16.7 ms); everything after
+  // that is render-side filtering, and this smoothing filter was the biggest
+  // single contributor. Pinned as a measured settling time rather than as the
+  // gain constant, so the claim survives someone rewriting the filter.
+  //
+  // Budget: a committed action's onset should be visible inside ~100 ms, and
+  // the blend should be substantially there well before the 200 ms this
+  // asserts. The old `dt * 8` took ~290 ms to reach 90%.
+  it("reaches 90% of a step change in speed inside 200 ms", () => {
+    viewState.reset();
+    const dt = 1 / 60;
+    const speed = viewState.RUN_SPEED;
+
+    let x = 0;
+    viewState.update(playerAt(x), dt);
+    let elapsed = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      x += speed * dt;
+      viewState.update(playerAt(x), dt);
+      elapsed += dt;
+      if ((viewState.get("p1")?.speed ?? 0) >= 0.9 * speed) {
+        break;
+      }
+    }
+    expect(viewState.get("p1")?.speed ?? 0).toBeGreaterThanOrEqual(0.9 * speed);
+    expect(elapsed, "seconds for the locomotion blend to catch up").toBeLessThan(0.2);
+  });
+});
+
 describe("view_state.viewState locomotion blend", () => {
   // Regression for the bug class this retune fixed: the previous
   // WALK_SPEED/RUN_SPEED pair (150/400) sat above every speed gc-sim can

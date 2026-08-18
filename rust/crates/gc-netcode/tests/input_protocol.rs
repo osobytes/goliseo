@@ -35,10 +35,11 @@ use gc_sim::input_frame::{self, InputSampleOptions};
 /// doc comment for why this is a literal rather than a call into
 /// `protocol_fixture` (out of scope; see this file's module doc comment).
 const SESSION_ID: &str = "session_alpha";
-// #489: moved with `input_protocol_fixture::MANIFEST_ID` -- see that
-// constant's doc comment for why this tracks `match_snapshot::COMBAT_VERSION`
-// despite `input_protocol` not depending on `protocol`.
-const MANIFEST_ID: &str = "572bbff19cdfc603";
+// #489, and again #490: moved with `input_protocol_fixture::MANIFEST_ID` --
+// see that constant's doc comment for why this tracks
+// `match_snapshot::COMBAT_VERSION` despite `input_protocol` not depending on
+// `protocol`.
+const MANIFEST_ID: &str = "90b90970080d7978";
 
 const HELD_BITS: [i64; 8] = [
     input_frame::HELD_SHOOT,

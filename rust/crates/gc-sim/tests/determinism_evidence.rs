@@ -73,7 +73,7 @@ fn fixture_tape_identity() -> InputTapeIdentity {
 fn determinism_evidence_pins_the_authoritative_fixture_to_the_current_snapshot_schema() {
     let fixture = omp1_determinism::fixture();
     assert_eq!(fixture.identity.snapshot_version, match_snapshot::VERSION);
-    assert_eq!(match_snapshot::VERSION, 13);
+    assert_eq!(match_snapshot::VERSION, 14);
 }
 
 #[test]
@@ -205,13 +205,26 @@ fn determinism_evidence_pins_the_full_fixed_input_match_on_the_explicit_evidence
     assert_eq!(result.ticks, 7201);
     assert_eq!(result.boundaries, 7202);
 
-    // As recorded, and as reproduced by this build: coverage
-    // tackle/aerial/keeper/full_time (never goal_kickoff — the only goal is
-    // the home side's); 1-0 home; 147 tackles, 180 touches, 2 headers, 1
-    // catch; tackle at tick 24, catch at 1692, header at 1788, full time at
-    // 7200. Printed rather than asserted — if a gameplay change moved these,
-    // that is the demotion working. Restate the new values here and say why in
-    // the PR that moves them.
+    // As recorded: coverage tackle/aerial/keeper/full_time (never
+    // goal_kickoff — the only goal is the home side's); 1-0 home; 147
+    // tackles, 180 touches, 2 headers, 1 catch; tackle at tick 24, catch at
+    // 1692, header at 1788, full time at 7200. Printed rather than asserted
+    // — if a gameplay change moved these, that is the demotion working.
+    // Restate the new values here and say why in the PR that moves them.
+    //
+    // As reproduced by THIS build, which is no longer the same thing: 1-0
+    // home still, but coverage tackle/keeper/full_time (aerial absent), and
+    // events catch:1, claim:2, pass:3, tackle:3, tackle_miss:367, touch:52.
+    // The sentence above used to claim the recorded and the reproduced
+    // values were identical; they have not been since #548 moved the
+    // standing poke onto the committed-action slot, where a swing that
+    // misses emits `TackleMiss` instead of resolving as a `Tackle` — the
+    // 147 were mostly whiffs all along. #572 noticed while re-recording the
+    // derived half, and measured the same drift on `origin/main`: it is
+    // byte-identical there, so it predates that PR rather than being its
+    // doing. Left demoted-but-reported exactly as #505/#512 intended, and
+    // NOT refreshed — `event_counts` and `expected_score` are the fixed
+    // point every future build is reported against.
     let report = determinism_evidence::report(&result);
     println!("{report}");
     println!(

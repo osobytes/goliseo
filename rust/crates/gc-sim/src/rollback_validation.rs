@@ -266,7 +266,7 @@ fn synthetic_goal_tape(tune: &Tuning) -> InputTape {
         away_keeper.keeper_release_depth = 42.0;
         away_keeper.receive_timer = 1.0;
     }
-    state.owner = None;
+    sim_match::set_owner(&mut state, None);
     state.ball = Vec2::new(965.0, 270.0);
     state.ball_vel = Vec2::new(600.0, 0.0);
     state.ball_z = 0.0;
@@ -637,7 +637,7 @@ pub fn combat_load_tape(fixture: &Omp2RollbackCombatLoadFixture, tune: &Tuning) 
         input_ownership: Some(ownership.clone()),
     });
     state.kickoff_hold = 0.0;
-    state.owner = None;
+    sim_match::set_owner(&mut state, None);
     state.ball = Vec2::new(480.0, 470.0);
     state.ball_vel = Vec2::new(0.0, 0.0);
     for (index, player) in state.players.iter_mut().enumerate() {

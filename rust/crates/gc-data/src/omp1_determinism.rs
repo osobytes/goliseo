@@ -436,8 +436,15 @@ mod tests {
         // documented two-step re-record command does not mention this file;
         // a re-record that stops at the JSON leaves `gc-data`'s own unit test
         // red, which is how this line came to be updated here.
-        assert_eq!(f.expected_final_hash, "4d002b60a635a76c");
-        assert_eq!(f.expected_sequence_digest, "45929ad5af7bf12a");
+        // #572 moved only the SECOND of these two, and did so on both the
+        // pre- and post-#573 base. The final boundary is full time -- clock
+        // expired, ball dead at the centre spot -- and completing #489's
+        // possession invariant does not reach it, so `expected_final_hash`
+        // holds while the chain that arrives there does not. That asymmetry
+        // is exactly why a sequence digest exists alongside a final hash: a
+        // final-hash-only gate would have called that change inert.
+        assert_eq!(f.expected_final_hash, "0e41232666bc8568");
+        assert_eq!(f.expected_sequence_digest, "fcdaac058c967e68");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -453,19 +460,20 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "77c3c39fd45ba9f7");
+        assert_eq!(boundary_hash_lines()[0], "2226cce944213655");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
         // `match_snapshot::VERSION` or the simulation does (#531: bumped
         // 11 -> 12 by the new `pass_intent` field on every `MatchPlayer`,
         // including this zero-tick kickoff snapshot; #489: bumped 12 -> 13
-        // by the new `action` field on every `MatchPlayer`, same reasoning).
+        // by the new `action` field on every `MatchPlayer`; #490: bumped
+        // 13 -> 14 by the new `keeper_fatigue` field, same reasoning again).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "4d002b60a635a76c"
+            "0e41232666bc8568"
         );
     }
 

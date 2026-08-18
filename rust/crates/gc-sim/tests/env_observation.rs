@@ -126,6 +126,7 @@ fn player(id: &str, team: StateTeam, is_keeper: bool, pos: Vec2) -> MatchPlayer 
         save_vx: 0.0,
         save_style: None,
         save_tip_emitted: false,
+        keeper_fatigue: 0.0,
         settle_timer: 0.0,
         header_cd: 0.0,
         aerial_timer: 0.0,
