@@ -391,6 +391,59 @@ describe("match screen fixed simulation clock (tier 2)", () => {
     expect(host.stepCalls.length).toBe(3);
     expect(screen.tick).toBe(3);
   });
+
+  // The dropped-release regression (base path only -- `updateRollback` and
+  // `updateOnline` already gated their sampling on `ticks > 0`): above 60 Hz
+  // roughly every other render call plans zero ticks, and the base `update`
+  // used to run the contextual latch machine BEFORE `planTicks`, so a
+  // charged pass released on a zero-tick call fired its one-frame edge into
+  // a sample that was never stepped -- the pass silently never happened, at
+  // a rate proportional to the display's refresh rate. The latch state must
+  // advance only when the simulation does (edges at sim cadence, not render
+  // cadence -- the same shape SM Strikers uses: an edge detector per
+  // consumer cadence over the shared button level).
+  it("delivers a charged pass release that lands on a zero-tick render call", () => {
+    const down: Record<string, boolean> = {};
+    const { factory, hosts } = makeHostFactory();
+    const screen = new MatchScreen({
+      createHost: factory,
+      renderer: noopRenderer,
+      keyboard: fakeKeyboard(down),
+    });
+    const host = nth(hosts, 0);
+    const heldBit = inputSample.packHeld(["pass"]);
+    const edgeBit = inputSample.packEdges(["pass"]);
+
+    // Hold PLAY while carrying (the fake hud's default) across four ticking
+    // render calls: the sim sees the pass HELD bit on every stepped tick.
+    down[first(bindings.control("play").keys)] = true;
+    for (let i = 0; i < 4; i += 1) {
+      screen.update(1 / 60);
+    }
+    expect(host.stepCalls.length).toBe(4);
+    expect(
+      host.stepCalls.every((sample) => (sample.held & heldBit) !== 0),
+      "charging: every stepped tick carries the pass hold",
+    ).toBe(true);
+
+    // Release on a render call that plans ZERO ticks (1/120 on an empty
+    // accumulator). Nothing steps, and -- the point -- the latch machine
+    // must not consume the release here.
+    down[first(bindings.control("play").keys)] = false;
+    screen.update(1 / 120);
+    expect(host.stepCalls.length, "the zero-tick call steps nothing").toBe(4);
+
+    // The very next call that does tick must still deliver the release
+    // edge, derived from the still-current button level.
+    screen.update(1 / 120);
+    expect(host.stepCalls.length).toBe(5);
+    const released = nth(host.stepCalls, 4);
+    expect(
+      (released.edges & edgeBit) !== 0,
+      "the charged release fires on the next stepped tick instead of vanishing",
+    ).toBe(true);
+    expect((released.held & heldBit) !== 0, "the hold ended with the release").toBe(false);
+  });
 });
 
 describe("match screen contextual controls (tier 2)", () => {

@@ -1721,22 +1721,6 @@ export class MatchScreen {
       return;
     }
     const host = this.host!;
-    const carrying = this.carrying();
-    const poll: MatchControlPoll = {
-      actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
-      playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
-      modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
-    };
-    const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
-    const switchPlayer = this.switchPending;
-    this.switchPending = false;
-
-    let sample = this.capture.sample({ ...contextual, switchPlayer });
-    if (dashEdge) {
-      sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
-    }
-    this.lastStepSample = sample;
-
     const scoreBefore = host.frame().hud.home_score + host.frame().hud.away_score;
     // Cleared here, not at the top of `update()`, so a `finished`/legacy-
     // replay early return above leaves the previous batch's events intact
@@ -1745,27 +1729,55 @@ export class MatchScreen {
     // simulate.
     this.observedFrameEvents = [];
     const rosterIds = host.roster().ids;
+    // Plan BEFORE sampling, and touch neither `this.latches` nor
+    // `this.switchPending`/`capture` on a zero-tick render call -- the same
+    // rule `updateRollback`/`updateOnline` already follow, and the base path
+    // used to break: above 60 Hz, roughly every other render call plans zero
+    // ticks, and an edge computed on one of those calls (a charged pass or
+    // shot release, a switch press, a dodge) was consumed by the latch
+    // machine and then never stepped into the simulation. Leaving the
+    // latches/queues alone means the still-current button LEVEL produces the
+    // same edge on the next render call that actually ticks -- edges are
+    // derived at sim cadence, not render cadence.
     const ticks = host.planTicks(dt);
-    for (let step = 0; step < ticks; step += 1) {
-      // KNOWN SIMPLIFICATION: every tick this render call produces is fed
-      // the SAME sample -- see this class's doc comment.
-      this.recordReplayFrame(); // pre-step, so a goal's flight remains in the buffer.
-      host.step(sample);
-      // One tick's worth of discrete match events is transient -- `frame()`
-      // only ever reports the LAST stepped tick's events, so a catch-up
-      // batch (`ticks > 1`) must accumulate per tick, immediately after
-      // each `step`, or every tick but the last would be silently dropped.
-      this.appendObservedFrameEvents(host.frame().events, rosterIds);
-      // Breaking out of the tick loop here (`host.cancelPlannedTicks()`) is
-      // the TS-side analog of what a `false` step_fn return does to the
-      // accumulator on the Rust side (see `SimHostPort.cancelPlannedTicks`'s
-      // doc): stop a catch-up batch as soon as the match ends. Falls
-      // through to the shared post-batch bookkeeping below either way --
-      // goal/lifecycle detection must run unconditionally after every
-      // tick, not only when a full batch completes.
-      if (host.frame().hud.finished) {
-        host.cancelPlannedTicks();
-        break;
+    if (ticks > 0) {
+      const carrying = this.carrying();
+      const poll: MatchControlPoll = {
+        actionDown: bindings.isDown("action", this.ports.keyboard, this.ports.gamepad),
+        playDown: bindings.isDown("play", this.ports.keyboard, this.ports.gamepad),
+        modifierDown: bindings.isDown("modifier", this.ports.keyboard, this.ports.gamepad),
+      };
+      const { contextual, dashEdge } = stepMatchControlLatches(this.latches, carrying, poll);
+      const switchPlayer = this.switchPending;
+      this.switchPending = false;
+
+      let sample = this.capture.sample({ ...contextual, switchPlayer });
+      if (dashEdge) {
+        sample = { ...sample, edges: sample.edges | inputSample.packEdges(["dash"]) };
+      }
+      this.lastStepSample = sample;
+
+      for (let step = 0; step < ticks; step += 1) {
+        // KNOWN SIMPLIFICATION: every tick this render call produces is fed
+        // the SAME sample -- see this class's doc comment.
+        this.recordReplayFrame(); // pre-step, so a goal's flight remains in the buffer.
+        host.step(sample);
+        // One tick's worth of discrete match events is transient -- `frame()`
+        // only ever reports the LAST stepped tick's events, so a catch-up
+        // batch (`ticks > 1`) must accumulate per tick, immediately after
+        // each `step`, or every tick but the last would be silently dropped.
+        this.appendObservedFrameEvents(host.frame().events, rosterIds);
+        // Breaking out of the tick loop here (`host.cancelPlannedTicks()`) is
+        // the TS-side analog of what a `false` step_fn return does to the
+        // accumulator on the Rust side (see `SimHostPort.cancelPlannedTicks`'s
+        // doc): stop a catch-up batch as soon as the match ends. Falls
+        // through to the shared post-batch bookkeeping below either way --
+        // goal/lifecycle detection must run unconditionally after every
+        // tick, not only when a full batch completes.
+        if (host.frame().hud.finished) {
+          host.cancelPlannedTicks();
+          break;
+        }
       }
     }
     this.finishBaseUpdate(dt, scoreBefore);
