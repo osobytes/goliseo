@@ -152,6 +152,13 @@ export interface Clip {
   readonly loop: boolean;
   readonly duration: number;
   readonly fallback?: string;
+  /**
+   * The prepared keyframes, whole. `sample` never reads these -- it walks
+   * `rotTracks`/`moveTracks` (#580) -- but the characterization specs do: the
+   * frozen pre-#580 sampler that pins bit-identical backwards compatibility
+   * needs the clip-wide keyframe view, and the crouch-fold sweep audits keys
+   * as authored. Drop this field and those specs lose their subject.
+   */
   readonly keys: readonly PreparedKeyframe[];
   readonly rotBones: ReadonlySet<string>;
   readonly moveBones: ReadonlySet<string>;

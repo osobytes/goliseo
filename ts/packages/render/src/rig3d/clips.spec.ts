@@ -567,4 +567,18 @@ describe("rig3d clips per-bone key schedules (#580)", () => {
       }),
     ).toThrow(/increasing/);
   });
+
+  it("rejects a clip with fewer than two keys", () => {
+    // The only shape that reaches this guard: with a nonzero duration a lone
+    // key at t = 0 fails "last key must be at the duration" first.
+    expect(() =>
+      clips.prepare({
+        name: "one_key",
+        loop: true,
+        root_motion: false,
+        duration: 0,
+        keys: [{ t: 0, rot: { a: [0, 0, 0] } }],
+      }),
+    ).toThrow(/two keys/);
+  });
 });
