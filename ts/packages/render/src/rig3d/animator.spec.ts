@@ -11,7 +11,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Quat } from "@gc/core";
 import * as actionPose from "./action_pose.ts";
-import { poseFor, reset, basePose } from "./animator.ts";
+import * as clips from "./clips.ts";
+import { poseFor, reset, basePose, IDLE_RATE } from "./animator.ts";
 import type { AnimatorOptions, AnimatorView } from "./animator.ts";
 import { POSE_ACTIONS } from "./pose_table.ts";
 
@@ -314,9 +315,20 @@ describe("rig3d/animator.poseFor", () => {
   // attitude's own contribution (#439). This is the test that tells those
   // apart: the bob survives a grounded crouch intact.
   it("keeps the run's vertical bob under a crouch", () => {
-    const bobbing = poseFor(freshId(), { speed: 260, gait: 0.15 }, withPose("settle"), 4);
-    const contact = poseFor(freshId(), { speed: 260, gait: 0 }, withPose("settle"), 4);
-    expect(bobbing.move["root"]?.[1] ?? 0).toBeGreaterThan(contact.move["root"]?.[1] ?? 0);
+    // Stated as "the bob still VARIES across the cycle" rather than "phase A is
+    // higher than phase B". The property is that the crouch composes onto the
+    // bob instead of flattening it, and that is phase-independent -- the old
+    // form pinned mid-stance above contact, which was really an assertion about
+    // WHICH way round the run's bounce went, and #574 inverted that on purpose
+    // (a run compresses at mid-stance; only a walk vaults there). Written this
+    // way the test survives a re-phasing and still fails a flattening.
+    const heights: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const pose = poseFor(freshId(), { speed: 260, gait: i / 12 }, withPose("settle"), 4);
+      heights.push(pose.move["root"]?.[1] ?? 0);
+    }
+    const amplitude = Math.max(...heights) - Math.min(...heights);
+    expect(amplitude, "a grounded crouch must not flatten the gait's bob").toBeGreaterThan(0.02);
   });
 
   it("leaves the root-overlay poses to action_pose.ts, which still reaches the root", () => {
@@ -427,11 +439,25 @@ describe("rig3d/animator.basePose", () => {
   it("keeps the idle clip inside its own keyframes however long the clock has been running", () => {
     // `MixerLayer` advances by zero, so nothing wraps the pinned phase for it.
     // An unwrapped `now * IDLE_RATE` would walk past the idle clip's last key
-    // after nine seconds and freeze there for the rest of the match.
+    // and freeze there for the rest of the match. Derived from the rate rather
+    // than hardcoded, so retuning the breath cannot silently stop exercising
+    // the wrap this covers.
+    const loop = clips.IDLE.duration / IDLE_RATE;
     const early = basePose({ speed: 0, gait: 0 }, 1.0);
-    const late = basePose({ speed: 0, gait: 0 }, 1.0 + 3.4 / 0.35);
+    const late = basePose({ speed: 0, gait: 0 }, 1.0 + loop);
     expect(delta(early, late)).toBeLessThan(1e-6);
-    const midCycle = basePose({ speed: 0, gait: 0 }, 1.0 + 3.4 / 0.35 / 2);
+    const midCycle = basePose({ speed: 0, gait: 0 }, 1.0 + loop / 2);
     expect(delta(early, midCycle)).toBeGreaterThan(0.005);
+  });
+
+  it("breathes at a human rate, which is what stops a standing player reading as a giant", () => {
+    // #574. Apparent body scale is read from motion frequency, so the idle
+    // loop length is a scale cue and not a taste setting. The clip is one
+    // breath and one weight shift; a calm human breathes every 3-5 s. At the
+    // old rate of 0.35 this loop was 9.7 s and every stationary player was
+    // signalling "very large creature" on its own.
+    const loop = clips.IDLE.duration / IDLE_RATE;
+    expect(loop, "idle loop is one breath; 3-5 s is the human band").toBeGreaterThan(3);
+    expect(loop).toBeLessThan(5);
   });
 });

@@ -21,10 +21,12 @@
 // into the player. Every clip here is in-place: simulation owns position,
 // facing and contact, per #101.
 //
-// Channels are interpolated independently and eased with smoothstep, which is
-// enough to keep a 4-6 key clip from looking like straight-line lerp. Euler
-// angles are interpolated component-wise: fine here because no joint passes
-// through a gimbal-locking orientation.
+// Channels are interpolated independently, and each SEGMENT chooses its own
+// easing via the keyframe's `ease` (defaulting to `smooth`, the smoothstep
+// every segment used to get unconditionally -- see `ease` for why that default
+// was the whole problem when it was the only option). Euler angles are
+// interpolated component-wise: fine here because no joint passes through a
+// gimbal-locking orientation.
 
 import { quat, type Quat } from "@gc/core";
 import type { Pose } from "./skeleton.ts";
@@ -32,18 +34,59 @@ import type { Pose } from "./skeleton.ts";
 /** A rotation or translation authored in the clip's Euler/metres convention. */
 export type EulerTriple = readonly [number, number, number];
 
+/**
+ * How one segment distributes its motion in time. Named for what the BODY
+ * does across the segment, not for the CSS easing of the same shape -- the two
+ * conventions use "in" and "out" in opposite senses and this rig has been
+ * bitten by sign conventions before (see this file's header).
+ *
+ * - `smooth` — eased at both ends: `u*u*(3-2u)`. Zero velocity leaving the
+ *   first pose AND arriving at the second.
+ * - `linear` — constant velocity, `u`.
+ * - `accel` — leaves slowly, arrives at full speed: `u*u`. The strike shape.
+ * - `decel` — leaves at full speed, settles into the arrival: `u*(2-u)`. The
+ *   push-off and follow-through shape.
+ */
+export type Easing = "smooth" | "linear" | "accel" | "decel";
+
+/**
+ * Easing for one segment, optionally split by channel kind.
+ *
+ * WHY THE SPLIT EXISTS, because a single curve per segment looks like it ought
+ * to be enough: in locomotion the limbs and the body's vertical bounce want
+ * OPPOSITE timing over the very same segment. A planted foot has to sweep
+ * backward at a CONSTANT rate -- that is what "planted" means, and any easing
+ * at all makes it skid at one end of the segment -- while the body's rise and
+ * fall between the same two keys is ballistic, fast off the ground and slow at
+ * the apex. Rotations carry the legs and `move` carries the root, so splitting
+ * by channel kind resolves it exactly, with no extra keyframes.
+ */
+export type SegmentEasing = Easing | { readonly rot?: Easing; readonly move?: Easing };
+
 interface RawKeyframe {
   readonly t: number;
   readonly rot?: Readonly<Record<string, EulerTriple>>;
   readonly move?: Readonly<Record<string, EulerTriple>>;
+  /**
+   * Easing of the segment that STARTS at this key (so the last key's is never
+   * read). Omitted means `smooth`, which is what every segment did
+   * unconditionally before #574.
+   */
+  readonly ease?: SegmentEasing;
 }
 
+// NO `stride` FIELD, deliberately (#574). The walk and run clips used to carry
+// one (130 and 285), it was read by no live code, and it disagreed with the
+// authoritative stride in `pose_table.ts` / `view_state.ts` (100 and 185) --
+// so the one number a reader would most reasonably trust for "how far does a
+// step cover" was both dead and wrong. The stride belongs to the gait, not to
+// the clip: `view_state.ts` derives phase from distance actually travelled,
+// and `pose_table.strideFor` is the single authority.
 interface RawClip {
   readonly name: string;
   readonly loop: boolean;
   readonly root_motion: false;
   readonly duration: number;
-  readonly stride?: number;
   readonly fallback?: string;
   readonly keys: readonly RawKeyframe[];
 }
@@ -52,6 +95,10 @@ interface PreparedKeyframe {
   readonly t: number;
   readonly q: Readonly<Record<string, Quat>>;
   readonly move: Readonly<Record<string, EulerTriple>>;
+  /** Easing of the rotation channels over the segment starting here. */
+  readonly easeRot: Easing;
+  /** Easing of the translation channels over the segment starting here. */
+  readonly easeMove: Easing;
 }
 
 /** A clip ready to sample: keyframes baked to quaternions, channels indexed. */
@@ -59,7 +106,6 @@ export interface Clip {
   readonly name: string;
   readonly loop: boolean;
   readonly duration: number;
-  readonly stride?: number;
   readonly fallback?: string;
   readonly keys: readonly PreparedKeyframe[];
   readonly rotBones: ReadonlySet<string>;
@@ -219,17 +265,52 @@ function walkPassing(): Record<string, EulerTriple> {
   return { ...pose, ...arms(-8, 28, -2, 26) };
 }
 
+// A walk VAULTS: the body is lowest at contact (double support, legs split)
+// and highest at mid-stance, rising over a near-straight support leg. That is
+// the opposite of a run's bounce, and both are authored explicitly below
+// rather than left to look similar (#574).
+//
+// Easing is split by channel, and the split is the point (see `SegmentEasing`).
+// The LEGS run linear the whole way round: a planted foot has to sweep backward
+// at a constant rate, and any easing on the rotations skids it at one end of
+// the segment or the other. The ROOT vaults: `decel` climbing to the apex (the
+// rise runs out of energy at the top, as a vault does) and `accel` falling off
+// it, so the body drops onto the next plant with real downward speed.
+//
+// Both feet share one set of rotation channels, so this cannot be authored
+// per-foot: by mirror symmetry every segment is one foot's stance and the
+// other's swing at the same time. Linear serves the planted one, which is the
+// foot the eye is judging.
 const WALK_RAW: RawClip = {
   name: "walk",
   loop: true,
   root_motion: false,
-  stride: 130,
   duration: 0.8,
   keys: [
-    { t: 0.0, rot: stance(FREE, walkContact()), move: { root: [0, 0, 0] } },
-    { t: 0.2, rot: stance(FREE, walkPassing()), move: { root: [0, 0.036, 0] } },
-    { t: 0.4, rot: stance(FREE, mirror(walkContact())), move: { root: [0, 0, 0] } },
-    { t: 0.6, rot: stance(FREE, mirror(walkPassing())), move: { root: [0, 0.036, 0] } },
+    {
+      t: 0.0,
+      rot: stance(FREE, walkContact()),
+      move: { root: [0, 0, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    {
+      t: 0.2,
+      rot: stance(FREE, walkPassing()),
+      move: { root: [0, 0.036, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
+    {
+      t: 0.4,
+      rot: stance(FREE, mirror(walkContact())),
+      move: { root: [0, 0, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    {
+      t: 0.6,
+      rot: stance(FREE, mirror(walkPassing())),
+      move: { root: [0, 0.036, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
     { t: 0.8, rot: stance(FREE, walkContact()), move: { root: [0, 0, 0] } },
   ],
 };
@@ -255,18 +336,60 @@ function runPassing(): Record<string, EulerTriple> {
   return { ...pose, ...arms(-14, 82, 6, 80) };
 }
 
+// A run BOUNCES, and its vertical phase is the INVERSE of the walk's above --
+// which is the bug this authoring fixes (#574). The `runContact` split pose is
+// the airborne moment (both legs extended, no foot down yet), so it is the
+// HIGH point; `runPassing` is mid-stance, where the support knee is loaded and
+// the body is compressed, so it is the LOW point. These heights used to be the
+// walk's way round, which gave the run a vault instead of a bounce: no impact
+// bottom, no airborne top, and a sprint that read as a hurried walk.
+//
+// The swap is mean-neutral -- two keys of each per cycle, the same 0.058
+// amplitude -- so nothing about the character's average standing height moves,
+// and the low point stays at 0 rather than going negative into `ground.ts`'s
+// penetration lift.
+//
+// Easing splits by channel exactly as the walk's does and for the same reason.
+// The ROOT gets the bouncing-ball shape, which is what a run is: `accel` down
+// off the airborne apex onto the foot (it lands with real downward speed --
+// that is the impact) and `decel` off the compressed mid-stance, the push-off
+// being an impulse that is spent by the time it reaches the apex. The LEGS run
+// linear so the planted foot holds a constant backward sweep.
+//
+// Under the old unconditional smoothstep every one of these segments came to a
+// dead stop at BOTH ends, on every channel: the run's legs stopped four times a
+// second, which is the texture that read as slow motion.
 const RUN_RAW: RawClip = {
   name: "run",
   loop: true,
   root_motion: false,
-  stride: 285,
   duration: 0.6,
   keys: [
-    { t: 0.0, rot: stance(FREE, runContact()), move: { root: [0, 0, 0] } },
-    { t: 0.15, rot: stance(FREE, runPassing()), move: { root: [0, 0.058, 0] } },
-    { t: 0.3, rot: stance(FREE, mirror(runContact())), move: { root: [0, 0, 0] } },
-    { t: 0.45, rot: stance(FREE, mirror(runPassing())), move: { root: [0, 0.058, 0] } },
-    { t: 0.6, rot: stance(FREE, runContact()), move: { root: [0, 0, 0] } },
+    {
+      t: 0.0,
+      rot: stance(FREE, runContact()),
+      move: { root: [0, 0.058, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
+    {
+      t: 0.15,
+      rot: stance(FREE, runPassing()),
+      move: { root: [0, 0, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    {
+      t: 0.3,
+      rot: stance(FREE, mirror(runContact())),
+      move: { root: [0, 0.058, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
+    {
+      t: 0.45,
+      rot: stance(FREE, mirror(runPassing())),
+      move: { root: [0, 0, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    { t: 0.6, rot: stance(FREE, runContact()), move: { root: [0, 0.058, 0] } },
   ],
 };
 
@@ -289,6 +412,17 @@ const GUARD_STANCE_RAW: RawClip = {
 // ---------------------------------------------------------------------------
 // Clip 3: SWING -- an overhead light_melee strike, with a long recovery
 // ---------------------------------------------------------------------------
+// The easing here is the whole shape of a strike, and it is deliberately NOT
+// uniform (#574). A convincing attack is three different speeds: a coil that
+// arrives and settles (`decel` into the windup key), a delivery that starts
+// from that stillness and arrives at maximum velocity (`accel` into the strike
+// key -- the one segment in this file where a dead stop at the destination
+// would destroy the entire read), and a follow-through that carries the
+// momentum out and spends it (`decel`, then `smooth` through the settle).
+//
+// Snap is a RATIO, not a rate: what makes the strike land is that it is fast
+// relative to the coil either side of it, which is why speeding the whole clip
+// up would not have bought it and would have read as fast-forward instead.
 const SWING_RAW: RawClip = {
   name: "swing",
   loop: false,
@@ -296,9 +430,10 @@ const SWING_RAW: RawClip = {
   fallback: "idle",
   duration: 1.4,
   keys: [
-    { t: 0.0, rot: stance(GUARD, {}), move: {} },
+    { t: 0.0, rot: stance(GUARD, {}), move: {}, ease: "decel" },
     {
       // windup: torso coils to his right, sword arm lifts overhead and back
+      ease: "accel",
       t: 0.32,
       rot: stance(GUARD, {
         spine: [-7, -10, 0],
@@ -317,6 +452,7 @@ const SWING_RAW: RawClip = {
     },
     {
       // strike: everything uncoils forward into a braced lunge
+      ease: "decel",
       t: 0.5,
       rot: stance(GUARD, {
         spine: [15, 10, 0],
@@ -569,7 +705,10 @@ function prepare(raw: RawClip): Clip {
     for (const name of Object.keys(key.move ?? {})) {
       moveBones.add(name);
     }
-    return { t: key.t, q, move: key.move ?? {} };
+    const spec = key.ease ?? "smooth";
+    const easeRot = typeof spec === "string" ? spec : (spec.rot ?? "smooth");
+    const easeMove = typeof spec === "string" ? spec : (spec.move ?? "smooth");
+    return { t: key.t, q, move: key.move ?? {}, easeRot, easeMove };
   });
 
   return { ...raw, keys, rotBones, moveBones };
@@ -660,6 +799,36 @@ export function compose(base: Pose, overlay: Pose): Pose {
   return { rot, move };
 }
 
+// Remaps a segment's normalised progress. See `Easing` for the four shapes.
+//
+// WHY THIS IS A CHOICE PER SEGMENT AND NOT A CONSTANT (#574). Every segment of
+// every channel used to be smoothstepped unconditionally, right here. The
+// argument for that -- in this file's header, and it is a real argument -- was
+// that a 4-6 key clip interpolated linearly reads as straight-line lerp. True,
+// but it answers the wrong question: lerp's failure is POPPINESS at the keys,
+// and smoothstep bought the fix by driving angular velocity to ZERO AT EVERY
+// KEY. Every joint of every player came to a complete stop four times a second
+// during a run. That is the texture players described as slow motion, and it
+// is why "make the animations faster" was the wrong instinct -- the clips were
+// not too long, they were full of stops.
+//
+// The rule this replaces it with: a pose the body PASSES THROUGH (a foot
+// contact, a strike) keeps its velocity, and a pose the body ARRIVES AT (an
+// apex, a settle) eases. `smooth` stays the default so an unannotated
+// keyframe behaves exactly as it did before this change.
+function ease(u: number, kind: Easing): number {
+  switch (kind) {
+    case "linear":
+      return u;
+    case "accel":
+      return u * u;
+    case "decel":
+      return u * (2 - u);
+    case "smooth":
+      return u * u * (3 - 2 * u);
+  }
+}
+
 // Samples a clip at `time`, wrapping so every clip loops seamlessly.
 export function sample(clip: Clip, time: number): Pose {
   const t = time % clip.duration;
@@ -680,16 +849,17 @@ export function sample(clip: Clip, time: number): Pose {
   }
 
   const span = b.t - a.t;
-  let u = span > 1e-6 ? (t - a.t) / span : 0;
-  u = u * u * (3 - 2 * u); // smoothstep ease in/out
+  const u = span > 1e-6 ? (t - a.t) / span : 0;
 
+  const uRot = ease(u, a.easeRot);
   const rot: Record<string, Quat> = {};
   for (const name of clip.rotBones) {
-    rot[name] = quat.slerp(a.q[name] ?? IDENTITY, b.q[name] ?? IDENTITY, u);
+    rot[name] = quat.slerp(a.q[name] ?? IDENTITY, b.q[name] ?? IDENTITY, uRot);
   }
+  const uMove = ease(u, a.easeMove);
   const move: Record<string, EulerTriple> = {};
   for (const name of clip.moveBones) {
-    move[name] = lerp3(a.move[name] ?? ZERO, b.move[name] ?? ZERO, u);
+    move[name] = lerp3(a.move[name] ?? ZERO, b.move[name] ?? ZERO, uMove);
   }
   return { rot, move };
 }
