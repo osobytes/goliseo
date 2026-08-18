@@ -91,6 +91,13 @@ export interface AnimatorOptions extends actionPose.ActionPoseOptions {
   readonly throw?: number;
   /** Soccer/combat windup timer; > 0 means the action is still coiling. */
   readonly windup?: number;
+  /**
+   * Elapsed progress through the current timed combat phase, [0, 1) (#576):
+   * the wire's per-player `phase_fraction`, normalised sim-side. Drives the
+   * `strike` phase source's sweep -- see `strikeClipTime`. Absent means "no
+   * progress signal"; each combat phase then holds its arrival key.
+   */
+  readonly phase_fraction?: number;
 }
 
 // Playback rate for the idle clip, in clip-seconds per real second. Breathing
@@ -117,7 +124,11 @@ export const IDLE_RATE = 0.8;
 // -- so the outgoing action keeps the duration it was engaged with, and this
 // is only the fallback for a character whose first observed frame is already
 // a fade-out.
-const DEFAULT_FADE_SECONDS = 0.16;
+//
+// 0.16 -> 0.12 (#576): trimmed with the combat recovery's own exit fade, and
+// for the same reason -- an exit longer than the action it exits reads as the
+// action dissolving. Still comfortably above a 60 fps frame, so nothing pops.
+const DEFAULT_FADE_SECONDS = 0.12;
 
 // Longest gap between two frames the crossfade will integrate. A tab that was
 // backgrounded for ten seconds must not snap every stance in one step, and a
@@ -255,6 +266,86 @@ function wrapPhase(time: number, duration: number, loop: boolean): number {
   return wrapped < 0 ? wrapped + duration : wrapped;
 }
 
+// The SWING clip's three authored landmarks (#574), in clip seconds. Declared
+// here rather than read off `clips.SWING.keys` by index so a re-authored key
+// cannot silently retarget the sweep; `animator.spec.ts` pins each against
+// the clip's own key times, which is what keeps the two from drifting.
+/** The coil: torso wound, weapon arm overhead and back. */
+export const SWING_COIL_SECONDS = 0.32;
+/** The strike: everything uncoiled forward into the braced lunge. */
+export const SWING_STRIKE_SECONDS = 0.5;
+/** The follow-through: the momentum carried out past the contact. */
+export const SWING_FOLLOW_SECONDS = 0.66;
+
+// How much of the ACTIVE window the coil -> strike travel occupies before the
+// contact key is held (#576). The sim's active windows are 1-5 ticks, so at
+// 60 fps the delivery is roughly one rendered frame and the hold is the rest:
+// with a 4-tick window's tick-quantised fractions {0, .25, .5, .75}, 0.25
+// puts the second rendered frame exactly ON the contact key and holds it for
+// the remaining two -- the >= 2-frame hold the issue asks for, with a frame
+// to spare.
+export const STRIKE_TRAVEL_FRACTION = 0.25;
+
+// How much of the RECOVERY window the strike -> follow-through release
+// occupies before the follow-through holds and the guard stance's crossfade
+// takes over. A quarter of the shortest authored recovery (12 ticks) is ~3
+// rendered frames of release -- momentum spent, not teleported.
+export const RELEASE_FRACTION = 0.25;
+
+/**
+ * The `strike` phase source (#576): where in the SWING clip a body this far
+ * through a combat phase is. One pure function, exported so the spec can
+ * assert the whole arc -- monotone through the strike key, never over it --
+ * without reconstructing it from sampled quaternions.
+ *
+ * The windup travels 0 -> coil, the active window delivers coil -> strike
+ * and then HOLDS the contact key, and the recovery releases strike ->
+ * follow-through and holds that while the guard stance fades back in. The
+ * three segments are continuous at the seams (windup ends where active
+ * begins, active ends where recovery begins), so the strike key can only be
+ * reached THROUGH the authored accelerating uncoil, never jumped past --
+ * which is the defect this function replaces: the old two-position read held
+ * t=0.42 and then popped to t=0.77 in one frame, over both keys.
+ *
+ * `phaseFraction === undefined` (a caller predating the wire column, or a
+ * soccer windup, where no combat progress crosses) holds the phase's ARRIVAL
+ * key instead of sweeping: coil during a windup, strike during an active
+ * window, follow-through everywhere else. That is the pre-#576 behaviour with
+ * the two fractions corrected onto the authored keys.
+ */
+export function strikeClipTime(
+  poseId: string | undefined,
+  phaseFraction: number | undefined,
+  windup: number,
+): number {
+  if (poseId === "combat_windup") {
+    if (phaseFraction === undefined) {
+      return SWING_COIL_SECONDS;
+    }
+    return clamp(phaseFraction, 0, 1) * SWING_COIL_SECONDS;
+  }
+  if (poseId === "combat_active") {
+    if (phaseFraction === undefined) {
+      return SWING_STRIKE_SECONDS;
+    }
+    const travel = clamp(phaseFraction / STRIKE_TRAVEL_FRACTION, 0, 1);
+    return SWING_COIL_SECONDS + travel * (SWING_STRIKE_SECONDS - SWING_COIL_SECONDS);
+  }
+  if (poseId === "combat_recovery") {
+    if (phaseFraction === undefined) {
+      return SWING_FOLLOW_SECONDS;
+    }
+    const release = clamp(phaseFraction / RELEASE_FRACTION, 0, 1);
+    return SWING_STRIKE_SECONDS + release * (SWING_FOLLOW_SECONDS - SWING_STRIKE_SECONDS);
+  }
+  // Soccer windup, and the outgoing swing under any later pose: coil while
+  // the windup timer runs, follow-through once the ball is away. The strike
+  // itself stays unrendered on this path -- the soccer sim carries no phase
+  // progress to sweep it with; the kick's read is `action_pose`'s
+  // kick_follow. (Pre-#576 this pair was 0.42/0.77, neither on a key.)
+  return windup > 0 ? SWING_COIL_SECONDS : SWING_FOLLOW_SECONDS;
+}
+
 function phaseFor(
   source: PhaseSource,
   clip: clips.Clip,
@@ -272,12 +363,12 @@ function phaseFor(
     case "throw_timer":
       // throw_timer counts DOWN, so 1 is the moment of commitment.
       return wrapPhase((1 - clamp(opts.throw ?? 0, 0, 1)) * clip.duration, clip.duration, false);
-    case "windup":
-      // The two phases of a strike worth holding: the coiled key while the
-      // windup timer runs, the contact key once it has expired. Both fractions
-      // are `poseFor`'s own, from the `"swing"` branch that no `POSE_CLIP`
-      // entry ever reached and which this rewrite deletes.
-      return wrapPhase(((opts.windup ?? 0) > 0 ? 0.3 : 0.55) * clip.duration, clip.duration, false);
+    case "strike":
+      return wrapPhase(
+        strikeClipTime(opts.pose?.id, opts.phase_fraction, opts.windup ?? 0),
+        clip.duration,
+        false,
+      );
   }
 }
 

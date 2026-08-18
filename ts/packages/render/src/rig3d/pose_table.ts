@@ -37,7 +37,7 @@
 // PHASE, NOT `timeScale`, IS THE AUTHORITY -- see `locomotionTimeScale`'s doc
 // comment for the full argument. Every action this table describes is pinned
 // to a simulation-derived quantity (distance travelled, a throw timer, the
-// windup timer) rather than to a free-running animation clock, for the same
+// combat phase's own progress) rather than to a free-running animation clock, for the same
 // reason `rig3d/action_pose.ts` keeps dives parametric: a free-running clock
 // does not move when rollback moves the simulation under it.
 
@@ -65,10 +65,17 @@ export type StanceActionId = "guard_stance" | "charge" | "swing" | "keeper_gathe
  *   the clip's duration. Locked to ground speed by construction.
  * * `throw_timer` -- `PlayerRenderOptions.throw`, which counts DOWN, so 1 is
  *   the moment of commitment and 0 is the end of the follow-through.
- * * `windup` -- `PlayerRenderOptions.windup`: held at the clip's coiled key
- *   while a windup timer runs, and at its strike key once it has expired.
+ * * `strike` -- the SWING clip's authored coil/strike/follow-through arc,
+ *   swept by the sim's own combat phase progress (#576). While the pose id is
+ *   a combat phase, `PlayerRenderOptions.phase_fraction` drives the sweep:
+ *   the windup travels into the coil, the active window delivers the strike
+ *   and HOLDS the contact key, and the recovery releases into the
+ *   follow-through. For `soccer_windup` (no combat progress crosses) it
+ *   degrades to the pre-#576 two-position read: coil while
+ *   `PlayerRenderOptions.windup` runs, follow-through once it has expired.
+ *   `rig3d/animator.ts`'s `strikeClipTime` is the one implementation.
  */
-export type PhaseSource = "clock" | "gait" | "throw_timer" | "windup";
+export type PhaseSource = "clock" | "gait" | "throw_timer" | "strike";
 
 /**
  * Why a pose has no action of its own. The whole point of the rewrite: these
@@ -147,6 +154,13 @@ const SNAP = 0.06;
 const QUICK = 0.1;
 const EASE = 0.16;
 const SETTLE = 0.24;
+// The combat recovery's own exit fade (#576): shorter than SETTLE, because a
+// 240 ms melt after a 67-330 ms strike reads as the strike dissolving rather
+// than settling -- the tail was longer than the delivery. 0.18 keeps the
+// "settling, not cancelled" reading while letting the follow-through land.
+// Deliberately NOT a retune of SETTLE itself: `keeper_ready_low`'s slow ease
+// into a held stance is a different statement and keeps the 240 ms.
+const RECOVER = 0.18;
 
 function stance(
   action: StanceActionId,
@@ -282,16 +296,24 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   combat_stagger: noAction("root_overlay", "action_pose.TIPS.combat_stagger"),
 
   // -------------------------------------------------------------------------
-  // Combat, volitional phases. `guard`/`aim`/`recovery` all sit in the guard
-  // stance and `active` holds the charge, exactly as `POSE_CLIP` had it --
-  // parity, deliberately, so this rewrite is not also a re-tune.
+  // Combat, volitional phases. `guard`/`aim`/`recovery` sit in the guard
+  // stance, as `POSE_CLIP` had them.
   //
-  // `combat_windup` is the one existing mapping that CHANGES: it used to
-  // share the guard stance with `aim` and `recovery`, which made the three
-  // phases indistinguishable. `clips.SWING`'s t=0.32 key is a literal windup
-  // (torso coiled to the right, weapon arm overhead and back) and was
-  // authored for exactly this -- see the dead `"swing"` branch this rewrite
-  // deletes from `poseFor`, which no `POSE_CLIP` entry ever reached.
+  // `combat_windup` changed in #425: it used to share the guard stance with
+  // `aim` and `recovery`, which made the three phases indistinguishable.
+  // `clips.SWING`'s t=0.32 key is a literal windup (torso coiled to the
+  // right, weapon arm overhead and back) and was authored for exactly this.
+  //
+  // `combat_active` changed in #576: `POSE_CLIP` held the CHARGE clip (a
+  // held attitude) through the active window, so the sim's own strike travel
+  // -- the one thing the window exists to show -- was never rendered; the
+  // authored swing jumped from its coil straight past the strike key. It now
+  // continues the SWING that the windup began. Windup and active naming the
+  // SAME action is load-bearing: the crossfade sees no action change at the
+  // windup -> active transition, so the clip's phase sweeps through the
+  // strike key with no fade in between (the `strike` phase source's job),
+  // and the crossfade value here only matters for an active window entered
+  // from some other stance (a ranged release out of aim), which SNAPs.
   // -------------------------------------------------------------------------
   combat_guard: stance(
     "guard_stance",
@@ -302,17 +324,17 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "parity with POSE_CLIP",
   ),
   combat_active: stance(
-    "charge",
+    "swing",
     masks.UPPER_BODY,
-    "gait",
+    "strike",
     SNAP,
-    "repeat",
-    "parity with POSE_CLIP",
+    "clamp",
+    "was: charge, a held pose that skipped the authored strike (#576)",
   ),
   combat_windup: stance(
     "swing",
     masks.UPPER_BODY,
-    "windup",
+    "strike",
     QUICK,
     "clamp",
     "was: guard, indistinguishable from aim/recovery",
@@ -329,9 +351,9 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
     "guard_stance",
     masks.UPPER_BODY,
     "clock",
-    SETTLE,
+    RECOVER,
     "repeat",
-    "parity with POSE_CLIP",
+    "guard eases back in over the swing's follow-through; 0.24 melted it (#576)",
   ),
 
   // -------------------------------------------------------------------------
@@ -341,7 +363,7 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // the standing foot; `clips.SWING`'s windup key is that shape. Masked to the
   // upper body so the plant leg keeps the stride -- the leg half of a shot is
   // a `masks.KICK_R`/`KICK_L` clip that does not exist yet (#424).
-  soccer_windup: stance("swing", masks.UPPER_BODY, "windup", QUICK, "clamp", "was: plain gait"),
+  soccer_windup: stance("swing", masks.UPPER_BODY, "strike", QUICK, "clamp", "was: plain gait"),
   // A slide is a whole-body ground action: hips down, one leg extended, the
   // trailing leg folded, torso back. There is no clip for any of that and no
   // root transform approximates it (`action_pose.ts` covers reactions, not
@@ -414,7 +436,7 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
 export const PHASE_BY_ACTION: Readonly<Record<StanceActionId, PhaseSource>> = {
   guard_stance: "clock",
   charge: "gait",
-  swing: "windup",
+  swing: "strike",
   keeper_gather: "clock",
   keeper_sling: "throw_timer",
 };

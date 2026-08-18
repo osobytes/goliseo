@@ -288,6 +288,13 @@ describe("player_renderer_3d mixer/procedural parity", () => {
   // last step, so parity here is the check that they do -- the mixer path is
   // production and `poseFor` is the oracle, and neither is allowed to be the
   // only one showing a follow-through.
+  //
+  // `combat_active` left this list in #576: `POSE_CLIP` holds the CHARGE
+  // through the active window, and the mixer path now sweeps the SWING's
+  // authored strike through it instead -- the divergence IS the fix, so the
+  // frozen procedural sampler stopped being its oracle, exactly as it did
+  // for `combat_windup` in #425. `rig3d/animator.spec.ts`'s "#576" suite is
+  // where the active window's read is pinned now.
   it.each([
     "locomotion",
     "contain",
@@ -297,7 +304,6 @@ describe("player_renderer_3d mixer/procedural parity", () => {
     "settle",
     "kick_follow",
     "combat_guard",
-    "combat_active",
     "combat_recovery",
     "combat_aim",
   ])("reproduces the procedural pose for %s, whose mapping did not change", (id) => {
