@@ -1199,13 +1199,49 @@ describe("countdown, terminal identity, and DETAILS (#566)", () => {
     // No roster, no players strip, no mode chips -- nothing left to act on.
     expect(hit.find(currentLayout, "you_card")).toBeNull();
     expect(hit.find(currentLayout, "players_heading")).toBeNull();
+    // A clean countdown has nothing to report -- no "trouble" line at all,
+    // not merely an empty one.
+    expect(hit.find(currentLayout, "trouble")).toBeNull();
+  });
+
+  // Council review: `departure_text` is phase-independent (a peer can drop
+  // seconds before kickoff exactly as easily as during handshake), so the
+  // countdown's otherwise-minimal screen still has to make room for it --
+  // pre-#566 the "trouble" line rendered in every state, and a silent
+  // countdown would have been a regression from that.
+  it("still surfaces a non-fatal departure during countdown, without cluttering the clean case", () => {
+    let state = withCountdown(90);
+    if (!state.model.coordinator) {
+      throw new Error("withCountdown must produce a coordinator");
+    }
+    state = {
+      ...state,
+      model: {
+        ...state.model,
+        coordinator: {
+          ...state.model.coordinator,
+          departure: { peer_id: "guest_2", reason: "transport_lost", code: "transport_lost" },
+        },
+      },
+    };
+    const trouble = hit.find(lobbyLayout(state), "trouble");
+    expect(trouble).not.toBeNull();
+    expect(trouble?.text).toBe("The connection to a guest was lost.");
+    // The hero numeral is still the headline -- the departure is one muted
+    // line, not a takeover of the countdown screen.
+    expect(hit.find(lobbyLayout(state), "countdown")?.text).toBe("2");
   });
 
   it("always shows the identity dump on the terminal screen, load-bearing for a build/manifest mismatch", () => {
     let state = hosting();
     state = dispatch(state, { kind: "lobby", command: { kind: "leave" } });
     expect(view(state).phase).toBe("terminal");
-    const identity = hit.find(lobbyLayout(state), "identity");
+    // "identity_card" is the display card -- distinct from the role
+    // screen's "identity" BUTTON (which cycles the guest peer id), even
+    // though a `card` kind is only ever safe here because it is
+    // `focusable: false` (both are pinned by name so a future id collision
+    // between the two fails loudly instead of silently sharing a click).
+    const identity = hit.find(lobbyLayout(state), "identity_card");
     expect(identity).not.toBeNull();
     expect(identity?.text).toContain("BUILD");
     // No toggle on the terminal screen -- the card is simply always there.
@@ -1215,14 +1251,168 @@ describe("countdown, terminal identity, and DETAILS (#566)", () => {
   it("DETAILS toggles the identity card outside terminal, and does not touch the model", () => {
     const state = lockedHost("4v4");
     const before = { ...state.model };
-    expect(hit.find(lobbyLayout(state), "identity")).toBeNull();
+    expect(hit.find(lobbyLayout(state), "identity_card")).toBeNull();
 
     const toggled = click(state, "details");
-    expect(hit.find(lobbyLayout(toggled), "identity")?.text).toContain("BUILD");
+    expect(hit.find(lobbyLayout(toggled), "identity_card")?.text).toContain("BUILD");
     expect(toggled.model).toEqual(before);
 
     const toggledBack = click(toggled, "details");
-    expect(hit.find(lobbyLayout(toggledBack), "identity")).toBeNull();
+    expect(hit.find(lobbyLayout(toggledBack), "identity_card")).toBeNull();
+  });
+
+  // Council review (cheap hardening): a stale `true` would otherwise carry
+  // across attempts within one `LobbyScreenState` instance -- the DETAILS
+  // toggle is screen-local, so nothing in `lobby_model.ts` ever clears it.
+  // Constructed directly (rather than by first reaching a phase where
+  // DETAILS is actually clickable) because the point is the reset behaviour
+  // of `room_cancel` itself, not which flow happens to make `details: true`
+  // reachable beforehand.
+  it("resets DETAILS when a room attempt is cancelled via the CANCEL widget", () => {
+    let state = click(newState(VP, ports()), "room_code_join");
+    state = { ...state, details: true };
+    const cancelled = click(state, "room_cancel");
+    expect(view(cancelled).room_entry).toBeUndefined();
+    expect(cancelled.details).toBe(false);
+  });
+
+  it("resets DETAILS when Escape cancels a room attempt", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = { ...state, details: true };
+    const [next] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(view(next).room_active).toBe(false);
+    expect(next.details).toBe(false);
+  });
+
+  it("leaves DETAILS untouched by a command that is not room_cancel", () => {
+    let state = lockedHost("4v4");
+    state = { ...state, details: true };
+    state = dispatch(state, { kind: "lobby", command: { kind: "ready", ready: true } });
+    expect(state.details).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// READY/START visibility across manifest -> assigned -> ready (#566 council
+// review, blocking finding 2): no case ever constructed `phase ===
+// "manifest"` before, so its one distinguishing behaviour -- the roster
+// shows, but READY/START do not apply yet -- was unproven. The `ready`-phase
+// case is the companion: presence-when-enabled was never pinned either, and
+// it is now a per-phase conditional (`footerWidgets`' `showReady`/
+// `showStart`), not merely a `disabled` flag on an always-present button.
+// ---------------------------------------------------------------------------
+
+describe("roster phase gating: manifest / assigned / ready (#566)", () => {
+  function withPhase(
+    mode: SessionMatchMode,
+    phase: "manifest" | "assigned" | "ready",
+  ): LobbyScreenState {
+    const state = lockedHost(mode);
+    if (!state.model.coordinator) {
+      throw new Error("lockedHost must produce a coordinator");
+    }
+    return {
+      ...state,
+      model: { ...state.model, coordinator: { ...state.model.coordinator, phase } },
+    };
+  }
+
+  it("manifest: shows the roster, but READY and START do not apply yet", () => {
+    const state = withPhase("2v2", "manifest");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "slot_home_1")).not.toBeNull();
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    expect(hit.find(currentLayout, "start")).toBeNull();
+  });
+
+  it("assigned: READY is present and enabled; START does not apply yet", () => {
+    const state = withPhase("2v2", "assigned");
+    const currentLayout = lobbyLayout(state);
+    const ready = hit.find(currentLayout, "ready");
+    expect(ready).not.toBeNull();
+    expect(ready?.data?.disabled).toBe(false);
+    expect(hit.find(currentLayout, "start")).toBeNull();
+  });
+
+  it("ready: READY and, for the host, an enabled START are both present", () => {
+    const state = withPhase("2v2", "ready");
+    const currentLayout = lobbyLayout(state);
+    const ready = hit.find(currentLayout, "ready");
+    expect(ready).not.toBeNull();
+    expect(ready?.data?.disabled).toBe(false);
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// running / result (#566 council review, blocking finding 3): this screen
+// normally never renders these phases -- a `start_match` effect returns
+// `{ go: "online_match" }` and the owner unmounts it -- but `layoutGeneric`
+// exists as a defensive fallback, and an untested fallback is not a
+// fallback anyone can trust. Minimal smoke coverage: it doesn't throw, and
+// it doesn't offer controls from a phase it isn't.
+// ---------------------------------------------------------------------------
+
+describe("running / result: defensive fallback (#566)", () => {
+  function withPhase(phase: "running" | "result"): LobbyScreenState {
+    const state = hosting();
+    if (!state.model.coordinator) {
+      throw new Error("hosting() must produce a coordinator");
+    }
+    return {
+      ...state,
+      model: { ...state.model, coordinator: { ...state.model.coordinator, phase } },
+    };
+  }
+
+  for (const phase of ["running", "result"] as const) {
+    it(`${phase}: renders a minimal fallback without throwing`, () => {
+      const state = withPhase(phase);
+      expect(() => lobbyLayout(state)).not.toThrow();
+      const currentLayout = lobbyLayout(state);
+      expect(hit.find(currentLayout, "leave")).not.toBeNull();
+      // No roster, no handshake furniture -- this is a fallback, not a
+      // sixth designed phase.
+      expect(hit.find(currentLayout, "you_card")).toBeNull();
+      expect(hit.find(currentLayout, "slot_home_1")).toBeNull();
+      expect(hit.find(currentLayout, "invite")).toBeNull();
+      expect(hit.find(currentLayout, "room_code_host")).toBeNull();
+      assertWithinCanvas(currentLayout);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// dispatchCommand's own focus repair (#566 council review, cheap hardening):
+// the click path has always repaired focus against the layout it just
+// produced; a raw "lobby" dispatch -- every network-driven event
+// (`room_created`, `signal`, `control`, `tick`, and every case here that
+// calls `dispatch()` rather than `click()`) -- did not, so a guest whose
+// screen flips handshake -> assigned the moment the host clicks LOCK kept
+// focus on a widget that no longer existed until their own next input.
+// ---------------------------------------------------------------------------
+
+describe("focus repair on a network-driven phase change (#566)", () => {
+  it("repairs focus after a lobby-kind dispatch changes phase, mirroring the click path", () => {
+    let state = hosting();
+    // Deliberately point focus at a widget that will not survive the
+    // upcoming phase change, the way a network event can leave it --
+    // `hosting()`'s own click already repairs focus for the click that
+    // produced it, so this simulates the case that click-time repair
+    // cannot reach.
+    state = { ...state, focus: "invite" };
+    state = dispatch(state, { kind: "lobby", command: { kind: "bot_fill" } });
+    state = dispatch(state, { kind: "lobby", command: { kind: "lock" } });
+    expect(view(state).phase).not.toBe("handshake");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "invite")).toBeNull();
+    const focused = hit.find(currentLayout, state.focus);
+    expect(
+      focused,
+      `focus "${state.focus}" must point at a widget that exists in the new layout`,
+    ).not.toBeNull();
   });
 });
 

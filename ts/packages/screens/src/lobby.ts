@@ -289,6 +289,26 @@ function identityLines(view: LobbyView): string {
   return view.identity.map((row) => `${row.label}  ${row.value}`).join("\n");
 }
 
+/**
+ * A transient command error, a room-code failure (#602's own distinct copy
+ * per reason), or a guest dropping while the lobby is still standing
+ * (`departure_text`, with its raw `detail` folded in) -- everything short of
+ * a terminated session, which gets its own headline (`layoutTerminal`)
+ * instead. Shared by `footerWidgets` and `layoutCountdown`: a departure is
+ * phase-independent and can land seconds before kickoff just as easily as
+ * during handshake, so the countdown's otherwise-minimal screen still has
+ * to make room for it.
+ */
+function troubleText(view: LobbyView): string {
+  const trouble = view.error ?? view.room_error ?? view.departure_text ?? "";
+  if (!trouble) {
+    return "";
+  }
+  const detail =
+    view.error === undefined && view.room_error === undefined ? view.departure?.detail : undefined;
+  return `${trouble}${detail ? ` (${detail})` : ""}`;
+}
+
 /** The team column order: whichever teams the model actually published, home first. */
 function teamOrder(view: LobbyView): readonly InputTeam[] {
   const seen: InputTeam[] = [];
@@ -373,28 +393,17 @@ function footerWidgets(
   if (opts.showDetails && state.details) {
     displayCard(
       widgets,
-      "identity",
+      "identity_card",
       identityLines(view),
       { x: LEFT_X, y: FOOTER_TEXT_Y, w: LEFT_COL_W, h: 64 },
       { tone: "muted" },
     );
   } else {
     text(widgets, "status", view.status, { x: LEFT_X, y: FOOTER_TEXT_Y, w: LEFT_COL_W, h: 20 }, {});
-    // A terminated session gets its own headline (`layoutTerminal`); this is
-    // for everything short of that -- a transient command error, a
-    // room-code failure (#602's own distinct copy per reason), or a guest
-    // dropping while the lobby is still standing (`departure_text`, with
-    // its raw `detail` folded in exactly where the old single "trouble"
-    // line used to put it).
-    const trouble = view.error ?? view.room_error ?? view.departure_text ?? "";
-    const detail =
-      view.error === undefined && view.room_error === undefined
-        ? view.departure?.detail
-        : undefined;
     text(
       widgets,
       "trouble",
-      trouble ? `${trouble}${detail ? ` (${detail})` : ""}` : "",
+      troubleText(view),
       { x: LEFT_X, y: FOOTER_TEXT_Y + 24, w: LEFT_COL_W, h: 36 },
       { tone: "muted" },
     );
@@ -956,6 +965,23 @@ function layoutCountdown(state: LobbyScreenState, view: LobbyView): Layout {
     { x: 0, y: 270, w: 960, h: 24 },
     { align: "center", tone: "muted" },
   );
+  // The one exception to "hero numeral, one line, LEAVE": a departure is
+  // phase-independent (`departure_text`'s own doc) and can land seconds
+  // before kickoff just as easily as during handshake -- pre-#566 it
+  // rendered in every state, and this is the deliberate carve-out that
+  // keeps that true rather than a state a peer's screen goes silent for.
+  // Rendered only when there is something to say, so the common case stays
+  // a clean hero moment.
+  const trouble = troubleText(view);
+  if (trouble) {
+    text(
+      widgets,
+      "trouble",
+      trouble,
+      { x: 0, y: 300, w: 960, h: 36 },
+      { align: "center", tone: "muted" },
+    );
+  }
   control(
     widgets,
     state,
@@ -994,7 +1020,7 @@ function layoutTerminal(state: LobbyScreenState, view: LobbyView): Layout {
   }
   displayCard(
     widgets,
-    "identity",
+    "identity_card",
     identityLines(view),
     { x: 280, y: 230, w: 400, h: 140 },
     {
@@ -1123,13 +1149,20 @@ function advance(
   model: LobbyModel,
   nextFocus: string,
   effects: readonly LobbyEffect[],
+  resetDetails = false,
 ): LobbyScreenState {
   return {
     viewport: state.viewport,
     ports: state.ports,
     model,
     focus: nextFocus,
-    details: state.details,
+    // A cancelled room attempt falls back to the role screen, which offers
+    // no DETAILS toggle at all -- so a stale `true` is invisible right up
+    // until the SAME instance reaches handshake/assigned/ready again (a
+    // second room-code attempt, or a manual role pick), where it would pop
+    // the identity card open unasked. `room_cancel` resets it along with
+    // everything else the room-code path clears on the way back.
+    details: resetDetails ? false : state.details,
     effects,
   };
 }
@@ -1142,7 +1175,18 @@ function dispatchCommand(
   cmd: LobbyCommand,
 ): readonly [LobbyScreenState, LobbyAction | undefined] {
   const [model, effects] = lobbyCommand(state.model, state.ports, cmd);
-  return [advance(state, model, state.focus, effects), actionFor(effects)];
+  let nextState = advance(state, model, state.focus, effects, cmd.kind === "room_cancel");
+  // Mirrors the click path's own `focus.ensure` below: a command dispatched
+  // directly -- every network-driven event (`room_created`, `signal`,
+  // `control`, `tick`, ...) arrives this way, not through a click -- can
+  // change phase just as a click can. Without this, a guest whose screen
+  // flips handshake -> assigned the moment the host clicks LOCK keeps focus
+  // on a widget that no longer exists until their own next input.
+  nextState = {
+    ...nextState,
+    focus: focus.ensure(layout(nextState), nextState.focus) ?? nextState.focus,
+  };
+  return [nextState, actionFor(effects)];
 }
 
 export function update(
@@ -1205,7 +1249,7 @@ export function update(
       state.ports,
       roomAttemptPending ? { kind: "room_cancel" } : { kind: "leave" },
     );
-    let nextState = advance(state, model, nextFocus, effects);
+    let nextState = advance(state, model, nextFocus, effects, roomAttemptPending);
     // A cancelled room attempt keeps the lobby mounted (unlike "leave",
     // which exits it and makes focus moot) -- land focus on something the
     // role screen it falls back to actually offers, mirroring the general
@@ -1230,7 +1274,7 @@ export function update(
     return [advance(state, state.model, id, []), undefined];
   }
   const [model, effects] = lobbyCommand(state.model, state.ports, cmd);
-  let nextState = advance(state, model, id, effects);
+  let nextState = advance(state, model, id, effects, cmd.kind === "room_cancel");
   // Focus survives a layout that no longer offers the activated control.
   nextState = { ...nextState, focus: focus.ensure(layout(nextState), id) ?? id };
   return [nextState, actionFor(effects)];
