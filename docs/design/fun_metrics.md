@@ -540,9 +540,9 @@ cd rust && cargo test -p gc-sim --test outfield_ai_baseline
 `outfield_ai_baseline_reproduces_the_frozen_fixture_exactly` re-runs the
 fixture through `gc_sim::outfield_ai_baseline::measure` and compares it against
 the frozen `gc_data::outfield_ai_baseline::RECORD`, so it runs inside
-`cargo test --workspace` — gate 3 of `./scripts/check.sh`, which
-`.github/workflows/ci.yml`'s `gate` job invokes rather than mirroring, so the
-two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
+the workspace test suite — gate 3 of `./scripts/check.sh` (`cargo nextest run
+--workspace` since #594), which `.github/workflows/ci.yml`'s gate jobs invoke
+rather than mirroring, so the two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
 `outfield_ai_baseline::serialize` over a fresh `measure` and pasting the result
 over `rust/crates/gc-data/src/outfield_ai_baseline.rs`; the ceremony below is
 what the acknowledgement flag used to enforce, and it is now enforced by review
