@@ -12,7 +12,19 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Quat } from "@gc/core";
 import * as actionPose from "./action_pose.ts";
 import * as clips from "./clips.ts";
-import { poseFor, reset, basePose, IDLE_RATE } from "./animator.ts";
+import {
+  poseFor,
+  reset,
+  basePose,
+  strikeClipTime,
+  IDLE_RATE,
+  RELEASE_FRACTION,
+  STRIKE_HOLD_FRACTION,
+  STRIKE_TRAVEL_FRACTION,
+  SWING_COIL_SECONDS,
+  SWING_FOLLOW_SECONDS,
+  SWING_STRIKE_SECONDS,
+} from "./animator.ts";
 import type { AnimatorOptions, AnimatorView } from "./animator.ts";
 import { POSE_ACTIONS } from "./pose_table.ts";
 
@@ -102,10 +114,13 @@ describe("rig3d/animator.poseFor", () => {
     expect(delta(guard, windup)).toBeGreaterThan(0.05);
   });
 
-  it("holds a windup's coiled key while its timer runs and its contact key once it expires", () => {
+  // The soccer path carries no combat phase progress, so its swing keeps the
+  // two-position read: coil while the timer runs, follow-through once the
+  // ball is away (#576 retargeted both onto the authored keys).
+  it("holds a soccer windup's coiled key while its timer runs and its follow-through once it expires", () => {
     const coiled = poseFor(freshId(), RUNNING, withPose("soccer_windup", { windup: 0.5 }), 3);
-    const contact = poseFor(freshId(), RUNNING, withPose("soccer_windup", { windup: 0 }), 3);
-    expect(delta(coiled, contact)).toBeGreaterThan(0.05);
+    const released = poseFor(freshId(), RUNNING, withPose("soccer_windup", { windup: 0 }), 3);
+    expect(delta(coiled, released)).toBeGreaterThan(0.05);
   });
 
   // The other half of the explicit table: entries with no action AND no root
@@ -424,6 +439,237 @@ describe("rig3d/animator crossfade", () => {
     const afterReset = poseFor(id, RUNNING, withPose("combat_guard"), 0.04);
     const full = poseFor(freshId(), RUNNING, withPose("combat_guard"), 0.04);
     expect(delta(afterReset, full)).toBeLessThan(1e-9);
+  });
+});
+
+// #576: the strike is rendered. The sim's melee timing (windup / active /
+// recovery, `gc_data::action_families`) crosses the boundary as
+// `phase_fraction`, and the animator sweeps SWING through its authored keys
+// with it instead of holding the coil and popping past the strike.
+describe("rig3d/animator strike delivery (#576)", () => {
+  // The three landmark constants are duplicated from the clip's authored key
+  // times (see their doc for why they are not read off `keys` by index);
+  // this is the pin that keeps the two from drifting.
+  it("keeps the swing landmarks on the clip's own authored keys", () => {
+    const at = (t: number) => clips.SWING.keys.find((key) => key.t === t);
+    expect(at(SWING_COIL_SECONDS), "coil key").toBeDefined();
+    expect(at(SWING_STRIKE_SECONDS), "strike key").toBeDefined();
+    expect(at(SWING_FOLLOW_SECONDS), "follow-through key").toBeDefined();
+    expect(SWING_COIL_SECONDS).toBeLessThan(SWING_STRIKE_SECONDS);
+    expect(SWING_STRIKE_SECONDS).toBeLessThan(SWING_FOLLOW_SECONDS);
+    expect(SWING_FOLLOW_SECONDS).toBeLessThan(clips.SWING.duration);
+  });
+
+  // Every authored melee-capable family's windup/active/recovery tick
+  // counts, from `gc_data::action_families` (guard has no active window and
+  // its path never engages the swing). Restated rather than imported --
+  // rig3d cannot read a Rust crate -- and pinned on the Rust side by
+  // `combat_presentation.rs`'s family-sequence test, which drives the same
+  // three shapes through `combat_model`.
+  //
+  // `hold` is the expected count of consecutive rendered frames pinned to
+  // the contact key at 60 fps (one frame per tick): the active window
+  // contributes its post-travel frames and `STRIKE_HOLD_FRACTION` of the
+  // recovery contributes ceil(0.1 * recovery) more, which is what keeps the
+  // single-tick ranged window at 3 rather than the 1 frame it produced
+  // before the hold floor existed.
+  const FAMILY_TIMINGS = [
+    { family: "unarmed", windup: 6, active: 4, recovery: 12, hold: 5 },
+    { family: "light_melee", windup: 12, active: 5, recovery: 21, hold: 6 },
+    { family: "ranged", windup: 18, active: 1, recovery: 27, hold: 3 },
+  ] as const;
+
+  // A melee action at 60 fps, tick-quantised exactly as the sim reports it:
+  // each phase's fraction stepping by 1/total per tick, one rendered frame
+  // per tick. This is the sequence of clip times a player actually sees.
+  function drivenClipTimes(windup: number, active: number, recovery: number): number[] {
+    const times: number[] = [];
+    for (let k = 0; k < windup; k += 1) {
+      times.push(strikeClipTime("combat_windup", k / windup, 0));
+    }
+    for (let k = 0; k < active; k += 1) {
+      times.push(strikeClipTime("combat_active", k / active, 0));
+    }
+    for (let k = 0; k < recovery; k += 1) {
+      times.push(strikeClipTime("combat_recovery", k / recovery, 0));
+    }
+    return times;
+  }
+
+  it.each(FAMILY_TIMINGS)(
+    "passes THROUGH the strike key over a full $family action, monotonically, with no jump over it",
+    ({ windup, active, recovery }) => {
+      const times = drivenClipTimes(windup, active, recovery);
+      // Monotone: the swing only ever travels forward through the clip.
+      for (let i = 1; i < times.length; i += 1) {
+        expect(times[i], `frame ${i} keeps travelling forward`).toBeGreaterThanOrEqual(
+          times[i - 1] ?? Number.POSITIVE_INFINITY,
+        );
+      }
+      // The contact key is REACHED exactly, not straddled: the defect this
+      // fixes sampled 0.42 s and then 0.77 s, so the strike (0.50) and the
+      // follow-through (0.66) were both jumped over in one frame.
+      expect(times).toContain(SWING_STRIKE_SECONDS);
+      // And no single frame ever steps over the strike -> follow-through
+      // band: the largest step in the whole action is the coil -> strike
+      // delivery (which a 1-tick active window compresses into exactly one
+      // frame, its only physical option).
+      for (let i = 1; i < times.length; i += 1) {
+        const step = (times[i] ?? 0) - (times[i - 1] ?? 0);
+        expect(step, `frame ${i} step`).toBeLessThanOrEqual(
+          SWING_STRIKE_SECONDS - SWING_COIL_SECONDS + 1e-12,
+        );
+      }
+    },
+  );
+
+  it("is continuous at both phase seams", () => {
+    // The windup ends where the active window begins, and the active window
+    // ends where the recovery's contact hold begins.
+    expect(strikeClipTime("combat_windup", 1, 0)).toBeCloseTo(SWING_COIL_SECONDS, 12);
+    expect(strikeClipTime("combat_active", 0, 0)).toBeCloseTo(SWING_COIL_SECONDS, 12);
+    expect(strikeClipTime("combat_recovery", 0, 0)).toBeCloseTo(SWING_STRIKE_SECONDS, 12);
+  });
+
+  it.each(FAMILY_TIMINGS)(
+    "holds the contact key for at least 2 rendered frames on a $family action",
+    ({ windup, active, recovery, hold }) => {
+      const times = drivenClipTimes(windup, active, recovery);
+      let longestHold = 0;
+      let run = 0;
+      for (const t of times) {
+        run = t === SWING_STRIKE_SECONDS ? run + 1 : run;
+        if (t !== SWING_STRIKE_SECONDS) {
+          run = 0;
+        }
+        longestHold = Math.max(longestHold, run);
+      }
+      // The acceptance floor, and the exact count behind it -- pinned so a
+      // retune of the travel/hold fractions has to re-derive this table
+      // instead of silently shortening a family's contact.
+      expect(longestHold, "consecutive frames pinned to the contact key").toBeGreaterThanOrEqual(2);
+      expect(longestHold).toBe(hold);
+    },
+  );
+
+  it("keeps holding the contact through the recovery's opening band, then releases onto the follow-through", () => {
+    // The minimum-hold floor: everything before STRIKE_HOLD_FRACTION is
+    // still the contact key -- this is what guarantees the hold for a
+    // single-tick active window, whose own phase contributes no held frame.
+    expect(strikeClipTime("combat_recovery", STRIKE_HOLD_FRACTION / 2, 0)).toBe(
+      SWING_STRIKE_SECONDS,
+    );
+    // The release lands ON the follow-through key and stays there while the
+    // guard stance crossfades back in.
+    expect(
+      strikeClipTime("combat_recovery", STRIKE_HOLD_FRACTION + RELEASE_FRACTION, 0),
+    ).toBeCloseTo(SWING_FOLLOW_SECONDS, 12);
+    expect(strikeClipTime("combat_recovery", 1, 0)).toBeCloseTo(SWING_FOLLOW_SECONDS, 12);
+  });
+
+  it("crosses the windup -> active boundary smoothly through the real poseFor pipeline", () => {
+    // Consecutive rendered frames of ONE character, driven exactly as a
+    // match would drive it -- the pure-helper cases above cannot catch a
+    // crossfade re-engaging at the phase transition (windup and active must
+    // share the swing action for the sweep to be seamless), so this diffs
+    // what actually reaches the rig.
+    const id = freshId();
+    const dt = 1 / 60;
+    let now = 2;
+    const frames: actionPose.MutablePose[] = [];
+    for (let k = 0; k < 6; k += 1) {
+      frames.push(poseFor(id, STANDING, withPose("combat_windup", { phase_fraction: k / 6 }), now));
+      now += dt;
+    }
+    for (let k = 0; k < 4; k += 1) {
+      frames.push(poseFor(id, STANDING, withPose("combat_active", { phase_fraction: k / 4 }), now));
+      now += dt;
+    }
+    const steps = frames.slice(1).map((frame, i) => delta(frames[i] ?? frame, frame));
+    // The delivery -- the last coil frame uncoiling into the contact -- is
+    // the one deliberately large step of the whole action.
+    const delivery = steps[6] ?? 0;
+    expect(delivery, "the delivery visibly travels").toBeGreaterThan(0.05);
+    for (let i = 0; i < steps.length; i += 1) {
+      if (i !== 6) {
+        expect(steps[i], `frame ${i} -> ${i + 1} stays smaller than the delivery`).toBeLessThan(
+          delivery,
+        );
+      }
+    }
+    // The phase seam itself (last windup frame -> first active frame) is a
+    // small step, not the pop the pre-#576 code showed there.
+    expect(steps[5], "the windup -> active seam does not pop").toBeLessThan(delivery / 3);
+  });
+
+  it("renders the held contact identically across the hold, through the full poseFor pipeline", () => {
+    // Two characters driven through the same windup, then sampled at the
+    // same wall-clock instant at two different points inside the hold band:
+    // if the contact is genuinely held, the rendered poses are identical.
+    const dt = 1 / 60;
+    const a = freshId();
+    const b = freshId();
+    let now = 0;
+    for (let k = 0; k < 6; k += 1) {
+      poseFor(a, STANDING, withPose("combat_windup", { phase_fraction: k / 6 }), now);
+      poseFor(b, STANDING, withPose("combat_windup", { phase_fraction: k / 6 }), now);
+      now += dt;
+    }
+    const early = poseFor(a, STANDING, withPose("combat_active", { phase_fraction: 0.25 }), now);
+    const late = poseFor(b, STANDING, withPose("combat_active", { phase_fraction: 0.75 }), now);
+    expect(delta(early, late), "both hold frames show the same contact pose").toBeLessThan(1e-9);
+
+    // Non-vacuous: the held contact is a real silhouette change from the
+    // coil the windup arrived at.
+    const coil = poseFor(
+      freshId(),
+      STANDING,
+      withPose("combat_windup", { phase_fraction: 1 }),
+      now,
+    );
+    expect(delta(coil, early), "the strike travelled somewhere").toBeGreaterThan(0.05);
+  });
+
+  it("sweeps the windup into the coil instead of freezing partway to the strike", () => {
+    const now = 4;
+    const start = poseFor(
+      freshId(),
+      STANDING,
+      withPose("combat_windup", { phase_fraction: 0 }),
+      now,
+    );
+    const mid = poseFor(
+      freshId(),
+      STANDING,
+      withPose("combat_windup", { phase_fraction: 0.5 }),
+      now,
+    );
+    const coiled = poseFor(
+      freshId(),
+      STANDING,
+      withPose("combat_windup", { phase_fraction: 1 }),
+      now,
+    );
+    expect(delta(start, mid), "the coil builds").toBeGreaterThan(0.01);
+    expect(delta(mid, coiled), "and keeps building").toBeGreaterThan(0.01);
+    // Without a progress signal (a caller predating the wire column), the
+    // windup holds the coil outright rather than showing nothing.
+    const held = poseFor(freshId(), STANDING, withPose("combat_windup"), now);
+    expect(delta(held, coiled)).toBeLessThan(1e-9);
+  });
+
+  it("maps the active window through STRIKE_TRAVEL_FRACTION exactly", () => {
+    // The delivery: linear coil -> strike over the travel band...
+    expect(strikeClipTime("combat_active", STRIKE_TRAVEL_FRACTION / 2, 0)).toBeCloseTo(
+      (SWING_COIL_SECONDS + SWING_STRIKE_SECONDS) / 2,
+      12,
+    );
+    // ...then the hold, for the whole rest of the window.
+    for (const f of [STRIKE_TRAVEL_FRACTION, 0.5, 0.75, 1]) {
+      expect(strikeClipTime("combat_active", f, 0)).toBe(SWING_STRIKE_SECONDS);
+    }
+    // Absence holds the contact key too -- never the old past-both-keys 0.77.
+    expect(strikeClipTime("combat_active", undefined, 0)).toBe(SWING_STRIKE_SECONDS);
   });
 });
 

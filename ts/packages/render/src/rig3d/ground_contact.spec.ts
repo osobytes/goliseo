@@ -226,7 +226,7 @@ function poseOnRig(
   rig: skeleton.Rig,
   id: string | undefined,
   frame: Frame,
-  extra?: Partial<actionPose.ActionPoseOptions>,
+  extra?: Partial<animator.AnimatorOptions>,
 ): actionPose.MutablePose {
   poseSeq += 1;
   const opts =
@@ -262,7 +262,7 @@ function groundedOnRig(
   rig: skeleton.Rig,
   id: string | undefined,
   frame: Frame,
-  extra?: Partial<actionPose.ActionPoseOptions>,
+  extra?: Partial<animator.AnimatorOptions>,
   probes: ground.GroundProbes = PROBES,
 ): { pose: actionPose.MutablePose; lift: number } {
   poseSeq += 1;
@@ -599,10 +599,15 @@ describe("ground contact: downward root translations (#439)", () => {
     );
 
     let lowest = Infinity;
-    for (let i = 0; i <= 40; i += 1) {
-      // `combat_active` is the pose id `pose_table.ts` maps to SWING.
-      poseOnRig(rig, "combat_active", { speed: 0, gait: 0, now: (i / 40) * clips.SWING.duration });
-      lowest = Math.min(lowest, lowestRendered(rig).y);
+    // The strike phase source (#576) ignores `now`: the swing is swept by the
+    // sim's own phase progress. Walking `phase_fraction` through all three
+    // combat phases covers the whole authored arc -- coil, strike and the
+    // follow-through, whose key is the clip's deepest root drop.
+    for (const id of ["combat_windup", "combat_active", "combat_recovery"]) {
+      for (let i = 0; i <= 40; i += 1) {
+        poseOnRig(rig, id, { speed: 0, gait: 0, now: 0 }, { phase_fraction: i / 40 });
+        lowest = Math.min(lowest, lowestRendered(rig).y);
+      }
     }
     expect(lowest, "a swing's lunge stays on the pitch on its own merits").toBeGreaterThan(-2 * MM);
   });
@@ -1430,13 +1435,18 @@ describe("ground contact: what the lift is, exactly", () => {
   it("leaves a clip's own root motion alone", () => {
     const rig = groundedRig();
     let maxLift = 0;
-    for (let i = 0; i <= 40; i += 1) {
-      const { lift } = groundedOnRig(rig, "combat_active", {
-        speed: 0,
-        gait: 0,
-        now: (i / 40) * clips.SWING.duration,
-      });
-      maxLift = Math.max(maxLift, lift);
+    // Same #576 sweep as the poseOnRig case above: the strike source is
+    // driven by phase progress, not `now`, so this walks the whole arc.
+    for (const id of ["combat_windup", "combat_active", "combat_recovery"]) {
+      for (let i = 0; i <= 40; i += 1) {
+        const { lift } = groundedOnRig(
+          rig,
+          id,
+          { speed: 0, gait: 0, now: 0 },
+          { phase_fraction: i / 40 },
+        );
+        maxLift = Math.max(maxLift, lift);
+      }
     }
     // Exactly zero: SWING's 32 mm root drop is paid for by its own thigh and
     // shin keys, so the deepest it ever reaches is the rest pose's own sole --

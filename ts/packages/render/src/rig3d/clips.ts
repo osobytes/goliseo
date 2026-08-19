@@ -321,13 +321,55 @@ function mirror(pose: Readonly<Record<string, EulerTriple>>): Record<string, Eul
 // ---------------------------------------------------------------------------
 // Clip 2: WALK
 // ---------------------------------------------------------------------------
+// DUTY FACTOR (#575). A planted foot must sweep backward, in body frame, by
+// `duty x stride` during its stance. The old 4-key cycle (contact, passing,
+// mirrored x2) spread the sweep across half the cycle but the toe only reads
+// as grounded for a narrower window, so the sweep rate during that window fell
+// well short of body speed and the foot skated. The keys below concentrate the
+// sweep into an explicit stance window instead: contact -> early stance (the
+// other foot's toe-off) -> mid-stance -> late stance (the next contact key) ->
+// toe-off, with the swing return keyed separately. Sparse keys (#580) carry
+// the added leg/root moments so the arms and torso keep their original 4-key
+// schedule instead of being re-keyed at every leg time.
+//
+// A walk's duty is ~0.55 -- both feet are down around each contact -- so the
+// reference (right) foot's stance runs t = 0.00 .. 0.44 of the 0.8 s cycle,
+// PAST the mirrored contact at 0.4. That is why the toe-off key sits at 0.04:
+// it is the mirror of the reference foot's own toe-off at 0.44.
+//
+// THE WALK DOES NOT FULLY CLOSE, and cannot from here: duty 0.55 x stride 100
+// needs 55 wu of backward sweep against this rig's ~43 wu geometric ceiling
+// (leg 0.66 m at a +/-45 degree split -- see `foot_contact.spec.ts`). The
+// poses below widen the old walk's ~30 wu of reach and hold the sweep steady
+// across the stance, which lands the skate rate well under the old cycle's,
+// but the remaining deficit is the rig's legs, not the keys. Pinned as a range
+// in `foot_contact.spec.ts` so closing it forces the comment to be rewritten.
+
+// Each pose comments the RIGHT leg's fraction `p` through its own cycle
+// (contact at 0, next contact at 1); the left leg rides along at p + 0.5. The
+// grounded toe's forward position must fall LINEARLY in `p` across the stance
+// keys -- that is what makes the sweep rate constant -- so each pose's comment
+// records the toe z it was tuned to (world units, measured through
+// `skeleton.jointPosition`, the same path `foot_contact.spec.ts` reads).
 function walkContact(): Record<string, EulerTriple> {
-  const pose = step(-26, 6, 10, -16, 22, 30, -16, -30, { hips: [0, -5, 2], chest: [3, 5, 0] });
+  // R at p = 0.00, heel striking forward (toe z +21.4); L at p = 0.50, late
+  // stance, heel starting to lift (toe z -14.1, on the R foot's own line).
+  const pose = step(-36, 6, 10, -16, 30, 14, -28, -34, { hips: [0, -5, 2], chest: [3, 5, 0] });
   return { ...pose, ...arms(-24, 32, 16, 24) };
 }
 
+function walkToeOffLegs(): Record<string, EulerTriple> {
+  // Legs only, for the sparse key: R at p = 0.04, rolling flat after the heel
+  // strike (toe z +18.6); L at p = 0.54, toe-off -- max back extension, heel
+  // up, pushing off (toe z -17.7).
+  return step(-30, 6, 4, -8, 40, 10, -30, -30);
+}
+
 function walkPassing(): Record<string, EulerTriple> {
-  const pose = step(6, 12, -6, -4, -10, 70, -16, -12, { hips: [0, 0, 0], chest: [3, 0, 0] });
+  // R at p = 0.25, under the body over a near-straight support leg, the vault
+  // apex (toe z +4.1); L at p = 0.75, folded and swinging through, toe well
+  // clear of the turf.
+  const pose = step(-4, 10, -4, -6, -14, 72, -16, -8, { hips: [0, 0, 0], chest: [3, 0, 0] });
   return { ...pose, ...arms(-8, 28, -2, 26) };
 }
 
@@ -359,6 +401,11 @@ const WALK_RAW: RawClip = {
       move: { root: [0, 0, 0] },
       ease: { rot: "linear", move: "decel" },
     },
+    // The trailing foot's toe-off, 1/30 s after the opposite contact (duty
+    // 0.54; a key time on `mixer.BAKE_FPS`'s 1/120 grid, so the baked tracks
+    // hit it exactly). Legs only: the root keeps its own two-key vault (0 at
+    // contact, 0.036 at mid-stance) uninterrupted.
+    { t: 1 / 30, sparse: true, rot: walkToeOffLegs(), ease: "linear" },
     {
       t: 0.2,
       rot: stance(FREE, walkPassing()),
@@ -371,6 +418,7 @@ const WALK_RAW: RawClip = {
       move: { root: [0, 0, 0] },
       ease: { rot: "linear", move: "decel" },
     },
+    { t: 0.4 + 1 / 30, sparse: true, rot: mirror(walkToeOffLegs()), ease: "linear" },
     {
       t: 0.6,
       rot: stance(FREE, mirror(walkPassing())),
@@ -384,8 +432,38 @@ const WALK_RAW: RawClip = {
 // ---------------------------------------------------------------------------
 // Clip 3: RUN
 // ---------------------------------------------------------------------------
+// DUTY FACTOR (#575), the run's half. The stance is authored at 0.25 of the
+// cycle: contact at t = 0.00, mid-stance at 0.075, toe-off at 0.15, then
+// flight until the mirrored contact at 0.30 -- key times on `mixer.BAKE_FPS`'s
+// 1/120 grid, like the walk's, so the baked tracks hit each key exactly (the
+// issue's ~0.27 sketch snapped to 0.25 for the grid; the shorter window only
+// tightens the sweep). At duty 0.25 and RUN_STRIDE 185 a planted foot must
+// cover 46.25 wu; the grounded reach below is ~41.6 wu, a ~10% skate. The old
+// 4-key cycle had no toe-off or flight keys, so the same reach was spread
+// across half the cycle and the grounded foot moved at ~0.6x body speed -- a
+// visible skate on every runner. Concentrating the sweep into the real stance
+// window buys the ground back at the CURRENT stride and CURRENT cadence,
+// which is the one lever #574 left (widening the pose has no room -- the
+// contact split is already at the rig's geometric ceiling -- and shortening
+// the stride raises cadence, the exact fast-forward read the retune was told
+// to avoid).
+//
+// The added moments ride on sparse keys (#580), so nothing had to be re-keyed
+// at every leg time: the mid-stance and flight keys are legs and root only,
+// and the toe-off keys -- which sit at t = 0.15/0.45, exactly where the old
+// cycle's dense `passing` keys sat -- also carry that key's original arm and
+// torso pose, so the arm swing and torso bob keep the pre-#575 four-key
+// timeline value for value.
+
+// Each pose comments the RIGHT leg's fraction `p` through its own cycle; the
+// left leg rides along at p + 0.5. As with the walk, the stance poses' toe z
+// values (world units) sit on one straight line in `p`, which is what holds
+// the grounded sweep rate constant.
 function runContact(): Record<string, EulerTriple> {
-  const pose = step(-42, 18, 14, -22, 34, 78, -24, -38, {
+  // R at p = 0.00, reaching forward to land (toe z +23.1 -- the grounded
+  // forward reach this near-straight leg has, and the run's whole forward
+  // half). L at p = 0.50, folded mid-swing, heel high, knee driving through.
+  const pose = step(-44, 14, 10, -18, -20, 118, -18, -16, {
     hips: [0, -7, 3],
     spine: [9, 0, 0],
     chest: [4, 7, 0],
@@ -393,34 +471,55 @@ function runContact(): Record<string, EulerTriple> {
   return { ...pose, ...arms(-44, 88, 32, 72) };
 }
 
-function runPassing(): Record<string, EulerTriple> {
-  const pose = step(12, 34, -10, -8, -22, 118, -18, -16, {
-    hips: [0, 0, 0],
-    spine: [11, 0, 0],
-    chest: [4, 0, 0],
-  });
-  return { ...pose, ...arms(-14, 82, 6, 80) };
+function runMidStanceLegs(): Record<string, EulerTriple> {
+  // R at p = 0.125, under the body with the support knee loaded, the impact
+  // bottom (toe z +1.8, halfway down the stance line). The knee is bent
+  // further than the stance line strictly needs (shin 40): the root is at its
+  // lowest here, and a straighter support leg presses the boot mesh through
+  // the turf. L at p = 0.625, knee still folded, thigh swinging forward.
+  return step(-16, 44, -12, -6, -38, 95, -12, -10);
 }
 
-// A run BOUNCES, and its vertical phase is the INVERSE of the walk's above --
-// which is the bug this authoring fixes (#574). The `runContact` split pose is
-// the airborne moment (both legs extended, no foot down yet), so it is the
-// HIGH point; `runPassing` is mid-stance, where the support knee is loaded and
-// the body is compressed, so it is the LOW point. These heights used to be the
-// walk's way round, which gave the run a vault instead of a bounce: no impact
-// bottom, no airborne top, and a sprint that read as a hurried walk.
-//
-// The swap is mean-neutral -- two keys of each per cycle, the same 0.058
-// amplitude -- so nothing about the character's average standing height moves,
-// and the low point stays at 0 rather than going negative into `ground.ts`'s
-// penetration lift.
+function runToeOff(): Record<string, EulerTriple> {
+  // R at p = 0.25, extended back and leaving the ground (toe z -18.5, the
+  // grounded backward reach); L at p = 0.75, thigh at peak flexion, shin
+  // unfolding toward the landing.
+  //
+  // NOT legs-only, unlike the other sparse poses: this key sits where the old
+  // cycle's dense `passing` key sat (t = 0.15), so it also restates that
+  // key's arm and torso pose. Dropping them would halve the arm-swing key
+  // density and straight-line the swing through the mid-cycle -- upper_arm.L
+  // would pass -6 degrees where the authored passing pose held -14.
+  return {
+    ...step(40, 14, -30, -30, -45, 60, 0, -14, {
+      hips: [0, 0, 0],
+      spine: [11, 0, 0],
+      chest: [4, 0, 0],
+    }),
+    ...arms(-14, 82, 6, 80),
+  };
+}
+
+function runFlightLegs(): Record<string, EulerTriple> {
+  // R at p = 0.375, airborne, knee folding as the hip starts forward; L at
+  // p = 0.875, extending to meet the ground at the mirrored contact.
+  return step(8, 115, -18, -16, -45, 32, 8, -18);
+}
+
+// A run BOUNCES, and its vertical phase is the INVERSE of the walk's above
+// (#574): lowest at mid-stance, where the support knee is loaded, highest in
+// flight. With #575's keys the bounce is keyed at its own moments rather than
+// approximated at the contacts: the apex (0.058) sits on the flight key, the
+// bottom (0) on mid-stance, and contact catches the body already falling at
+// 0.020 on its way down. The low point stays at 0 rather than going negative
+// into `ground.ts`'s penetration lift.
 //
 // Easing splits by channel exactly as the walk's does and for the same reason.
-// The ROOT gets the bouncing-ball shape, which is what a run is: `accel` down
-// off the airborne apex onto the foot (it lands with real downward speed --
-// that is the impact) and `decel` off the compressed mid-stance, the push-off
-// being an impulse that is spent by the time it reaches the apex. The LEGS run
-// linear so the planted foot holds a constant backward sweep.
+// The ROOT gets the bouncing-ball shape: `accel` down off the airborne apex
+// onto the foot (it lands with real downward speed -- that is the impact),
+// `decel` settling into the compressed bottom, `accel` as the push-off drives
+// it back up, and `decel` as the launch spends itself into the apex. The LEGS
+// run linear so the planted foot holds a constant backward sweep.
 //
 // Under the old unconditional smoothstep every one of these segments came to a
 // dead stop at BOTH ends, on every channel: the run's legs stopped four times a
@@ -434,28 +533,58 @@ const RUN_RAW: RawClip = {
     {
       t: 0.0,
       rot: stance(FREE, runContact()),
-      move: { root: [0, 0.058, 0] },
+      move: { root: [0, 0.02, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    {
+      t: 0.075,
+      sparse: true,
+      rot: runMidStanceLegs(),
+      move: { root: [0, 0, 0] },
       ease: { rot: "linear", move: "accel" },
     },
     {
       t: 0.15,
-      rot: stance(FREE, runPassing()),
-      move: { root: [0, 0, 0] },
+      sparse: true,
+      rot: runToeOff(),
+      move: { root: [0, 0.03, 0] },
       ease: { rot: "linear", move: "decel" },
     },
     {
-      t: 0.3,
-      rot: stance(FREE, mirror(runContact())),
+      t: 0.225,
+      sparse: true,
+      rot: runFlightLegs(),
       move: { root: [0, 0.058, 0] },
       ease: { rot: "linear", move: "accel" },
     },
     {
-      t: 0.45,
-      rot: stance(FREE, mirror(runPassing())),
-      move: { root: [0, 0, 0] },
+      t: 0.3,
+      rot: stance(FREE, mirror(runContact())),
+      move: { root: [0, 0.02, 0] },
       ease: { rot: "linear", move: "decel" },
     },
-    { t: 0.6, rot: stance(FREE, runContact()), move: { root: [0, 0.058, 0] } },
+    {
+      t: 0.375,
+      sparse: true,
+      rot: mirror(runMidStanceLegs()),
+      move: { root: [0, 0, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
+    {
+      t: 0.45,
+      sparse: true,
+      rot: mirror(runToeOff()),
+      move: { root: [0, 0.03, 0] },
+      ease: { rot: "linear", move: "decel" },
+    },
+    {
+      t: 0.525,
+      sparse: true,
+      rot: mirror(runFlightLegs()),
+      move: { root: [0, 0.058, 0] },
+      ease: { rot: "linear", move: "accel" },
+    },
+    { t: 0.6, rot: stance(FREE, runContact()), move: { root: [0, 0.02, 0] } },
   ],
 };
 

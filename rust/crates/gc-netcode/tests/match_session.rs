@@ -648,6 +648,44 @@ fn online_match_request_selects_the_combat_bearing_snapshot_and_tape_contracts_e
         combat.is_some(),
         "the online request carries a combat companion"
     );
+    assert_eq!(
+        request.combat_enabled,
+        combat.is_some(),
+        "combat_enabled must mirror the snapshot it was actually given, not \
+         a value independent of it"
+    );
+}
+
+/// Pins the fix for `finish` previously stamping `combat_enabled: true`
+/// unconditionally, discarding the snapshot's real combat companion
+/// (`let (state, _combat) = match_snapshot::restore(...)`). A caller that
+/// hands `finish` a boundary-zero snapshot with no combat companion --
+/// exactly the shape `contracts_agree` is supposed to make impossible for a
+/// real caller, but `finish` itself never checked -- must fail loudly rather
+/// than silently produce a request claiming `combat_enabled: true` about a
+/// snapshot that carries no combat state at all.
+#[test]
+#[should_panic(expected = "must carry a combat companion")]
+fn finish_refuses_a_boundary_zero_snapshot_with_no_combat_companion() {
+    let mode = MatchMode::FourVFour;
+    let manifest = real_manifest(mode);
+    let peer_ids = fixture_peer_ids(mode);
+    let freeze = fixture_freeze(&manifest, &peer_ids);
+    let options = RequestOptions {
+        role: Role::Host,
+        peer_id: peer_ids[0].clone(),
+        manifest: manifest.clone(),
+        freeze: freeze.clone(),
+    };
+    let identity = match_session::resolve_identity(options).unwrap();
+    let duration = freeze.duration_ticks as f64 / freeze.tick_rate as f64;
+    let non_combat_snapshot = gc_netcode::match_driver_fixture::initial_snapshot(
+        Some(duration),
+        false,
+        Some(freeze.seed as f64),
+    );
+    let content = real_content(&manifest);
+    let _ = match_session::finish(identity, non_combat_snapshot, content);
 }
 
 #[test]

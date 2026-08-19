@@ -75,12 +75,64 @@ function loadFixture(): ReadonlyMap<string, readonly number[]> {
 
 const fixture = loadFixture();
 
-function row(label: string): readonly number[] {
+// The layout the frozen reference was CAPTURED under. #576 appended one
+// per-player field (`phase_fraction`, field index 21) and bumped
+// `LAYOUT_VERSION`/`RENDER_FRAME_VERSION` 1 -> 2; the reference predates the
+// port and cannot be regenerated, so its rows stay layout-1 forever and are
+// lifted through the same documented restamp-and-append migration the Rust
+// twin (`crates/gc-render/tests/frame_buffer_differential.rs`) applies. The
+// only permitted differences are the restamped header words and one appended
+// all-zeros player column — zeros because the capture harness passed no
+// combat state (every frozen row stamps `combat_present = 0`), and a
+// combat-less frame encodes `phase_fraction` as a dense zero column by
+// construction. Every captured payload word still crosses unchanged.
+const V1_LAYOUT_VERSION = 1;
+const V1_RENDER_FRAME_VERSION = 1;
+const V1_PLAYER_FIELD_COUNT = 21;
+
+function rawRow(label: string): readonly number[] {
   const words = fixture.get(label);
   if (words === undefined) {
     throw new Error(`no reference row labelled ${label}`);
   }
   return words;
+}
+
+/** A frozen layout-1 frame row, lifted to the current layout — see above. */
+function row(label: string): readonly number[] {
+  const words = rawRow(label);
+  expect(words[1], `${label}: frozen layout version`).toBe(V1_LAYOUT_VERSION);
+  expect(words[2], `${label}: frozen render frame version`).toBe(V1_RENDER_FRAME_VERSION);
+  expect(words[7], `${label}: frozen player field count`).toBe(V1_PLAYER_FIELD_COUNT);
+  expect(words[10], `${label}: the frozen capture never carried combat`).toBe(0);
+  const count = words[6] ?? 0;
+  const eventCount = words[8] ?? 0;
+  const playersAt = HEADER_WORDS + SCALAR_FIELD_COUNT;
+  const eventsAtV1 = playersAt + V1_PLAYER_FIELD_COUNT * count;
+  expect(words.length, `${label}: frozen row length`).toBe(
+    eventsAtV1 + EVENT_FIELD_COUNT * eventCount,
+  );
+  const out = [
+    ...words.slice(0, eventsAtV1),
+    ...Array.from({ length: count }, () => 0), // phase_fraction, field 21
+    ...words.slice(eventsAtV1),
+  ];
+  out[1] = LAYOUT_VERSION;
+  out[2] = RENDER_FRAME_VERSION;
+  out[3] = out.length;
+  out[7] = PLAYER_FIELD_COUNT;
+  return out;
+}
+
+/** The roster block gained no field, so its migration is restamping alone. */
+function rosterRow(): readonly number[] {
+  const words = rawRow("roster");
+  expect(words[1], "roster: frozen layout version").toBe(V1_LAYOUT_VERSION);
+  expect(words[2], "roster: frozen render frame version").toBe(V1_RENDER_FRAME_VERSION);
+  const out = words.slice();
+  out[1] = LAYOUT_VERSION;
+  out[2] = RENDER_FRAME_VERSION;
+  return out;
 }
 
 // Builds a synthetic string blob matching `count * ROSTER_STRING_FIELD_COUNT`
@@ -112,11 +164,13 @@ describe("frame_buffer layout constants", () => {
   it("match crates/gc-render/src/frame_buffer.rs exactly", () => {
     expect(MAGIC).toBe(0x474f4c46);
     expect(ROSTER_MAGIC).toBe(0x474f4c52);
-    expect(LAYOUT_VERSION).toBe(1);
-    expect(RENDER_FRAME_VERSION).toBe(1);
+    // #576: both moved 1 -> 2 for the appended per-player phase_fraction
+    // column; see the migration note above `row`.
+    expect(LAYOUT_VERSION).toBe(2);
+    expect(RENDER_FRAME_VERSION).toBe(2);
     expect(HEADER_WORDS).toBe(12);
     expect(SCALAR_FIELD_COUNT).toBe(44);
-    expect(PLAYER_FIELD_COUNT).toBe(21);
+    expect(PLAYER_FIELD_COUNT).toBe(22);
     expect(EVENT_FIELD_COUNT).toBe(15);
     expect(ROSTER_HEADER_WORDS).toBe(7);
     expect(ROSTER_FIELD_COUNT).toBe(7);
@@ -139,13 +193,13 @@ describe("frame_buffer layout constants", () => {
 });
 
 describe("decodeRoster against the Lua reference vector", () => {
-  const words = row("roster");
+  const words = rosterRow();
   const count = 10;
   const decoded = decodeRoster(words, syntheticRosterBlob(count));
 
   it("reads the header", () => {
-    expect(decoded.layoutVersion).toBe(1);
-    expect(decoded.renderFrameVersion).toBe(1);
+    expect(decoded.layoutVersion).toBe(2);
+    expect(decoded.renderFrameVersion).toBe(2);
     expect(decoded.count).toBe(count);
   });
 
@@ -279,8 +333,8 @@ describe("decode against the Lua reference vector: t0 (kickoff)", () => {
   const decoded = decode(row("t0"));
 
   it("reads the header", () => {
-    expect(decoded.layoutVersion).toBe(1);
-    expect(decoded.renderFrameVersion).toBe(1);
+    expect(decoded.layoutVersion).toBe(2);
+    expect(decoded.renderFrameVersion).toBe(2);
     expect(decoded.combatPresent).toBe(false);
   });
 
@@ -384,6 +438,9 @@ describe("decode against the Lua reference vector: t0 (kickoff)", () => {
     expect(p.dive).toEqual(Array<number>(10).fill(0));
     expect(p.aerial_style).toEqual(Array<undefined>(10).fill(undefined));
     expect(p.aerial_outcome).toEqual(Array<undefined>(10).fill(undefined));
+    // #576: the appended column decodes densely — a combat-less frame is a
+    // zero for every slot, never an absence.
+    expect(p.phase_fraction).toEqual(Array<number>(10).fill(0));
   });
 
   it("decodes zero events at kickoff", () => {
@@ -628,9 +685,12 @@ describe("decode: header validation (not exercised by the reference vector, whic
     expect(() => decode(bad)).toThrow(/magic/);
   });
 
-  it("rejects a layout version mismatch", () => {
+  it("rejects a layout version mismatch, including the pre-#576 layout 1", () => {
     const bad = words.slice();
-    bad[1] = 2;
+    // 1 is the layout the frozen fixture was captured under: a reader
+    // handed an unmigrated v1 block must refuse it rather than misread the
+    // 21-field player section positionally.
+    bad[1] = 1;
     expect(() => decode(bad)).toThrow(/layout version/);
   });
 
@@ -666,7 +726,7 @@ describe("decode: header validation (not exercised by the reference vector, whic
 describe("toRenderFrame", () => {
   it("combines a decoded frame and a decoded roster into pitch.ts's RenderFrame shape", () => {
     const frame: DecodedRenderFrame = decode(row("t0"));
-    const roster = decodeRoster(row("roster"), syntheticRosterBlob(10));
+    const roster = decodeRoster(rosterRow(), syntheticRosterBlob(10));
 
     const renderFrame = toRenderFrame(frame, roster);
 
@@ -680,7 +740,7 @@ describe("toRenderFrame", () => {
 
   it("attaches a combat model only when the caller supplies one", () => {
     const frame = decode(row("t0"));
-    const roster = decodeRoster(row("roster"), syntheticRosterBlob(10));
+    const roster = decodeRoster(rosterRow(), syntheticRosterBlob(10));
     const combat = { enabled: true, players: [], projectiles: [] };
 
     const renderFrame = toRenderFrame(frame, roster, combat);

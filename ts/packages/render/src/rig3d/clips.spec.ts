@@ -339,7 +339,14 @@ describe("rig3d clips per-bone key schedules (#580)", () => {
   // so the per-track sampler runs the identical arithmetic in the identical
   // order and the poses are BIT-identical, not merely close. `toBe` is
   // Object.is, so even a stray -0 would fail here.
-  it("reproduces the pre-#580 sampler bit for bit on every shipped clip", () => {
+  //
+  // ALL-DENSE CLIPS ONLY, since #575: the walk and run now carry sparse
+  // stance-window keys, which is the exact behaviour the legacy sampler cannot
+  // express (it would park every unnamed bone at rest at a sparse key's time),
+  // so they are excluded by the same predicate that defines the claim. The
+  // filter is written against each clip's own keys rather than as a hand-kept
+  // list, and the count below keeps it from going vacuous.
+  it("reproduces the pre-#580 sampler bit for bit on every all-dense shipped clip", () => {
     const all = [
       clips.IDLE,
       clips.WALK,
@@ -349,7 +356,8 @@ describe("rig3d clips per-bone key schedules (#580)", () => {
       clips.KEEPER_GATHER,
       clips.KEEPER_SLING,
       clips.SWING,
-    ];
+    ].filter((clip) => clip.keys.every((key) => !key.sparse));
+    expect(all.length, "most shipped clips are still all-dense").toBeGreaterThanOrEqual(6);
     for (const clip of all) {
       for (let k = 0; k <= 97; k += 1) {
         // 1.37 also exercises the wrap, and 97 lands between keys, on no

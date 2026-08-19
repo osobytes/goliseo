@@ -80,6 +80,37 @@ fn round_trips_a_whole_frame_through_one_flat_array_of_doubles() {
     }
 }
 
+/// #576's per-player column: a non-zero `phase_fraction` survives the
+/// crossing at its own field index (21, appended — every earlier field keeps
+/// its position), and a combat-less frame reads back the dense zero column
+/// `frame::build` wrote.
+#[test]
+fn carries_the_combat_phase_fraction_per_player() {
+    let state = fixture(17.0);
+    let mut frame = render_frame::build(&state, &RenderFrameOptions::default());
+    frame.players.phase_fraction[3] = 0.75;
+
+    let mut words = Vec::new();
+    frame_buffer::encode(&frame, &mut words);
+    let decoded = frame_buffer::decode(&words);
+    assert_eq!(decoded.players.phase_fraction[3], 0.75);
+    for index in 0..frame.players.count {
+        if index != 3 {
+            assert_eq!(
+                decoded.players.phase_fraction[index], 0.0,
+                "a combat-less slot reports zero progress"
+            );
+        }
+    }
+
+    // The column's position on the wire, pinned positionally the way
+    // `lays_per_entity_data_out_field_major_so_one_field_is_one_run` pins
+    // `x`/`y`: field 21's run, slot 3.
+    let count = frame.players.count;
+    let at = frame_buffer::HEADER_WORDS + frame_buffer::SCALAR_FIELD_COUNT;
+    assert_eq!(words[at + 21 * count + 3], 0.75);
+}
+
 #[test]
 fn stamps_both_versions_and_rejects_a_frame_carrying_another_one() {
     let state = fixture(17.0);
