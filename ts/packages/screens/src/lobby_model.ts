@@ -492,25 +492,35 @@ export const PREFERENCE_TEXT: Readonly<Record<string, string>> = {
 // or the room-code Worker's own error code, forwarded verbatim
 // (`infra/src/room_durable_object.ts`'s `{type:"error", error}` frame /
 // `infra/src/room_state.ts`'s own error strings). A browser `WebSocket`
-// cannot read the HTTP status of a failed upgrade (`room_signaling.ts`'s
-// own header), so a bad code, an expired room, a full room, and a rate
-// limit are indistinguishable there and all collapse to
-// `handshake_failed` -- `room_not_open`/`room_expired`/`room_full`/... are
-// listed anyway, defensively, for the in-band `{type:"error"}` frame a
-// live connection can still receive after connecting (e.g. the room
-// closing out from under it). Unmapped tokens fall back to the raw token
-// itself (mirrors `PREFERENCE_TEXT`'s own `?? key` fallback), never thrown.
+// cannot read the HTTP status of a failed upgrade at all (`room_signaling.ts`'s
+// `RoomSignalingFailureReason` doc), so a pre-upgrade rejection (a per-IP
+// rate limit, a malformed code shape, a genuine network error) still
+// collapses to the generic `handshake_failed` -- but as of #599, an
+// admission-time reason (a bad, full, expired, or closed code; a host-claim
+// collision) is no longer one of those: the room-code Worker completes the
+// upgrade and sends it in-band instead, so `room_not_found`/`room_full`/
+// `room_expired`/`room_closed`/`host_already_claimed` below are genuinely
+// reachable player-facing outcomes, not defensive placeholders.
+// `host_left` is a DIFFERENT kind of event (the room-code connection ending
+// because the host's own socket dropped, not an admission rejection at
+// all -- `online_lobby.ts`'s `roomCommandFor` maps it onto this same
+// `room_failed` pipeline because the presentation -- readable message, end
+// the room-code connection -- is identical). Unmapped tokens fall back to
+// the raw token itself (mirrors `PREFERENCE_TEXT`'s own `?? key`
+// fallback), never thrown.
 export const ROOM_FAILURE_TEXT: Readonly<Record<string, string>> = {
   handshake_failed: "Could not reach the room service. Check the code, or try again.",
   malformed_frame: "The room service sent something this game could not read. Try again.",
   connection_lost: "The connection to the room service was lost.",
   protocol_error: "The room service reported an unexpected problem.",
+  room_not_found: "No room with that code — check it and try again.",
   room_not_open: "That code is not an open room.",
   room_closed: "That room has closed.",
-  room_expired: "That code has expired.",
+  room_expired: "That code has expired — ask for a fresh one.",
   already_joined: "You are already connected to that room.",
   room_full: "That room is full.",
   host_already_claimed: "That room already has a host.",
+  host_left: "The host left. Ask for a new code.",
   message_too_large: "That message was too large to send.",
   missing_target: "The room service could not tell who that message was for.",
   unknown_target: "That peer is no longer in the room.",

@@ -222,6 +222,41 @@ describe("room_signaling_port: failure states", () => {
     expect(handle.poll()).toEqual([]);
   });
 
+  // #599: an admission-failure reason (room_not_found/room_full/
+  // room_expired/room_closed/host_already_claimed) now arrives the exact
+  // same way as any other in-band error -- the Durable Object completes
+  // the upgrade instead of rejecting the HTTP request, so this port has no
+  // separate code path for it.
+  it("reports each in-band admission-failure reason and closes the socket", () => {
+    for (const reason of [
+      "room_not_found",
+      "room_full",
+      "room_expired",
+      "room_closed",
+      "host_already_claimed",
+    ]) {
+      const { socket, handle } = hostHandle();
+      socket.open();
+      socket.emitMessage(JSON.stringify({ type: "error", error: reason }));
+      expect(handle.poll()).toEqual([{ kind: "failed", reason }]);
+      expect(socket.closeCalled).toBe(1);
+    }
+  });
+
+  it("reports a host_left event and closes the socket, without a redundant dropped event", () => {
+    const { socket, handle } = hostHandle();
+    socket.open();
+    socket.emitMessage('{"type":"created","code":"A3F9K2"}');
+    handle.poll(); // drain the created event
+    socket.emitMessage('{"type":"host_left"}');
+    expect(handle.poll()).toEqual([{ kind: "host_left" }]);
+    expect(socket.closeCalled).toBe(1);
+    // `FakeSocket.close()` synchronously re-fires its own `close` event;
+    // this must not ALSO report a redundant `dropped` event for the same
+    // departure -- the same discipline `fail()` already follows.
+    expect(handle.poll()).toEqual([]);
+  });
+
   it("does not send after a protocol-level error has closed the socket", () => {
     const { socket, handle } = hostHandle();
     socket.open();
