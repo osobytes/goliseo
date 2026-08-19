@@ -38,9 +38,23 @@
 //! building it. The caller — a layer that *does* have `gc-data` — builds it
 //! with `r#match::new` (`input_ownership` set) followed by
 //! `match_snapshot::capture`, and hands it in. [`request`] still asserts the
-//! two invariants that recipe must produce (`state.slot_mode`,
-//! `state.input_tick == 0`), so a caller that gets the recipe wrong still
-//! fails loudly here rather than producing a quietly-wrong match.
+//! three invariants that recipe must produce (`state.slot_mode`,
+//! `state.input_tick == 0`, a combat companion present), so a caller that
+//! gets the recipe wrong still fails loudly here rather than producing a
+//! quietly-wrong match.
+//!
+//! # No `gc-wasm` bridge calls this module yet
+//!
+//! [`request`]/[`resolve_identity`]/[`finish`] have exactly one caller today:
+//! `tests/match_session.rs`. The online driver `gc-wasm` actually exposes
+//! (`crate::match_driver_bridge::MatchDriverBridge`, in that crate)
+//! constructs its boundary-zero snapshot from a `Session` handle directly —
+//! see that bridge's own module doc ("Why a `MatchSnapshot` never crosses to
+//! JS") for why: resolving online content generically needs `gc-data`, which
+//! this crate deliberately does not depend on, and wiring that up is a
+//! separate, not-yet-scheduled task from bridging the reducers `gc-wasm`
+//! already needs. Do not assume an `OnlineMatchRequest` this module builds
+//! reaches a running match; nothing today constructs one outside a test.
 //!
 //! This also splits [`request`] into [`resolve_identity`] (every fallible
 //! check: contracts, freeze/manifest identity agreement, owned-set shape,
@@ -131,8 +145,12 @@ pub struct OnlineMatchRequest {
     pub away: match_manifest::TeamContent,
     /// The resolved arena id.
     pub arena_id: String,
-    /// Always `true`: the online match always selects the combat-bearing
-    /// contracts explicitly.
+    /// Whether `initial_snapshot` actually carries a combat companion.
+    /// Always `true` in practice: [`resolve_identity`]'s `contracts_agree`
+    /// check already refuses any manifest that does not negotiate the
+    /// combat-bearing snapshot contract, and [`finish`] asserts the
+    /// snapshot it was given actually carries one rather than assuming it —
+    /// this field mirrors that reality instead of restating the assumption.
     pub combat_enabled: bool,
     /// Explicit combat-bearing `MatchSnapshot` contract.
     pub snapshot_version: i64,
@@ -284,16 +302,23 @@ pub fn resolve_identity(options: RequestOptions) -> std::result::Result<Resolved
 ///
 /// # Panics
 ///
-/// Panics if `initial_snapshot` is not a slot-mode, boundary-zero snapshot;
-/// see the module doc comment for why building it is the caller's job
-/// rather than this module's.
+/// Panics if `initial_snapshot` is not a slot-mode, boundary-zero snapshot,
+/// or does not actually carry a combat companion; see the module doc comment
+/// for why building it is the caller's job rather than this module's.
+/// `contracts_agree` (in [`resolve_identity`]) already refuses any manifest
+/// that does not negotiate the combat-bearing snapshot contract, so a caller
+/// that got the recipe right never trips this — it exists so a caller that
+/// got it wrong (e.g. captured its snapshot with no combat companion) fails
+/// loudly here rather than shipping an `OnlineMatchRequest` whose
+/// `combat_enabled` silently disagreed with the snapshot it actually
+/// carries.
 #[must_use]
 pub fn finish(
     identity: ResolvedIdentity,
     initial_snapshot: match_snapshot::MatchSnapshot,
     content: OnlineMatchContent,
 ) -> OnlineMatchRequest {
-    let (state, _combat) = match_snapshot::restore(&initial_snapshot);
+    let (state, combat) = match_snapshot::restore(&initial_snapshot);
     assert!(
         state.slot_mode,
         "an online match requires a slot-mode simulation"
@@ -301,6 +326,12 @@ pub fn finish(
     assert!(
         state.input_tick == 0,
         "an online match starts at boundary zero"
+    );
+    assert!(
+        combat.is_some(),
+        "an online match's boundary-zero snapshot must carry a combat \
+         companion -- the online match always negotiates the combat-bearing \
+         snapshot contract (see contracts_agree)"
     );
 
     OnlineMatchRequest {
@@ -313,7 +344,7 @@ pub fn finish(
         home: content.home,
         away: content.away,
         arena_id: content.arena_id,
-        combat_enabled: true,
+        combat_enabled: combat.is_some(),
         snapshot_version: identity.snapshot_version,
         tape_version: identity.tape_version,
         seed: identity.freeze.seed,
