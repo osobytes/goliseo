@@ -2268,16 +2268,81 @@ fn tackle_target_is_live(s: &MatchState, challenger_idx: i64, target_idx: i64) -
             != s.players[(challenger_idx - 1) as usize].team
 }
 
-fn resolve_tackle(s: &mut MatchState, challenger_idx: i64, miss_recovery: f64) {
+/// The #590 tie-break: whether the poke's target is going to release the
+/// ball THIS tick, by a pass edge in this tick's own input, so a poke
+/// resolving on the same tick whiffs instead of eating the release. Decided
+/// by the owner on #590 ("if they collide, let's do the pass"): the tick
+/// order runs tackle resolution before `update_ball`'s owner-input
+/// dispatch, so without this a poke landing on the release tick always won
+/// -- the carrier pressed pass in time by their own clock and the ball
+/// vanished into a tackle instead, the residual eaten-release mechanism
+/// #586's investigation measured after the input plumbing was fixed.
+///
+/// This mirrors the gates `update_ball` will apply later in the same tick,
+/// deliberately narrowly:
+///
+/// - the target must be able to act at all (`windup_timer == 0`, not
+///   combat-blocked), and must be a player whose input this map actually
+///   drives (`is_human_player`: the controlled player in legacy mode, every
+///   slot-covered player online). A LEGACY-mode AI carrier synthesizes its
+///   input inside `update_ball` and cannot be seen from here -- a disclosed
+///   producer asymmetry of the same kind `update_ball`'s stun note records.
+/// - the pass EDGE only. `outfield_actions` gives a same-tick shot edge
+///   priority over the pass edge, so that combination stays a tackle win
+///   (`!input.shoot` below); the two auto-releases at a full meter
+///   (`charge`/`pass_charge` crossing 1.0 on exactly the poke's resolution
+///   tick) are out of scope -- predicting them here would duplicate the
+///   accumulators' arithmetic, and unlike a deliberate release edge, a
+///   meter expiring on exactly that tick is not a timed action the player
+///   took. Both exclusions are one-tick-rare and cost at most one extra
+///   whiff or one eaten auto-release; the deliberate, pressure-correlated
+///   case -- panic-releasing exactly as a presser arrives -- is the one
+///   this covers.
+///
+/// A keeper with the ball at its feet releases through `keeper_actions`'
+/// own `fire_pass` branch, which has no wind-up gate, so the wind-up check
+/// is skipped for that owner shape.
+fn release_edge_beats_the_poke(
+    s: &MatchState,
+    target_idx: i64,
+    inputs: &IndexMap<i64, MatchInput>,
+    combat_state: Option<&CombatMatchState>,
+) -> bool {
+    if s.owner != Some(target_idx) || !is_human_player(s, target_idx) {
+        return false;
+    }
+    let Some(input) = inputs.get(&target_idx) else {
+        return false;
+    };
+    if !input.pass || input.shoot {
+        return false;
+    }
+    let target = &s.players[(target_idx - 1) as usize];
+    let keeper_feet_release = target.is_keeper && target.feet_ball;
+    if !keeper_feet_release && target.windup_timer != 0.0 {
+        return false;
+    }
+    !combat_state.is_some_and(|cs| combat::blocks_actions(Some(cs), target_idx))
+}
+
+fn resolve_tackle(
+    s: &mut MatchState,
+    challenger_idx: i64,
+    miss_recovery: f64,
+    inputs: &IndexMap<i64, MatchInput>,
+    combat_state: Option<&CombatMatchState>,
+) {
     let target = s.players[(challenger_idx - 1) as usize]
         .action
         .target_player;
     let human = is_human_player(s, challenger_idx);
     let hit = target.is_some_and(|t| {
-        tackle_target_is_live(s, challenger_idx, t) && {
-            let (d, reach) = tackle_distance_and_reach(s, challenger_idx, t, human);
-            d <= reach
-        }
+        tackle_target_is_live(s, challenger_idx, t)
+            && !release_edge_beats_the_poke(s, t, inputs, combat_state)
+            && {
+                let (d, reach) = tackle_distance_and_reach(s, challenger_idx, t, human);
+                d <= reach
+            }
     });
     if hit {
         let owner_idx = target.expect("hit requires a live target");
@@ -2327,6 +2392,7 @@ fn advance_tackle_actions(
     s: &mut MatchState,
     combat_state: Option<&CombatMatchState>,
     dt: f64,
+    inputs: &IndexMap<i64, MatchInput>,
     tune: &Tuning,
 ) {
     let full_charge = tune.value("ACTION_TACKLE_FULL_CHARGE");
@@ -2386,7 +2452,7 @@ fn advance_tackle_actions(
             ActionPhase::Executing => {
                 s.players[i].action = action_slot::advance_remaining(&s.players[i].action, dt);
                 if action_slot::due(&s.players[i].action) {
-                    resolve_tackle(s, idx, miss_recovery);
+                    resolve_tackle(s, idx, miss_recovery, inputs, combat_state);
                 }
             }
             ActionPhase::Recovering => {
@@ -7276,7 +7342,7 @@ pub fn step(
         .as_deref_mut()
         .map(|cs| combat::collect_contacts(s, cs));
     attempt_steals(s, combat_state.as_deref());
-    advance_tackle_actions(s, combat_state.as_deref(), dt, tune);
+    advance_tackle_actions(s, combat_state.as_deref(), dt, &inputs, tune);
     if let (Some(cs), Some(contacts)) = (combat_state.as_deref_mut(), combat_contacts) {
         combat::resolve_contacts(s, cs, &contacts);
     }
