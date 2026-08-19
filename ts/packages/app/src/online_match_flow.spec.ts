@@ -135,7 +135,7 @@ describe("online match app routing", () => {
     const app = new App(APP_CONTENT, { online: ports });
 
     app.handleAction({ go: "multiplayer" });
-    app.handleAction({ go: "lobby", role: "host" });
+    app.handleAction({ go: "lobby", intent: "host" });
     expect(app.currentRoute()).toBe("lobby");
 
     app.handleAction({ go: "online_match", freeze: { countdown_id: "countdown.1" } });
@@ -162,7 +162,7 @@ describe("online match app routing", () => {
     const app = new App(APP_CONTENT, { online: ports });
 
     app.handleAction({ go: "multiplayer" });
-    app.handleAction({ go: "lobby", role: "host" });
+    app.handleAction({ go: "lobby", intent: "host" });
     app.handleAction({ go: "online_match", freeze: { countdown_id: "countdown.1" } });
 
     expect(app.currentRoute()).toBe("lobby");

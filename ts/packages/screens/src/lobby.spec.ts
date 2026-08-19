@@ -1381,6 +1381,108 @@ describe("room-code entry (#552)", () => {
     expect(view(raced).error).toBeDefined();
     expect(view(raced).room_active).toBe(true);
   });
+
+  // #599: admission failures the room-code Worker used to reject before the
+  // WebSocket upgrade completed now arrive in-band, distinct by reason
+  // (`infra/src/room_durable_object.ts`'s own doc, "Admission failures").
+  // Each one must reach the player as its OWN sentence, not the single
+  // generic "could not reach the room service" every rejection used to
+  // collapse into.
+  it("surfaces each in-band admission-failure reason as its own distinct, readable copy", () => {
+    const reasons = [
+      "room_not_found",
+      "room_full",
+      "room_expired",
+      "room_closed",
+      "host_already_claimed",
+      "already_joined",
+    ] as const;
+    const texts = reasons.map((reason) => {
+      let state = joining();
+      for (const ch of "A3F9K2") {
+        state = dispatch(state, { kind: "key", key: ch, pressed: true });
+      }
+      state = click(state, "room_code_slots");
+      state = dispatch(state, { kind: "lobby", command: { kind: "room_failed", reason } });
+      const text = view(state).error;
+      expect(text).toBe(ROOM_FAILURE_TEXT[reason]);
+      expect(text).toBeDefined();
+      return text;
+    });
+    // Pairwise distinct: a shared fallback string across reasons would pass
+    // each assertion above individually while still failing the actual
+    // acceptance criterion ("five different failures... one dead-end
+    // message").
+    expect(new Set(texts).size).toBe(reasons.length);
+  });
+
+  // The host leaving is a different KIND of event from an admission
+  // failure (nobody was ever rejected -- the connection was live and then
+  // the host's own socket dropped), but it reaches the player through the
+  // same `room_failed` pipeline (`online_lobby.ts`'s `roomCommandFor`) with
+  // its own distinct copy, and it must not be confused with a generic
+  // dropped-connection message.
+  it("surfaces a host departure as its own distinct copy, not a generic dropped-connection message", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "host_left" },
+    });
+    expect(view(state).error).toBe(ROOM_FAILURE_TEXT["host_left"]);
+    expect(view(state).error).not.toBe(ROOM_FAILURE_TEXT["connection_lost"]);
+    expect(view(state).room_active).toBe(false);
+  });
+
+  // Round-2 council review, blocking finding 2 (PR #603): the composer had
+  // no cancel control at all -- not a click target, and Escape/back (the
+  // universal handler `hosting()`'s "leave" case above exercises) dispatched
+  // "leave" unconditionally, ejecting the WHOLE lobby to the title. #566
+  // already named this "room_cancel is unreachable"; #597 promotes the
+  // composer from an optional detour reachable only after picking a manual
+  // role first to the mandatory FIRST screen a room-joining intent reaches,
+  // which turns that old gap into a real trap for a guest who wants the
+  // manual fallback instead. `roomCancel` (`lobby_model.ts`) already existed
+  // and already lands safely back on the role screen -- these four cases
+  // cover the two ways a player now reaches it, and confirm the one case
+  // that must NOT change.
+  it("Escape in the composer cancels the room attempt instead of leaving the lobby", () => {
+    const state = joining();
+    const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action, "Escape must not eject the whole lobby from the composer").toBeUndefined();
+    expect(view(next).room_entry).toBeUndefined();
+    expect(view(next).role).toBeUndefined();
+    // Back on the role screen, with the manual fallback right there.
+    const currentLayout = lobbyLayout(next);
+    expect(hit.find(currentLayout, "role_host")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_guest")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_host")?.data?.disabled).toBe(false);
+  });
+
+  it("Escape cancels a host's still-connecting room-code request too, before a role is resolved", () => {
+    const state = click(newState(VP, ports()), "room_code_host");
+    expect(view(state).room_active).toBe(true);
+    const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action).toBeUndefined();
+    expect(view(next).room_active).toBe(false);
+    expect(view(next).role).toBeUndefined();
+    expect(hit.find(lobbyLayout(next), "role_host")?.data?.disabled).toBe(false);
+  });
+
+  it("a visible CANCEL widget in the composer dispatches room_cancel", () => {
+    const state = joining();
+    const cancelWidget = hit.find(lobbyLayout(state), "room_cancel");
+    expect(cancelWidget, "the composer needs a visible way out, not just Escape").not.toBeNull();
+    const next = click(state, "room_cancel");
+    expect(view(next).room_entry).toBeUndefined();
+    expect(view(next).role).toBeUndefined();
+  });
+
+  it("Escape on the plain role screen still leaves the lobby, unchanged", () => {
+    const state = newState(VP, ports());
+    const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action?.go).toBe("main_menu");
+  });
 });
 
 // The presentation pass over an unchanged model: same ids, same commands, new

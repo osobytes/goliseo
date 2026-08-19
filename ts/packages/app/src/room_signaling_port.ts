@@ -130,24 +130,40 @@ function connect(
           // `room_peer_signal` command treats an absent `guest_id` that way.
           ...(role === "host" ? { guest_id: frame.from } : {}),
         });
+      } else if (frame.type === "host_left") {
+        // The host's socket dropped and the DO closed the room
+        // (`room_durable_object.ts`'s own doc, "Host departure") -- the
+        // grace-period alarm will close THIS socket shortly regardless, so
+        // this side closes now rather than waiting for it. `closed = true`
+        // BEFORE `live.close()`, same discipline as `fail()`, so the
+        // `close()` this triggers does not also report a redundant
+        // `"dropped"` event for the same departure.
+        events.push({ kind: "host_left" });
+        closed = true;
+        live.close();
       } else {
         // `frame.type === "error"`: the Worker's own error code
         // (`room_durable_object.ts`'s `{type:"error", error}` frame, e.g.
-        // `"room_not_open"`, `"message_too_large"`) is more informative
+        // `"room_not_found"`, `"message_too_large"`) is more informative
         // than a generic bucket, so it travels straight through as the
         // reason -- `"protocol_error"` (`room_signaling.ts`'s own type) is
         // only the fallback for the degenerate case of an empty code.
         //
-        // Closed here too, deliberately, even though the Durable Object
-        // itself leaves the socket open after sending one (`webSocketMessage`
-        // just `return`s -- no `ws.close()`): nothing on THIS side has any
-        // recovery path for a `missing_target`/`unknown_target`/
-        // `message_too_large`/... reply, so continuing to poll a socket in
-        // a state this client cannot progress past would just reproduce
-        // round-2 council review's blocking finding 2 (a lobby wedged with
-        // no way forward but LEAVE) one layer down. Treating it as
-        // connection-ending here, and surfacing a clean `"failed"` event, is
-        // what actually gives the player a working retry.
+        // Closed here too, deliberately. An ADMISSION failure's error frame
+        // (`room_not_found`/`room_full`/`room_expired`/`room_closed`/
+        // `host_already_claimed`/...) already arrives on a socket the DO
+        // itself closes right after sending it (that module's own doc,
+        // "Admission failures"); a mid-session protocol error
+        // (`missing_target`/`unknown_target`/`message_too_large`/...) does
+        // NOT -- the Durable Object leaves that socket open (`webSocketMessage`
+        // just `return`s, no `ws.close()`). Either way, nothing on THIS side
+        // has any recovery path for one of these replies, so continuing to
+        // poll a socket in a state this client cannot progress past would
+        // just reproduce round-2 council review's blocking finding 2 (a
+        // lobby wedged with no way forward but LEAVE) one layer down.
+        // Treating it as connection-ending here, and surfacing a clean
+        // `"failed"` event, is what actually gives the player a working
+        // retry.
         fail(frame.error !== "" ? frame.error : "protocol_error");
       }
     });

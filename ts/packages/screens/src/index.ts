@@ -148,6 +148,7 @@ export {
   newState as newLobbyScreenState,
   layout as lobbyScreenLayout,
   update as lobbyScreenUpdate,
+  ROOM_CODE_ENTRY_WIDGET,
 } from "./lobby.ts";
 export type {
   LobbyAction,

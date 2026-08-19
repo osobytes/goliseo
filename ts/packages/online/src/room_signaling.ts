@@ -79,15 +79,29 @@ export function roomSignalJoinPath(code: string): string {
  * validated -- mirrors `infra/src/room_durable_object.ts`'s own module doc
  * exactly (`{type:"created"|"joined", code}`, `{type:"guest_joined"|
  * "guest_left", guestId}`, `{type:"signal", from, body}`, `{type:"error",
- * error}`). `body` is always a `string` here (see this file's header) --
- * a non-string `body` is treated as a protocol violation, not coerced. */
+ * error}`, `{type:"host_left"}`). `body` is always a `string` here (see
+ * this file's header) -- a non-string `body` is treated as a protocol
+ * violation, not coerced.
+ *
+ * `error` is a `string`, not a closed union, because that DO reports it
+ * verbatim -- see this module's doc, "why the client is blind" -- and every
+ * caller past this module (`room_signaling_port.ts`, `lobby_model.ts`'s
+ * `ROOM_FAILURE_TEXT`) already falls back to the raw token for a reason it
+ * does not recognize. As of #599 every admission-time reason arrives this
+ * way instead of a pre-upgrade HTTP rejection: `room_not_found` (a guest
+ * addressed a code no host has ever claimed), `room_full`, `room_expired`,
+ * `room_closed`, `host_already_claimed`, `already_joined`. `room_not_open`
+ * is a DIFFERENT, already-in-band case -- a signal arriving on an
+ * already-admitted socket for a room that is no longer open, not an
+ * admission failure. */
 export type RoomServerFrame =
   | { readonly type: "created"; readonly code: string }
   | { readonly type: "joined"; readonly code: string }
   | { readonly type: "guest_joined"; readonly guestId: string }
   | { readonly type: "guest_left"; readonly guestId: string }
   | { readonly type: "signal"; readonly from: string; readonly body: string }
-  | { readonly type: "error"; readonly error: string };
+  | { readonly type: "error"; readonly error: string }
+  | { readonly type: "host_left" };
 
 /** Parses and validates one raw WebSocket text frame from the room-code
  * Worker. Every failure -- invalid JSON, an unrecognized `type`, a missing
@@ -126,6 +140,9 @@ export function parseServerFrame(raw: string): Result<RoomServerFrame, "malforme
     const error = value["error"];
     return typeof error === "string" ? ok({ type: "error", error }) : err("malformed_frame");
   }
+  if (type === "host_left") {
+    return ok({ type: "host_left" });
+  }
   return err("malformed_frame");
 }
 
@@ -139,13 +156,24 @@ export function encodeHostSignal(toGuestId: string, signal: string): string {
 /** Why a room-code connection failed or ended, as a typed state rather than
  * a thrown exception (this issue's own acceptance criterion). A browser
  * `WebSocket` cannot read the HTTP status of a failed upgrade (the platform
- * gives a script no access to it), so every handshake failure -- a bad or
- * expired code, a full room, a rate limit, a genuine network error --
- * collapses to `"handshake_failed"`. That is a real, disclosed limitation
- * of the browser WebSocket API, not a gap in this module: a caller that
- * wants a *reason* has none to read from the platform. `"protocol_error"`
- * and `"malformed_frame"` are more specific because they arrive AFTER a
- * successful handshake, over frames this module itself parses. */
+ * gives a script no access to it), so a rejection that genuinely happens
+ * BEFORE the upgrade completes collapses to `"handshake_failed"`; that is a
+ * real, disclosed limitation of the browser WebSocket API, not a gap in
+ * this module. Exactly three cases stay pre-upgrade -- this list is
+ * exhaustive, kept in sync with `infra/src/room_durable_object.ts`'s own
+ * (its doc is the source of truth if the two ever disagree): a per-IP rate
+ * limit, a malformed code shape, and the room's own per-code join-attempt
+ * limit (`JOIN_RATE_LIMIT`, distinct from the per-IP one -- both surface
+ * identically here, as this browser API cannot tell HTTP statuses apart
+ * either); a genuine network error collapses here too, for the same
+ * platform-visibility reason. As of #599 that is a SMALLER set than it used
+ * to be: a bad/expired/full/closed code, or a host-claim collision, now
+ * completes the upgrade and arrives as an in-band `{type:"error"}` frame
+ * instead (`RoomServerFrame`'s own doc) -- `classifyClose` below never
+ * produces those; `room_signaling_port.ts` reports them straight from the
+ * frame's `error` field. `"protocol_error"` and `"malformed_frame"` are
+ * more specific because they arrive AFTER a successful handshake, over
+ * frames this module itself parses. */
 export type RoomSignalingFailureReason =
   "handshake_failed" | "malformed_frame" | "protocol_error" | "connection_lost";
 
@@ -153,7 +181,7 @@ export interface RoomSignalingFailure {
   readonly reason: RoomSignalingFailureReason;
   /** Present only for `"protocol_error"`: the Worker's own error code
    * (`infra/src/room_durable_object.ts`'s `{type:"error", error}` frame,
-   * e.g. `"room_not_open"`, `"message_too_large"`). */
+   * e.g. `"message_too_large"`). */
   readonly detail?: string;
 }
 

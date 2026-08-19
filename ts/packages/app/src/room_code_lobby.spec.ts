@@ -163,10 +163,14 @@ function fakeRoomRendezvous(): FakeRoomRendezvous {
   function openGuest(code: string): RoomSignalingHandle {
     const room = rooms.get(code);
     if (room === undefined) {
-      // Unknown/expired code: a real handshake against a room that does not
-      // exist collapses to a generic failure -- see `room_signaling.ts`'s
-      // own doc on why a browser WebSocket cannot report more than that.
-      let events: RoomSignalingEvent[] = [{ kind: "failed", reason: "handshake_failed" }];
+      // Unknown/expired code: as of #599 this completes the WebSocket
+      // upgrade and reports the reason in-band instead of failing the
+      // handshake itself -- `room_durable_object.ts`'s own doc, "Admission
+      // failures". A code no host has ever claimed reads as `room_not_found`
+      // (`room_state.ts`'s `joinGuest`, same reasoning this fake's own
+      // `rooms` map already encodes: an unclaimed code and a nonexistent one
+      // are indistinguishable here).
+      let events: RoomSignalingEvent[] = [{ kind: "failed", reason: "room_not_found" }];
       return {
         poll: () => {
           const drained = events;
@@ -312,7 +316,7 @@ describe("room_code_lobby: failure states", () => {
     // command `pump()`'s `update(dt)` dispatches every frame, so only the
     // dedicated, persistent field still holds the failure by the time this
     // assertion runs (`room_error`'s own doc on `LobbyModel`).
-    expect(guest.state.model.room_error).toBe(LOBBY_ROOM_FAILURE_TEXT["handshake_failed"]);
+    expect(guest.state.model.room_error).toBe(LOBBY_ROOM_FAILURE_TEXT["room_not_found"]);
     // A failed room-code attempt must not leave `room_active` stuck `true`
     // -- that would hide the manual copy/paste controls forever
     // (`lobby.ts`'s layout gates them on `!room_active`), making the

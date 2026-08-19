@@ -165,11 +165,13 @@ export class App {
   /** Seeds a hosted lobby's `bot_fill` and, on leaving one hosted, is
    * re-saved (`team_settings.ts`'s "last bot-fill choice"). */
   lastBotFill: boolean;
-  /** The role this app entered the CURRENT lobby route with, if any --
-   * `bot_fill` is host-only (`lobby_model.ts`'s own rule), so only a host's
-   * departure re-saves it; a guest's `bot_fill` stays permanently `false`
-   * and must never overwrite a real preference. Cleared once the lobby
-   * route is left. */
+  /** The `intent` this app entered the CURRENT lobby route with, if any
+   * (`showLobby`'s own `intent` option -- #597's room-flow role, not
+   * necessarily the coordinator's eventual resolved role) --
+   * `bot_fill` is host-only (`lobby_model.ts`'s own rule), so only a host
+   * intent's departure re-saves it; a guest's `bot_fill` stays permanently
+   * `false` and must never overwrite a real preference. Cleared once the
+   * lobby route is left. */
   private currentLobbyRole: "host" | "guest" | undefined;
   readonly viewport: Viewport = { w: 960, h: 540 };
   transform: ViewportTransform;
@@ -369,27 +371,30 @@ export class App {
   }
 
   // The online route -- see this file's header for why the lobby screen is
-  // injected rather than imported. `role`/`mode` are the multiplayer front
-  // door's decision, forwarded so the player does not choose Host twice.
+  // injected rather than imported. `intent`/`mode` are the multiplayer
+  // front door's decision (#597: a room-flow intent, not a preset manual
+  // role -- see `multiplayer.ts`'s `MultiplayerAction` doc), forwarded so
+  // the player does not choose Host/Join twice.
   showLobby(options?: {
     readonly modelOptions?: Record<string, unknown>;
-    readonly role?: "host" | "guest";
+    readonly intent?: "host" | "guest";
     readonly mode?: string;
   }): void {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
     }
-    this.currentLobbyRole = options?.role;
+    this.currentLobbyRole = options?.intent;
     const modelOptions = options?.modelOptions ?? {};
     const resolved = {
       ...modelOptions,
       template: modelOptions.template ?? this.online.matchManifestTemplate,
-      ...(options?.role !== undefined ? { role: options.role } : {}),
+      ...(options?.intent !== undefined ? { intent: options.intent } : {}),
       ...(options?.mode !== undefined ? { mode: options.mode } : {}),
       // Host-only, mirroring `mode` above -- see `OnlineLobbyOptions.botFill`'s
       // own doc for why this is safe to pass unconditionally (a non-host
-      // value is simply never dispatched).
-      ...(options?.role === "host" ? { botFill: this.lastBotFill } : {}),
+      // value is simply never dispatched, and only applied once this peer
+      // actually resolves to host -- `pendingBotFill`, not synchronously).
+      ...(options?.intent === "host" ? { botFill: this.lastBotFill } : {}),
     };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
     this.pushRoute("lobby", screen);
@@ -476,12 +481,12 @@ export class App {
     } else if (route === "multiplayer" && action.go === "title") {
       this.showTitle();
     } else if (route === "multiplayer" && action.go === "lobby") {
-      if (action.role === "host" && action.mode !== undefined) {
+      if (action.intent === "host" && action.mode !== undefined) {
         this.lastOnlineMode = action.mode as SessionMatchMode;
         this.saveTeamPreferences();
       }
       this.showLobby({
-        ...(action.role !== undefined ? { role: action.role as "host" | "guest" } : {}),
+        ...(action.intent !== undefined ? { intent: action.intent as "host" | "guest" } : {}),
         ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
       });
     } else if (route === "lobby" && action.go === "online_match") {

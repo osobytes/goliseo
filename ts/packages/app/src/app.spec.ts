@@ -524,7 +524,7 @@ describe("team persistence (#600)", () => {
       }),
     );
     let capturedOptions:
-      { readonly role?: string; readonly mode?: string; readonly botFill?: boolean } | undefined;
+      { readonly intent?: string; readonly mode?: string; readonly botFill?: boolean } | undefined;
     const modelBox = { bot_fill: true };
     const onlinePorts: OnlinePorts = {
       matchManifestTemplate: undefined,
@@ -542,7 +542,7 @@ describe("team persistence (#600)", () => {
     clickWidget(app, "multiplayer");
     clickWidget(app, "host");
     expect(app.currentRoute()).toBe("lobby");
-    expect(capturedOptions?.role).toBe("host");
+    expect(capturedOptions?.intent).toBe("host");
     expect(capturedOptions?.botFill).toBe(true);
 
     // The host turns bot fill back off inside the lobby -- `App` has no

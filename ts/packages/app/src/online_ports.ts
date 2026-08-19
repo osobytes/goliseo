@@ -1144,15 +1144,18 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
 
     newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen {
       deps.onLobbyEntry?.();
-      // `role`/`mode`/`botFill` are the multiplayer front door's decision
+      // `intent`/`mode`/`botFill` are the multiplayer front door's decision
       // (`botFill` specifically: `app.ts`'s persisted "last bot fill
-      // choice"), not model options -- `OnlineLobby` applies them as its
-      // opening commands. They are split out here rather than spread into
-      // `modelOptions`, where they would be silently ignored and the player
-      // would pick Host twice.
-      const { role, mode, botFill, ...modelOptions } = options as {
+      // choice"), not model options -- `OnlineLobby` applies `intent` as
+      // its opening `room_pick` command (#597), `mode` and `botFill` once
+      // that room-hosting attempt's coordinator exists (`pendingMode`/
+      // `pendingBotFill`, fired from the same first-host-resolution hook).
+      // They are split out here rather than spread into `modelOptions`,
+      // where they would be silently ignored and the player would pick
+      // Host/Join twice.
+      const { intent, mode, botFill, ...modelOptions } = options as {
         readonly template?: (mode: SessionMatchMode) => SessionManifest;
-        readonly role?: LobbyRole;
+        readonly intent?: LobbyRole;
         readonly mode?: SessionMatchMode;
         readonly botFill?: boolean;
       };
@@ -1161,7 +1164,7 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
         newLink: (star: StarTransportAdapter) => realLobbyLink(star),
         ...(deps.clipboard !== undefined ? { clipboard: deps.clipboard } : {}),
         ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
-        ...(role !== undefined ? { role } : {}),
+        ...(intent !== undefined ? { roomIntent: intent } : {}),
         ...(mode !== undefined ? { mode } : {}),
         ...(botFill !== undefined ? { botFill } : {}),
         modelPorts,

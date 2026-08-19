@@ -107,6 +107,29 @@ describe("room_signaling: parseServerFrame", () => {
     });
   });
 
+  it("parses each in-band admission-failure reason (#599) as an error frame", () => {
+    for (const reason of [
+      "room_not_found",
+      "room_full",
+      "room_expired",
+      "room_closed",
+      "host_already_claimed",
+      "already_joined",
+    ]) {
+      expect(parseServerFrame(JSON.stringify({ type: "error", error: reason }))).toEqual({
+        ok: true,
+        value: { type: "error", error: reason },
+      });
+    }
+  });
+
+  it("parses a host_left frame, with no other fields", () => {
+    expect(parseServerFrame('{"type":"host_left"}')).toEqual({
+      ok: true,
+      value: { type: "host_left" },
+    });
+  });
+
   it("rejects invalid JSON", () => {
     expect(parseServerFrame("not json")).toEqual({ ok: false, error: "malformed_frame" });
   });

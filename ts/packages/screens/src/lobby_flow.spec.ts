@@ -2654,10 +2654,18 @@ describe("online lobby screen shell", () => {
   // runs the other way).
 
   // #600: `app.ts` seeds a hosted lobby's opening `mode`/`bot_fill` from the
-  // player's persisted preferences (`team_settings.ts`) through exactly
-  // these constructor options -- `role`/`mode` already worked this way;
-  // `botFill` is the new one this issue added.
-  it("applies role/mode/botFill options as opening commands, host-only", async () => {
+  // player's persisted preferences (`team_settings.ts`). #603's room flow
+  // (#597) removed the old constructor-time `role` option entirely -- a
+  // preset intent now only starts a `room_pick` attempt (`roomIntent`), and
+  // this peer does not actually become "host" (`lobby_model.ts`'s
+  // `chooseRole`) until the room-code Worker confirms the room
+  // (`room_created`) or a manual role pick resolves it. `mode`/`botFill`
+  // are therefore deferred (`pendingMode`/`pendingBotFill`,
+  // `applyPendingHostOptionsIfJustResolved`), never dispatched
+  // synchronously at construction -- a naive synchronous `bot_fill`
+  // dispatch gated on the old `role` option would silently no-op here,
+  // since `model.role` is not "host" yet at that point.
+  it("defers mode/botFill until a room-flow host actually resolves (roomIntent -> room_created)", async () => {
     const { OnlineLobby } = await import("./online_lobby.ts");
     // `starFactory` always declines, so `newLink` is never reached -- it
     // throws if that assumption ever stops holding.
@@ -2668,23 +2676,49 @@ describe("online lobby screen shell", () => {
       starFactory: () => undefined,
       newLink: neverNewLink,
       modelPorts: ports(),
-      role: "host",
+      roomIntent: "host",
       mode: "2v2",
       botFill: true,
     });
+
+    // `room_pick` alone only starts the room-hosting attempt (`room_active:
+    // true`) -- it does not run `chooseRole`, so neither pending option has
+    // reached the model yet. This is the assertion that would catch a
+    // regression back to a synchronous dispatch: `role` is not "host" here,
+    // so a `bot_fill` command gated on that would already have been
+    // refused (`lobby_model.ts`'s own host-only rule) even if one had fired.
+    expect(host.state.model.role).toBeUndefined();
+    expect(host.state.model.bot_fill).toBe(false);
+
+    // The room-code Worker confirms the room -- `online_lobby.ts`'s own
+    // `roomCommandFor` maps that fact to exactly this command in production;
+    // dispatched directly here since this file has no real room-signaling
+    // transport to drive it through (see this file's header).
+    host.dispatch({ kind: "room_created", code: "ABCDEF" });
+
+    expect(host.state.model.role).toBe("host");
     expect(host.state.model.mode).toBe("2v2");
     expect(host.state.model.bot_fill).toBe(true);
+  });
 
-    // `false`/`undefined` dispatches nothing -- the model's own default
-    // already matches, so a guest (who cannot toggle bot fill at all --
-    // `lobby_model.ts`'s own host-only rule) is unaffected either way.
+  it("never defers or applies botFill for a room-flow guest, who cannot host bot fill anyway", async () => {
+    const { OnlineLobby } = await import("./online_lobby.ts");
+    const neverNewLink = (): never => {
+      throw new Error("not exercised by this case");
+    };
+    // `botFill: true` is passed here on purpose -- `pendingBotFill` is only
+    // ever armed for `roomIntent: "host"` (`OnlineLobbyOptions.botFill`'s
+    // own doc), so a guest intent must ignore it outright, not merely
+    // refuse to apply it once resolved.
     const guest = new OnlineLobby({ w: 960, h: 540 }, undefined, {
       starFactory: () => undefined,
       newLink: neverNewLink,
       modelPorts: ports(),
-      role: "guest",
+      roomIntent: "guest",
       botFill: true,
     });
+    guest.dispatch({ kind: "room_joined" });
+    expect(guest.state.model.role).toBe("guest");
     expect(guest.state.model.bot_fill).toBe(false);
   });
 });

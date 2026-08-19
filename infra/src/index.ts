@@ -9,6 +9,19 @@
 //!   to a `RoomDurableObject`, one per room code (`room_durable_object.ts`).
 //!   `Room-Role` is set HERE, from which route matched -- never read from
 //!   anything the client sent, so a client cannot self-declare "host".
+//!   Neither handler addresses a Durable Object -- `env.ROOM.getByName` --
+//!   for a request that is not a genuine WebSocket upgrade attempt
+//!   (`requireWebSocketUpgrade` below), checked before anything else. This
+//!   is a security boundary, not a style choice (round-2 council review,
+//!   blocking finding 1): before this check existed, a plain non-upgrade
+//!   `GET /signal/join?code=X` reached `RoomDurableObject.fetch`'s own
+//!   non-upgrade branch, which used to answer "is this code claimed"
+//!   (409/200) to ANY caller for the cost of one `SIGNAL_RATE_LIMITER`
+//!   token -- an unauthenticated, internet-reachable room-existence oracle
+//!   that also bypassed the DO's own per-room `JOIN_RATE_LIMIT` entirely (a
+//!   request that never reaches `RoomDurableObject.fetch`'s claim/join
+//!   logic never consumes it). See `room_durable_object.ts`'s own doc for
+//!   the full, now-exhaustive list of what stays a pre-upgrade rejection.
 //! - `/api/turn-credentials` mints short-TTL TURN credentials (`turn_credentials.ts`).
 
 import { generateRoomCode, isValidRoomCode } from "./room_code.ts";
@@ -29,8 +42,22 @@ function rateLimitKeyFor(request: Request): string {
   return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
+/** Every `/signal/*` route is a WebSocket handshake and nothing else -- a
+ * request that never even attempts to upgrade has no legitimate reason to
+ * reach a Durable Object at all. See this file's own header, and
+ * `room_durable_object.ts`'s doc ("Admission failures are in-band"), for
+ * why this specific gate exists (round-2 council review, blocking
+ * finding 1). */
+function isWebSocketUpgrade(request: Request): boolean {
+  return request.headers.get("Upgrade") === "websocket";
+}
+
 /** Exported for index.spec.ts -- AGENTS.md §4: everything a test touches is reachable. */
 export async function handleHostSignal(request: Request, env: Env): Promise<Response> {
+  if (!isWebSocketUpgrade(request)) {
+    return new Response("expected a WebSocket upgrade", { status: 400 });
+  }
+
   // Checked BEFORE anything touches env.ROOM.getByName(): each attempt
   // below provisions or addresses a Durable Object, which is billed, and
   // room_state.ts's own per-room JOIN_RATE_LIMIT cannot help here -- it
@@ -49,19 +76,33 @@ export async function handleHostSignal(request: Request, env: Env): Promise<Resp
     const randomBytes = crypto.getRandomValues(new Uint8Array(6));
     const code = generateRoomCode(randomBytes);
     const stub = env.ROOM.getByName(code);
-    const response = await stub.fetch(new Request(request.url, { headers: forwarded }));
-    if (response.status !== 409) {
-      return response;
+    // room_durable_object.ts's admission failures now complete the
+    // WebSocket upgrade instead of returning an HTTP status this loop can
+    // read (its own module doc, "Admission failures") -- so a collision
+    // with an existing live room is no longer visible from the real
+    // upgrade attempt's response. `isClaimedByHost` (an RPC method, called
+    // directly on the stub -- NOT an HTTP request) is the replacement
+    // signal: cheap, and it never opens (and immediately tears down) a
+    // real WebSocket for the losing code. Deliberately RPC, not a second
+    // `fetch` request -- see that module's own doc, "Collision probe":
+    // this is the fix for the very oracle this file's header describes.
+    const claimed = await stub.isClaimedByHost();
+    if (claimed) {
+      continue; // This freshly generated code already names a live room --
+      // astronomically unlikely (see room_code.ts's doc) but cheap to
+      // retry rather than assume can't happen.
     }
-    // 409 here means this freshly generated code already names a live
-    // room -- astronomically unlikely (see room_code.ts's doc) but cheap
-    // to retry rather than assume can't happen.
+    return stub.fetch(new Request(request.url, { headers: forwarded }));
   }
   return new Response("could not allocate a room code, try again", { status: 503 });
 }
 
 /** Exported for index.spec.ts -- AGENTS.md §4: everything a test touches is reachable. */
 export async function handleJoinSignal(request: Request, env: Env): Promise<Response> {
+  if (!isWebSocketUpgrade(request)) {
+    return new Response("expected a WebSocket upgrade", { status: 400 });
+  }
+
   // Same reasoning as handleHostSignal: this addresses (and, via the DO's
   // own claim logic, may create the SQLite row for) a Durable Object
   // before any per-room check runs.
