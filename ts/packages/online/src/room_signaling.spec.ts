@@ -114,6 +114,7 @@ describe("room_signaling: parseServerFrame", () => {
       "room_expired",
       "room_closed",
       "host_already_claimed",
+      "already_joined",
     ]) {
       expect(parseServerFrame(JSON.stringify({ type: "error", error: reason }))).toEqual({
         ok: true,

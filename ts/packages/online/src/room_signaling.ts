@@ -157,17 +157,23 @@ export function encodeHostSignal(toGuestId: string, signal: string): string {
  * a thrown exception (this issue's own acceptance criterion). A browser
  * `WebSocket` cannot read the HTTP status of a failed upgrade (the platform
  * gives a script no access to it), so a rejection that genuinely happens
- * BEFORE the upgrade completes -- a per-IP rate limit, a malformed code
- * shape, a genuine network error -- collapses to `"handshake_failed"`; that
- * is a real, disclosed limitation of the browser WebSocket API, not a gap
- * in this module. As of #599 that is a SMALLER set than it used to be: a
- * bad/expired/full/closed code, or a host-claim collision, now completes
- * the upgrade and arrives as an in-band `{type:"error"}` frame instead
- * (`RoomServerFrame`'s own doc) -- `classifyClose` below never produces
- * those; `room_signaling_port.ts` reports them straight from the frame's
- * `error` field. `"protocol_error"` and `"malformed_frame"` are more
- * specific because they arrive AFTER a successful handshake, over frames
- * this module itself parses. */
+ * BEFORE the upgrade completes collapses to `"handshake_failed"`; that is a
+ * real, disclosed limitation of the browser WebSocket API, not a gap in
+ * this module. Exactly three cases stay pre-upgrade -- this list is
+ * exhaustive, kept in sync with `infra/src/room_durable_object.ts`'s own
+ * (its doc is the source of truth if the two ever disagree): a per-IP rate
+ * limit, a malformed code shape, and the room's own per-code join-attempt
+ * limit (`JOIN_RATE_LIMIT`, distinct from the per-IP one -- both surface
+ * identically here, as this browser API cannot tell HTTP statuses apart
+ * either); a genuine network error collapses here too, for the same
+ * platform-visibility reason. As of #599 that is a SMALLER set than it used
+ * to be: a bad/expired/full/closed code, or a host-claim collision, now
+ * completes the upgrade and arrives as an in-band `{type:"error"}` frame
+ * instead (`RoomServerFrame`'s own doc) -- `classifyClose` below never
+ * produces those; `room_signaling_port.ts` reports them straight from the
+ * frame's `error` field. `"protocol_error"` and `"malformed_frame"` are
+ * more specific because they arrive AFTER a successful handshake, over
+ * frames this module itself parses. */
 export type RoomSignalingFailureReason =
   "handshake_failed" | "malformed_frame" | "protocol_error" | "connection_lost";
 

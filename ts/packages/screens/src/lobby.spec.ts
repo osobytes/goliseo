@@ -1395,6 +1395,7 @@ describe("room-code entry (#552)", () => {
       "room_expired",
       "room_closed",
       "host_already_claimed",
+      "already_joined",
     ] as const;
     const texts = reasons.map((reason) => {
       let state = joining();

@@ -493,8 +493,9 @@ export const PREFERENCE_TEXT: Readonly<Record<string, string>> = {
 // (`infra/src/room_durable_object.ts`'s `{type:"error", error}` frame /
 // `infra/src/room_state.ts`'s own error strings). A browser `WebSocket`
 // cannot read the HTTP status of a failed upgrade at all (`room_signaling.ts`'s
-// `RoomSignalingFailureReason` doc), so a pre-upgrade rejection (a per-IP
-// rate limit, a malformed code shape, a genuine network error) still
+// `RoomSignalingFailureReason` doc, the exhaustive list of what stays
+// pre-upgrade -- a per-IP rate limit, a malformed code shape, the room's
+// own per-code join-attempt limit, a genuine network error) still
 // collapses to the generic `handshake_failed` -- but as of #599, an
 // admission-time reason (a bad, full, expired, or closed code; a host-claim
 // collision) is no longer one of those: the room-code Worker completes the

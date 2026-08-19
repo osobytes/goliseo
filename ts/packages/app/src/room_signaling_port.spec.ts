@@ -223,10 +223,10 @@ describe("room_signaling_port: failure states", () => {
   });
 
   // #599: an admission-failure reason (room_not_found/room_full/
-  // room_expired/room_closed/host_already_claimed) now arrives the exact
-  // same way as any other in-band error -- the Durable Object completes
-  // the upgrade instead of rejecting the HTTP request, so this port has no
-  // separate code path for it.
+  // room_expired/room_closed/host_already_claimed/already_joined) now
+  // arrives the exact same way as any other in-band error -- the Durable
+  // Object completes the upgrade instead of rejecting the HTTP request, so
+  // this port has no separate code path for it.
   it("reports each in-band admission-failure reason and closes the socket", () => {
     for (const reason of [
       "room_not_found",
@@ -234,6 +234,7 @@ describe("room_signaling_port: failure states", () => {
       "room_expired",
       "room_closed",
       "host_already_claimed",
+      "already_joined",
     ]) {
       const { socket, handle } = hostHandle();
       socket.open();
