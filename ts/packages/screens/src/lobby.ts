@@ -14,6 +14,24 @@
 // `lobby_model.ts`'s `LobbyModelPorts` (coordinator/protocol/... -- see its
 // header) is threaded through embedded on `LobbyScreenState`, the same
 // pattern `squad.ts` uses for `SquadContentData`.
+//
+// # Layout is one dispatch over the model's phase (#566)
+//
+// `lobby_model.ts` publishes a nine-value `view.phase` (`role` | `handshake`
+// | `manifest` | `assigned` | `ready` | `countdown` | `running` | `result` |
+// `terminal`), plus a `view.room_entry` sub-view of `role` for the room-code
+// composer. `layout()` below is one dispatch over that phase, and each arm
+// builds only the widgets that phase's player can act on -- nothing a role
+// screen can't seat, no eight-row roster before there is anything to seat,
+// no ticks on a player's screen, no protocol dump unless it's asked for or
+// load-bearing. `state.details` is the one piece of genuinely screen-local
+// state this adds: whether the identity dump (build/content/tuning ids) is
+// currently exposed outside the `terminal` phase, where it is load-bearing
+// (a `build_mismatch`/`manifest_mismatch` reads there) and always shown.
+//
+// Every widget id below still maps to a `LobbyCommand` the model already
+// accepts (`commandFor`) -- ids are presentation, not contract, but the
+// commands they dispatch are the two-way contract with `lobby_model.ts`.
 
 import { focus, type Layout, type Widget } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -22,14 +40,12 @@ import {
   command as lobbyCommand,
   newLobbyModel,
   view as lobbyView,
+  type InputTeam,
   type LobbyCommand,
   type LobbyEffect,
   type LobbyModel,
   type LobbyModelOptions,
   type LobbyModelPorts,
-  type InputTeam,
-  type LobbyPreferenceView,
-  type LobbySeatView,
   type LobbySignalRecord,
   type LobbySlotView,
   type LobbyView,
@@ -59,6 +75,11 @@ export interface LobbyScreenState {
   readonly ports: LobbyModelPorts;
   readonly model: LobbyModel;
   readonly focus: string;
+  /** Whether the identity/build dump is currently exposed outside the
+   * `terminal` phase (where it is always shown). Purely a screen concern --
+   * `lobby_model.ts` never reads or sets it -- so it lives here rather than
+   * on `LobbyModel`, per this file's own header. */
+  readonly details: boolean;
   /** Produced by the last update; drained by the owner. */
   readonly effects: readonly LobbyEffect[];
 }
@@ -68,42 +89,20 @@ export type LobbyAction =
 
 // --- layout geometry, in virtual (960x540) pixels ---------------------------
 //
-// The arrangement changed; the controls did not. Every id below still maps to
-// a `LobbyCommand` the model already accepted (`commandFor`), so this is a
-// presentation pass over an unchanged 1,450-line model.
-//
-// What moved, and why:
-//
-//   - Slots are grouped into two team columns instead of one flat list of
-//     eight. Which team a seat is on is the thing a player is actually
-//     deciding; a flat list made it something you had to read an id prefix to
-//     work out.
-//   - Signaling stops being the headline. The blob was never rendered (and
-//     still is not — only a direction, a size and a digest ever leave the
-//     model), but "OUT PEER 1234 BYTES #ab12" was the most prominent thing on
-//     the screen. An invite code carries the same digest in a form a player
-//     can read out loud, and copy/paste happens behind it.
-//   - Peers, countdown and start boundary read as one line rather than three
-//     scattered status labels.
-const LEFT_X = 24;
-const TEAM_W = 300;
-const HOME_X = LEFT_X;
-const AWAY_X = 336;
-const SEATS_X = 648;
-const SEATS_W = 288;
-/** Everything left of the seats column: the two team blocks and the controls under them. */
-const MAIN_W = AWAY_X + TEAM_W - LEFT_X;
-const HEADING_Y = 62;
-const ROW_TOP = 84;
-const ROW_STEP = 34;
-const ROW_H = 30;
-/** Four canonical outfield slots per team, then that team's protected keeper. */
-const SLOTS_PER_TEAM = 4;
-const KEEPER_Y = ROW_TOP + SLOTS_PER_TEAM * ROW_STEP;
-/** The control block under the team columns. */
-const CONTROLS_Y = KEEPER_Y + 32;
-const SIGNAL_Y = CONTROLS_Y + 76;
-const LINE_Y = SIGNAL_Y + 48;
+// Page gutters are at least 62px and interactive targets at least 38px tall
+// (docs/visual_style.md) -- both were violated before this pass (`LEFT_X`
+// was 24; mode chips were 26px tall) and are fixed here along with the
+// phase split itself.
+const LEFT_X = 62;
+const RIGHT_EDGE = 898;
+/** The left content column: manual controls, the room-code hero, the roster. */
+const LEFT_COL_W = 460;
+/** The right column: the per-human players strip. */
+const RIGHT_COL_X = 560;
+const RIGHT_COL_W = 338;
+const CONTENT_TOP = 84;
+const FOOTER_TEXT_Y = 420;
+const FOOTER_BUTTON_Y = 490;
 
 export function newState(
   viewport: { readonly w: number; readonly h: number },
@@ -114,31 +113,141 @@ export function newState(
     viewport,
     ports,
     model: context?.model ?? newLobbyModel(ports, context?.options),
-    focus: "role_host",
+    // Tab order is the statement of priority: a room code is the primary
+    // path (it connects automatically), so it claims initial focus rather
+    // than the manual "HOST A SESSION" button that used to sit first.
+    focus: "room_code_host",
+    details: false,
     effects: [],
   };
 }
 
-function slotText(slot: LobbySlotView): string {
-  const owner = slot.owner ?? "unassigned";
-  let driver: string;
-  if (slot.driver === "pending") {
-    driver = "pending";
-  } else if (slot.owner_kind === "bot") {
-    driver = "AI FILL";
-  } else if (slot.driver === "human") {
-    driver = "LIVE";
-  } else {
-    driver = "AI (OWNED)";
-  }
-  return `${slot.slot.toUpperCase()}  ${slot.player_id.toUpperCase()}  ->  ${owner.toUpperCase()}  ${driver}`;
+// --- small widget-building primitives ---------------------------------------
+
+type Align = "left" | "center" | "right";
+interface Rect {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
 }
 
-function seatText(seat: LobbySeatView): string {
-  const slots = seat.slots.length > 0 ? seat.slots.join(" ") : "unassigned";
-  return `${seat.index}  ${seat.peer_id.toUpperCase()}${seat.is_local ? " (YOU)" : ""}  ${slots.toUpperCase()}  ${
-    seat.ready ? "READY" : "-"
-  }`;
+interface ControlOptions {
+  readonly kind?: string;
+  readonly selected?: boolean;
+  readonly tone?: "muted";
+  readonly disabled?: boolean;
+  readonly align?: Align;
+}
+
+/** An interactive widget (button by default): focused from `state.focus`,
+ * clickable unless `disabled`. */
+function control(
+  widgets: Widget[],
+  state: LobbyScreenState,
+  id: string,
+  value: string,
+  rect: Rect,
+  options?: ControlOptions,
+): void {
+  widgets.push({
+    id,
+    kind: options?.kind ?? "button",
+    text: value,
+    ...(options?.selected !== undefined ? { selected: options.selected } : {}),
+    focused: state.focus === id,
+    rect,
+    data: {
+      align: options?.align ?? "left",
+      ...(options?.tone !== undefined ? { tone: options.tone } : {}),
+      ...(options?.disabled !== undefined ? { disabled: options.disabled } : {}),
+    },
+  });
+}
+
+interface TextOptions {
+  readonly kind?: string;
+  readonly align?: Align;
+  readonly tone?: "muted";
+}
+
+/** A non-interactive label/eyebrow/title/hero_title widget. */
+function text(
+  widgets: Widget[],
+  id: string,
+  value: string,
+  rect: Rect,
+  options: TextOptions,
+): void {
+  widgets.push({
+    id,
+    kind: options.kind ?? "label",
+    text: value,
+    rect,
+    data: {
+      align: options.align ?? "left",
+      ...(options.tone !== undefined ? { tone: options.tone } : {}),
+      focusable: false,
+    },
+  });
+}
+
+interface CardOptions {
+  readonly align?: Align;
+  readonly tone?: "muted";
+  readonly selected?: boolean;
+}
+
+/** A non-interactive display card -- `focus.ts` treats every "card" kind as
+ * focusable unless told otherwise, so this always says otherwise. */
+function displayCard(
+  widgets: Widget[],
+  id: string,
+  value: string,
+  rect: Rect,
+  options?: CardOptions,
+): void {
+  widgets.push({
+    id,
+    kind: "card",
+    text: value,
+    ...(options?.selected !== undefined ? { selected: options.selected } : {}),
+    rect,
+    data: {
+      align: options?.align ?? "left",
+      ...(options?.tone !== undefined ? { tone: options.tone } : {}),
+      focusable: false,
+    },
+  });
+}
+
+// --- copy helpers -------------------------------------------------------
+
+/** A snake_case id ("zyro_vex", "guest_1") as a readable display name
+ * ("Zyro Vex", "Guest 1"). Body copy is sentence case
+ * (docs/visual_style.md); these ids have no separate display name, so this
+ * is the whole of that rule applied to them. */
+function displayName(id: string): string {
+  return id
+    .split("_")
+    .filter((part) => part.length > 0)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+/** A short, concise-uppercase status tag for a slot -- who drives it, not
+ * who owns it (that's `slot.local_owner`/`selected`). */
+function slotTag(slot: LobbySlotView): string {
+  if (slot.driver === "human") {
+    return "LIVE";
+  }
+  if (slot.owner_kind === "bot") {
+    return "AI FILL";
+  }
+  if (slot.owner_kind === "peer") {
+    return "AI (OWNED)";
+  }
+  return "OPEN";
 }
 
 /**
@@ -150,46 +259,34 @@ function seatText(seat: LobbySeatView): string {
  */
 function inviteText(record: LobbySignalRecord | undefined): string {
   if (!record) {
-    return "NO INVITE YET  —  INVITE A PEER TO CREATE ONE";
+    return "No invite yet — invite a peer to create one.";
   }
-  return `INVITE  GC://JOIN/${record.fingerprint.toUpperCase()}  •  ${record.direction.toUpperCase()}  ${record.bytes} BYTES`;
+  return `Invite code GC://JOIN/${record.fingerprint.toUpperCase()} — ${record.direction}, ${record.bytes} bytes.`;
 }
 
 function answerText(record: LobbySignalRecord | undefined): string {
   if (!record) {
-    return "NO REPLY IMPORTED YET";
+    return "No reply imported yet.";
   }
-  return `REPLY FROM ${record.peer_id.toUpperCase()}  #${record.fingerprint.toUpperCase()}`;
+  return `Reply from ${displayName(record.peer_id)} — #${record.fingerprint.toUpperCase()}.`;
 }
 
-/**
- * Peers, countdown and start boundary as one sentence. Three separate status
- * labels made the player assemble the same fact themselves.
- */
+/** Peers, and what is still missing, as one line. */
 function lineText(view: LobbyView): string {
   const required = view.mode_known ? String(view.required) : "?";
-  const parts = [`PEERS  ${view.connected} / ${required}`];
+  const parts = [`${view.connected} / ${required} connected`];
   if (view.mode_known && view.connected < view.required) {
     const missing = view.required - view.connected;
-    parts.push(`WAITING ON ${missing} ${missing === 1 ? "PLAYER" : "PLAYERS"}`);
+    parts.push(`waiting on ${missing} ${missing === 1 ? "player" : "players"}`);
   }
   if (view.mode_known && view.connected >= view.required && !view.started) {
-    parts.push(`READY  ${view.ready_count} / ${view.connected}`);
+    parts.push(`${view.ready_count} / ${view.connected} ready`);
   }
   return parts.join("  •  ");
 }
 
-function identityText(view: LobbyView): string {
-  return view.identity.map((row) => `${row.label}  ${row.value.toUpperCase()}`).join("\n");
-}
-
-interface LeftOptions {
-  readonly kind?: string;
-  readonly selected?: boolean;
-  readonly tone?: "muted";
-  readonly disabled?: boolean;
-  readonly focusable?: boolean;
-  readonly align?: "left" | "center" | "right";
+function identityLines(view: LobbyView): string {
+  return view.identity.map((row) => `${row.label}  ${row.value}`).join("\n");
 }
 
 /** The team column order: whichever teams the model actually published, home first. */
@@ -208,475 +305,753 @@ function teamOrder(view: LobbyView): readonly InputTeam[] {
   return seen;
 }
 
-export function layout(state: LobbyScreenState): Layout {
-  const view = lobbyView(state.ports, state.model);
-  const widgets: Widget[] = [
-    {
-      id: "title",
-      kind: "title",
-      text: "LOBBY",
-      rect: { x: LEFT_X, y: 18, w: 300, h: 28 },
-      data: { align: "left", focusable: false },
-    },
-  ];
+// --- shared header: title, role, and the mode (chips while open, a static
+// label once locked -- `mode_locked` is permanent, and a permanently
+// disabled control is a lie) --------------------------------------------
 
-  const control = (
-    id: string,
-    text: string,
-    rect: { x: number; y: number; w: number; h: number },
-    options?: LeftOptions,
-  ): void => {
-    widgets.push({
-      id,
-      kind: options?.kind ?? "button",
-      text,
-      ...(options?.selected !== undefined ? { selected: options.selected } : {}),
-      focused: state.focus === id,
-      rect,
-      data: {
-        align: options?.align ?? "left",
-        ...(options?.tone !== undefined ? { tone: options.tone } : {}),
-        ...(options?.disabled !== undefined ? { disabled: options.disabled } : {}),
-        ...(options?.focusable !== undefined ? { focusable: options.focusable } : {}),
-      },
-    });
-  };
-
-  // --- room code: its own sub-view, and the only one with no lobby behind it --
-  if (view.room_entry) {
-    const entry: RoomCodeEntry = view.room_entry;
-    const text = entry.chars
-      .map((ch, index) => (index === entry.cursor ? `[${ch || "_"}]` : ch || "_"))
-      .join(" ");
-    control(
-      ROOM_CODE_ENTRY_WIDGET,
-      text,
-      { x: 280, y: 210, w: 400, h: 48 },
-      {
-        align: "center",
-      },
-    );
-    control(
-      "room_hint",
-      "Type the code, or cycle a character with up/down and move with left/right. Confirm to join.",
-      { x: 230, y: 272, w: 500, h: 44 },
-      { kind: "label", tone: "muted", focusable: false, align: "center" },
-    );
-    // A visible way out of the composer that is not Escape: the composer
-    // is now the mandatory first screen a room-joining intent reaches
-    // (#597), not merely a screen the old role-picker could optionally lead
-    // to (#566's own "room_cancel is unreachable" finding), so a click/tap
-    // player needs an on-screen affordance too, not just a keyboard
-    // shortcut. Small and undecorated on purpose -- #566 owns the
-    // composer's visual redesign, not this fix.
-    control("room_cancel", "CANCEL", { x: 430, y: 330, w: 100, h: 36 }, { align: "center" });
-  } else if (!view.role) {
-    // --- role: the one state with no seating to show -------------------------
-    //
-    // Disabled for the ENTIRE window a room-code attempt is in flight or
-    // established but not yet a chosen role (`view.room_status ===
-    // "connecting"` covers the first; `view.room_active` alone covers a
-    // `"connected"` state that has not yet reached `chooseRole` -- both
-    // collapse once `room_created`/`room_joined` lands, since this whole
-    // branch stops rendering the moment `view.role` is set). Activating a
-    // manual role or a second room-code attempt during this window used to
-    // wedge the lobby: the late `room_created`/`room_joined` would no-op
-    // against an already-chosen role but still leave `room_active` stuck
-    // `true` forever, with both signaling paths dead (round-2 council
-    // review, blocking finding 2). `chooseRole`'s and `roomPick`'s own
-    // call-site guards are the belt to this layout's braces.
-    const roomBusy = view.room_status === "connecting" || view.room_active;
-    control(
-      "room_code_host",
-      "HOST WITH A ROOM CODE",
-      { x: 330, y: 150, w: 300, h: 44 },
-      {
-        disabled: roomBusy,
-      },
-    );
-    control(
-      "room_code_join",
-      "JOIN WITH A ROOM CODE",
-      { x: 330, y: 200, w: 300, h: 44 },
-      {
-        disabled: roomBusy,
-      },
-    );
-    control(
-      "role_host",
-      "HOST A SESSION",
-      { x: 330, y: 250, w: 300, h: 44 },
-      {
-        disabled: roomBusy,
-      },
-    );
-    control(
-      "role_guest",
-      "JOIN WITH AN OFFER",
-      { x: 330, y: 300, w: 300, h: 44 },
-      {
-        disabled: roomBusy,
-      },
-    );
-    control("identity", `JOIN AS  ${view.peer_id.toUpperCase()}`, {
-      x: 330,
-      y: 350,
-      w: 300,
-      h: ROW_H,
-    });
-    control(
-      "hint",
-      "A room code connects automatically. The manual path trades an offer by clipboard instead. Nothing is stored either way.",
-      { x: 170, y: 386, w: 620, h: 40 },
-      { kind: "label", tone: "muted", focusable: false, align: "center" },
+function headerWidgets(widgets: Widget[], state: LobbyScreenState, view: LobbyView): void {
+  text(widgets, "title", "LOBBY", { x: LEFT_X, y: 20, w: 200, h: 26 }, { kind: "title" });
+  if (view.role) {
+    text(
+      widgets,
+      "role_label",
+      view.role.toUpperCase(),
+      { x: LEFT_X + 210, y: 24, w: 140, h: 20 },
+      {},
     );
   }
-
-  // --- header: role, then the mode it implies --------------------------------
-  if (view.role === "host") {
-    const modeW = 76;
+  const modeAreaW = 272;
+  const modeX = RIGHT_EDGE - modeAreaW;
+  if (view.mode_locked) {
+    text(
+      widgets,
+      "mode_label",
+      `MODE ${view.mode.toUpperCase()}`,
+      { x: modeX, y: 22, w: modeAreaW, h: 22 },
+      { align: "right" },
+    );
+  } else if (view.role === "host") {
+    const chipW = 84;
+    const gap = 10;
     MODES.forEach((mode, index) => {
       control(
+        widgets,
+        state,
         `mode_${mode}`,
         mode.toUpperCase(),
-        {
-          x: SEATS_X + index * (modeW + 10),
-          y: 20,
-          w: modeW,
-          h: 26,
-        },
-        {
-          selected: view.mode === mode,
-          disabled: view.mode_locked,
-          align: "center",
-        },
+        { x: modeX + index * (chipW + gap), y: 20, w: chipW, h: 38 },
+        { selected: view.mode === mode, align: "center" },
       );
     });
   } else if (view.role === "guest") {
-    control(
+    text(
+      widgets,
       "mode_label",
-      `MODE  ${view.mode_known ? view.mode.toUpperCase() : "PENDING"}`,
-      {
-        x: SEATS_X,
-        y: 22,
-        w: SEATS_W,
-        h: 22,
-      },
-      { kind: "label", tone: "muted", focusable: false, align: "right" },
+      view.mode_known ? `MODE ${view.mode.toUpperCase()}` : "MODE PENDING",
+      { x: modeX, y: 22, w: modeAreaW, h: 22 },
+      { align: "right", tone: "muted" },
     );
   }
-  if (view.role) {
+}
+
+// --- shared footer: status/trouble (or the identity dump, toggled),
+// LEAVE, and the phase's own primary actions ------------------------------
+
+interface FooterOptions {
+  readonly showReady?: boolean;
+  readonly showStart?: boolean;
+  readonly showDetails?: boolean;
+  readonly leaveText?: string;
+}
+
+function footerWidgets(
+  widgets: Widget[],
+  state: LobbyScreenState,
+  view: LobbyView,
+  opts: FooterOptions,
+): void {
+  if (opts.showDetails && state.details) {
+    displayCard(
+      widgets,
+      "identity",
+      identityLines(view),
+      { x: LEFT_X, y: FOOTER_TEXT_Y, w: LEFT_COL_W, h: 64 },
+      { tone: "muted" },
+    );
+  } else {
+    text(widgets, "status", view.status, { x: LEFT_X, y: FOOTER_TEXT_Y, w: LEFT_COL_W, h: 20 }, {});
+    // A terminated session gets its own headline (`layoutTerminal`); this is
+    // for everything short of that -- a transient command error, a
+    // room-code failure (#602's own distinct copy per reason), or a guest
+    // dropping while the lobby is still standing (`departure_text`, with
+    // its raw `detail` folded in exactly where the old single "trouble"
+    // line used to put it).
+    const trouble = view.error ?? view.room_error ?? view.departure_text ?? "";
+    const detail =
+      view.error === undefined && view.room_error === undefined
+        ? view.departure?.detail
+        : undefined;
+    text(
+      widgets,
+      "trouble",
+      trouble ? `${trouble}${detail ? ` (${detail})` : ""}` : "",
+      { x: LEFT_X, y: FOOTER_TEXT_Y + 24, w: LEFT_COL_W, h: 36 },
+      { tone: "muted" },
+    );
+  }
+
+  const btnW = 170;
+  const gap = 16;
+  let footerX = LEFT_X;
+  control(
+    widgets,
+    state,
+    "leave",
+    opts.leaveText ?? "LEAVE LOBBY",
+    { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
+    { align: "center" },
+  );
+  footerX += btnW + gap;
+  if (opts.showReady) {
     control(
-      "role_label",
-      view.role.toUpperCase(),
-      {
-        x: 340,
-        y: 24,
-        w: 160,
-        h: 22,
-      },
-      { kind: "label", focusable: false },
+      widgets,
+      state,
+      "ready",
+      view.ready ? "NOT READY" : "READY",
+      { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
+      { selected: view.ready, disabled: !view.can_ready, align: "center" },
+    );
+    footerX += btnW + gap;
+  }
+  if (opts.showStart) {
+    control(
+      widgets,
+      state,
+      "start",
+      "START COUNTDOWN",
+      { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
+      { disabled: !view.can_start, align: "center" },
     );
   }
+  if (opts.showDetails) {
+    control(
+      widgets,
+      state,
+      "details",
+      state.details ? "HIDE DETAILS" : "DETAILS",
+      { x: RIGHT_EDGE - btnW, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
+      { selected: state.details, align: "center" },
+    );
+  }
+}
 
-  // --- the two team columns --------------------------------------------------
-  //
-  // Grouped by team rather than listed as eight flat slots: which side a seat
-  // is on is what the player is deciding. A slot the local peer could ask the
-  // host for carries its own control; in `1v1` and `4v4` none ever does,
-  // because there is no pair to choose.
-  // Only once a role exists. Before that there is no session to seat anyone
-  // in, and eight unassigned slots behind the role picker are noise the
-  // player cannot act on.
-  const teams = view.role ? teamOrder(view) : [];
-  const columnX = (team: InputTeam): number => (teams.indexOf(team) === 0 ? HOME_X : AWAY_X);
+// --- the players strip: the SEATS column's two real payloads (who is
+// connected, who is ready), with the host's SWAP between adjacent chips --
+// everything else SEATS restated (per-slot ownership) is now the roster's
+// job, so it is gone. ------------------------------------------------------
 
-  teams.forEach((team) => {
-    const x = columnX(team);
-    widgets.push({
-      id: `team_${team}`,
-      kind: "eyebrow",
-      text: team.toUpperCase(),
-      rect: { x, y: HEADING_Y, w: TEAM_W, h: 18 },
-      data: { align: "left", focusable: false },
-    });
-  });
-
-  const rowIndex = new Map<InputTeam, number>();
-  (view.role ? view.slots : []).forEach((slot) => {
-    const index = rowIndex.get(slot.team) ?? 0;
-    rowIndex.set(slot.team, index + 1);
-    const x = columnX(slot.team);
-    const rowY = ROW_TOP + index * ROW_STEP;
-    widgets.push({
-      id: `slot_${slot.slot}`,
-      kind: "card",
-      text: slotText(slot),
-      selected: slot.local_owner,
-      rect: { x, y: rowY, w: TEAM_W - (slot.can_prefer ? 66 : 0), h: ROW_H },
-      data: { align: "left", focusable: false },
-    });
-    if (slot.can_prefer) {
-      widgets.push({
-        id: `prefer_${slot.slot}`,
-        kind: "button",
-        text: "TAKE",
-        focused: state.focus === `prefer_${slot.slot}`,
-        rect: { x: x + TEAM_W - 62, y: rowY, w: 62, h: ROW_H },
-        data: { align: "center" },
-      });
+function playersStripWidgets(
+  widgets: Widget[],
+  state: LobbyScreenState,
+  view: LobbyView,
+  x: number,
+  y: number,
+  w: number,
+): void {
+  text(widgets, "players_heading", "PEERS", { x, y, w, h: 18 }, { kind: "eyebrow" });
+  text(widgets, "peer_count", lineText(view), { x, y: y + 20, w, h: 20 }, {});
+  const rowStep = 42;
+  const rowH = 38;
+  const swapW = 70;
+  const canSwap = view.role === "host" && view.can_configure;
+  const cardW = canSwap ? w - swapW - 8 : w;
+  view.seats.forEach((seat, index) => {
+    const rowY = y + 48 + index * rowStep;
+    displayCard(
+      widgets,
+      `player_${index + 1}`,
+      `${displayName(seat.peer_id)}${seat.is_local ? " (you)" : ""}${seat.ready ? "  •  Ready" : ""}`,
+      { x, y: rowY, w: cardW, h: rowH },
+      { selected: seat.is_local },
+    );
+    if (canSwap && index < view.seats.length - 1) {
+      control(
+        widgets,
+        state,
+        `swap_${index + 1}`,
+        "SWAP",
+        { x: x + cardW + 8, y: rowY, w: swapW, h: rowH },
+        { align: "center" },
+      );
     }
   });
-  (view.role ? view.keepers : []).forEach((keeper) => {
-    widgets.push({
-      id: `keeper_${keeper.team}`,
-      kind: "label",
-      text: `KEEPER  ${keeper.player_id.toUpperCase()}  PROTECTED AI`,
-      rect: { x: columnX(keeper.team), y: KEEPER_Y, w: TEAM_W, h: 20 },
-      data: { align: "left", tone: "muted", focusable: false },
+}
+
+// --- the roster: mode-dependent, because `can_prefer` (a pair to trade
+// for) is only ever true in 2v2 -- 1v1 owns a whole line, 4v4 owns a single
+// slot, so per-slot ownership controls have nothing to offer in either. ---
+
+function rosterTeamColumns(
+  widgets: Widget[],
+  state: LobbyScreenState,
+  view: LobbyView,
+  x: number,
+  y: number,
+  w: number,
+): number {
+  const teams = teamOrder(view);
+  const colW = (w - 20) / 2;
+  const rowStep = 42;
+  const rowH = 38;
+  let bottom = y;
+  teams.forEach((team, teamIndex) => {
+    const cx = x + teamIndex * (colW + 20);
+    text(
+      widgets,
+      `team_${team}`,
+      team.toUpperCase(),
+      { x: cx, y, w: colW, h: 18 },
+      { kind: "eyebrow" },
+    );
+    const slots = view.slots.filter((slot) => slot.team === team);
+    slots.forEach((slot, slotIndex) => {
+      const rowY = y + 24 + slotIndex * rowStep;
+      const takeW = slot.can_prefer ? 66 : 0;
+      displayCard(
+        widgets,
+        `slot_${slot.slot}`,
+        `${displayName(slot.player_id)} — ${slotTag(slot)}`,
+        { x: cx, y: rowY, w: colW - (takeW > 0 ? takeW + 8 : 0), h: rowH },
+        { selected: slot.local_owner },
+      );
+      if (slot.can_prefer) {
+        control(
+          widgets,
+          state,
+          `prefer_${slot.slot}`,
+          "TAKE",
+          { x: cx + colW - takeW, y: rowY, w: takeW, h: rowH },
+          { align: "center" },
+        );
+      }
     });
+    const keeperY = y + 24 + slots.length * rowStep + 4;
+    const keeper = view.keepers.find((entry) => entry.team === team);
+    if (keeper) {
+      text(
+        widgets,
+        `keeper_${team}`,
+        `Keeper: ${displayName(keeper.player_id)} (AI)`,
+        { x: cx, y: keeperY, w: colW, h: 20 },
+        { tone: "muted" },
+      );
+    }
+    bottom = Math.max(bottom, keeperY + 20);
   });
-  if (view.role && view.preference) {
-    const preference: LobbyPreferenceView = view.preference;
-    widgets.push({
-      id: "preference",
-      kind: "label",
-      text: `PAIR ${preference.slots.join(" ").toUpperCase()}  ${preference.text.toUpperCase()}`,
-      rect: { x: LEFT_X, y: KEEPER_Y + 22, w: MAIN_W, h: 20 },
-      data: { align: "left", tone: "muted", focusable: false },
-    });
-  }
+  return bottom;
+}
 
-  // --- host controls, and the invite that replaced the blob ------------------
-  if (view.role === "host") {
-    control(
-      "invite",
-      "INVITE A PEER",
-      { x: LEFT_X, y: CONTROLS_Y, w: 180, h: ROW_H },
-      {
-        disabled: !view.can_invite,
-        align: "center",
-      },
+function rosterSummaryCards(
+  widgets: Widget[],
+  view: LobbyView,
+  x: number,
+  y: number,
+  w: number,
+): number {
+  const teams = teamOrder(view);
+  const colW = (w - 20) / 2;
+  const h = 150;
+  teams.forEach((team, index) => {
+    const cx = x + index * (colW + 20);
+    const slots = view.slots.filter((slot) => slot.team === team);
+    // A bot has no "live" slot at all (`previewLive` only ever names a
+    // human's opening slot) -- a team the local peer does not own is either
+    // a human's team (show who plays it) or entirely AI (say so, rather
+    // than naming one interchangeable bot slot over another).
+    const live = slots.find((slot) => slot.live);
+    const mine = slots.some((slot) => slot.local_owner);
+    const allBot = slots.length > 0 && slots.every((slot) => slot.owner_kind === "bot");
+    const keeper = view.keepers.find((entry) => entry.team === team);
+    const lines = [
+      team === "home" ? "Home" : "Away",
+      live ? displayName(live.player_id) : allBot ? "AI-controlled" : "Unassigned",
+      mine ? "You" : "",
+      keeper ? `Keeper: ${displayName(keeper.player_id)} (AI)` : "",
+    ].filter((line) => line.length > 0);
+    displayCard(
+      widgets,
+      `team_summary_${team}`,
+      lines.join("\n"),
+      { x: cx, y, w: colW, h },
+      { selected: mine },
     );
-    control(
-      "lock",
-      "LOCK CONFIGURATION",
-      { x: 214, y: CONTROLS_Y, w: 180, h: ROW_H },
-      {
-        disabled: !view.can_lock,
-        align: "center",
-      },
-    );
-    control(
-      "bot_fill",
-      view.bot_fill ? "AI FILLS EMPTY SEATS: ON" : "AI FILLS EMPTY SEATS: OFF",
-      { x: 404, y: CONTROLS_Y, w: 232, h: ROW_H },
-      { selected: view.bot_fill, disabled: view.mode_locked, align: "center" },
+  });
+  return y + h;
+}
+
+function rosterPersonalCard(
+  widgets: Widget[],
+  view: LobbyView,
+  x: number,
+  y: number,
+  w: number,
+): number {
+  const mine = view.slots.find((slot) => slot.local_owner);
+  const cardH = 56;
+  const headline = mine
+    ? `You play ${displayName(mine.player_id)} — ${mine.team === "home" ? "Home" : "Away"}`
+    : "Waiting for a seat.";
+  displayCard(
+    widgets,
+    "you_card",
+    headline,
+    { x, y, w, h: cardH },
+    { selected: mine !== undefined },
+  );
+
+  const teammates = view.slots
+    .filter((slot) => slot.team === mine?.team && !slot.local_owner)
+    .map((slot) => `${displayName(slot.player_id)}  ${slotTag(slot)}`);
+  const keeper = view.keepers.find((entry) => entry.team === mine?.team);
+  if (keeper) {
+    teammates.push(`Keeper: ${displayName(keeper.player_id)} (AI)`);
+  }
+  const listH = 130;
+  text(
+    widgets,
+    "teammates",
+    teammates.length > 0 ? `Teammates:\n${teammates.join("\n")}` : "No teammates yet.",
+    { x, y: y + cardH + 10, w, h: listH },
+    { tone: "muted" },
+  );
+  return y + cardH + 10 + listH;
+}
+
+/** Dispatches to the mode-appropriate roster and returns the y just past it,
+ * so the caller can place the pair-preference line without hand-tuned
+ * per-mode constants drifting out of sync with the geometry above. */
+function rosterWidgets(
+  widgets: Widget[],
+  state: LobbyScreenState,
+  view: LobbyView,
+  x: number,
+  y: number,
+  w: number,
+): number {
+  if (view.mode === "2v2") {
+    return rosterTeamColumns(widgets, state, view, x, y, w);
+  }
+  if (view.mode === "1v1") {
+    return rosterSummaryCards(widgets, view, x, y, w);
+  }
+  return rosterPersonalCard(widgets, view, x, y, w);
+}
+
+// --- role: the one phase with no session to seat -----------------------
+
+function layoutRole(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  text(widgets, "title", "LOBBY", { x: LEFT_X, y: 20, w: 200, h: 26 }, { kind: "title" });
+  text(
+    widgets,
+    "role_hint",
+    "Host a session or join one with a code.",
+    { x: 0, y: 58, w: 960, h: 20 },
+    { align: "center", tone: "muted" },
+  );
+
+  // Disabled for the ENTIRE window a room-code attempt is in flight or
+  // established but not yet a chosen role (`view.room_status ===
+  // "connecting"` covers the first; `view.room_active` alone covers a
+  // `"connected"` state that has not yet reached `chooseRole` -- both
+  // collapse once `room_created`/`room_joined` lands, since this whole
+  // phase stops rendering the moment `view.role` is set). Activating a
+  // manual role or a second room-code attempt during this window used to
+  // wedge the lobby -- `chooseRole`'s and `roomPick`'s own call-site guards
+  // are the belt to this layout's braces.
+  const roomBusy = view.room_status === "connecting" || view.room_active;
+  const bigW = 360;
+  const bigX = (960 - bigW) / 2;
+  control(
+    widgets,
+    state,
+    "room_code_host",
+    "HOST WITH A ROOM CODE",
+    { x: bigX, y: 120, w: bigW, h: 56 },
+    { disabled: roomBusy, align: "center" },
+  );
+  control(
+    widgets,
+    state,
+    "room_code_join",
+    "JOIN WITH A ROOM CODE",
+    { x: bigX, y: 186, w: bigW, h: 56 },
+    { disabled: roomBusy, align: "center" },
+  );
+  text(
+    widgets,
+    "room_code_hint",
+    "A room code connects you and a peer automatically. Nothing is stored.",
+    { x: 180, y: 250, w: 600, h: 36 },
+    { align: "center", tone: "muted" },
+  );
+
+  // The manual offer/answer path, demoted to a quiet strip: it still works
+  // (and it is the only path once a room-code attempt has failed), but a
+  // room code is the primary way in, and the tab order above says so.
+  text(
+    widgets,
+    "manual_heading",
+    "OR CONNECT MANUALLY",
+    { x: LEFT_X, y: 330, w: 300, h: 16 },
+    { tone: "muted" },
+  );
+  control(
+    widgets,
+    state,
+    "role_host",
+    "HOST A SESSION",
+    { x: LEFT_X, y: 352, w: 180, h: 38 },
+    {
+      disabled: roomBusy,
+    },
+  );
+  control(
+    widgets,
+    state,
+    "role_guest",
+    "JOIN WITH AN OFFER",
+    { x: LEFT_X + 196, y: 352, w: 180, h: 38 },
+    { disabled: roomBusy },
+  );
+  control(
+    widgets,
+    state,
+    "identity",
+    `Join as ${displayName(view.peer_id)}`,
+    { x: LEFT_X + 392, y: 352, w: 260, h: 38 },
+    { disabled: roomBusy },
+  );
+
+  footerWidgets(widgets, state, view, { leaveText: "BACK" });
+  return widgets;
+}
+
+// --- role + room_entry: the composer alone, plus CANCEL -----------------
+
+function layoutComposer(state: LobbyScreenState, view: LobbyView): Layout {
+  const entry = view.room_entry as RoomCodeEntry;
+  const widgets: Widget[] = [];
+  text(widgets, "title", "LOBBY", { x: LEFT_X, y: 20, w: 200, h: 26 }, { kind: "title" });
+  text(
+    widgets,
+    "composer_heading",
+    "ENTER ROOM CODE",
+    { x: 0, y: 96, w: 960, h: 20 },
+    { align: "center", kind: "eyebrow" },
+  );
+  const codeText = entry.chars
+    .map((ch, index) => (index === entry.cursor ? `[${ch || "_"}]` : ch || "_"))
+    .join(" ");
+  control(
+    widgets,
+    state,
+    ROOM_CODE_ENTRY_WIDGET,
+    codeText,
+    { x: 230, y: 150, w: 500, h: 64 },
+    { align: "center" },
+  );
+  text(
+    widgets,
+    "composer_hint",
+    "Type the code, or cycle a character with up or down and move with left or right.",
+    { x: 180, y: 230, w: 600, h: 40 },
+    { align: "center", tone: "muted" },
+  );
+  const trouble = view.error ?? view.room_error ?? "";
+  if (trouble) {
+    text(
+      widgets,
+      "trouble",
+      trouble,
+      { x: 180, y: 274, w: 600, h: 36 },
+      { align: "center", tone: "muted" },
     );
   }
+  control(
+    widgets,
+    state,
+    "room_cancel",
+    "CANCEL",
+    { x: 380, y: 330, w: 200, h: 48 },
+    { align: "center" },
+  );
+  return widgets;
+}
 
-  // The room code, when there is one. It sits in the slot the copy/paste pair
-  // vacates rather than replacing the invite line, because `room_code` outlives
-  // `room_active`: after a `room_dropped` the manual controls come back while
-  // the code is still on screen, so the two must not share a rect.
+// --- handshake: the room code as the hero (or the manual signaling it
+// replaces), mode chips, bot-fill, LOCK MATCH. The eight slot rows are
+// cut -- ownership is unpublished, so every one would read "unassigned". --
+
+function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  headerWidgets(widgets, state, view);
+  const LX = LEFT_X;
+  const LW = LEFT_COL_W;
+  let ly = CONTENT_TOP;
+
   if (view.role === "host" && view.room_code) {
-    control(
+    text(
+      widgets,
+      "room_code_heading",
+      "ROOM CODE",
+      { x: LX, y: ly, w: LW, h: 18 },
+      { kind: "eyebrow" },
+    );
+    text(
+      widgets,
       "room_code_display",
-      `ROOM CODE  ${view.room_code}`,
-      { x: 404, y: CONTROLS_Y + 38, w: 232, h: ROW_H },
-      { kind: "label", focusable: false, align: "center" },
+      view.room_code,
+      { x: LX, y: ly + 20, w: LW, h: 44 },
+      { kind: "hero_title" },
     );
+    ly += 20 + 44 + 8;
   } else if (view.role === "guest" && view.room_active) {
-    control(
+    text(
+      widgets,
       "room_code_active",
-      "CONNECTED VIA ROOM CODE",
-      { x: 404, y: CONTROLS_Y + 38, w: 232, h: ROW_H },
-      { kind: "label", tone: "muted", focusable: false, align: "center" },
+      "Connected via room code.",
+      { x: LX, y: ly, w: LW, h: 24 },
+      { tone: "muted" },
     );
+    ly += 32;
   }
 
-  // Manual signalling is the fallback path, so it disappears entirely once a
-  // room code is carrying the connection — and comes back if that drops.
+  // Manual signaling is the fallback path, so it disappears entirely once a
+  // room code is carrying the connection -- and comes back if that drops
+  // (independent of the room-code hero above: `room_code` outlives
+  // `room_active`, so after a drop both render together).
   if (view.role && !view.room_active) {
+    if (view.role === "host") {
+      control(
+        widgets,
+        state,
+        "invite",
+        "INVITE A PEER",
+        { x: LX, y: ly, w: 200, h: 38 },
+        { disabled: !view.can_invite, align: "center" },
+      );
+      ly += 46;
+    }
     control(
+      widgets,
+      state,
       "copy_signal",
       "COPY INVITE",
-      { x: LEFT_X, y: CONTROLS_Y + 38, w: 180, h: ROW_H },
-      {
-        disabled: !view.has_outgoing,
-        align: "center",
-      },
+      { x: LX, y: ly, w: 200, h: 38 },
+      { disabled: !view.has_outgoing, align: "center" },
     );
     control(
+      widgets,
+      state,
       "paste_signal",
       "PASTE REPLY",
-      { x: 214, y: CONTROLS_Y + 38, w: 180, h: ROW_H },
-      {
-        align: "center",
-      },
+      { x: LX + 210, y: ly, w: 200, h: 38 },
+      { align: "center" },
     );
-    control(
+    ly += 46;
+    displayCard(
+      widgets,
       "signal_out",
       inviteText(view.exported),
+      { x: LX, y: ly, w: 220, h: 44 },
       {
-        x: LEFT_X,
-        y: SIGNAL_Y,
-        w: 370,
-        h: 40,
+        tone: "muted",
       },
-      { kind: "card", tone: "muted", focusable: false },
     );
-    control(
+    displayCard(
+      widgets,
       "signal_in",
       answerText(view.imported),
-      {
-        x: 404,
-        y: SIGNAL_Y,
-        w: 232,
-        h: 40,
-      },
-      { kind: "card", tone: "muted", focusable: false },
+      { x: LX + 230, y: ly, w: 230, h: 44 },
+      { tone: "muted" },
     );
+    ly += 50;
   }
 
-  if (view.role) {
-    // Peers, countdown and start boundary as one line.
-    control(
-      "peer_count",
-      lineText(view),
-      { x: LEFT_X, y: LINE_Y, w: 320, h: 20 },
-      {
-        kind: "label",
-        focusable: false,
-      },
-    );
-    if (view.countdown !== undefined) {
-      control(
-        "countdown",
-        `COUNTDOWN  ${view.countdown} TICKS`,
-        {
-          x: 352,
-          y: LINE_Y,
-          w: 160,
-          h: 20,
-        },
-        { kind: "label", focusable: false },
-      );
-    }
-    if (view.started) {
-      control(
-        "started",
-        "START BOUNDARY REACHED",
-        { x: 520, y: LINE_Y, w: 216, h: 20 },
-        {
-          kind: "label",
-          focusable: false,
-        },
-      );
-    }
-  }
-
-  // --- seats: one row per human, with the host's ownership swap --------------
-  if (view.role) {
-    widgets.push({
-      id: "seats_heading",
-      kind: "eyebrow",
-      text: "SEATS",
-      rect: { x: SEATS_X, y: HEADING_Y, w: SEATS_W, h: 18 },
-      data: { align: "left", focusable: false },
-    });
-  }
-  (view.role ? view.seats : []).forEach((seat, index) => {
-    const rowY = ROW_TOP + index * ROW_STEP;
-    widgets.push({
-      id: `seat_${index + 1}`,
-      kind: "card",
-      text: seatText(seat),
-      selected: seat.is_local,
-      rect: { x: SEATS_X, y: rowY, w: SEATS_W - 82, h: ROW_H },
-      data: { align: "left", focusable: false },
-    });
-    if (view.role === "host" && index < view.seats.length - 1) {
-      widgets.push({
-        id: `swap_${index + 1}`,
-        kind: "button",
-        text: "SWAP",
-        focused: state.focus === `swap_${index + 1}`,
-        rect: { x: SEATS_X + SEATS_W - 74, y: rowY, w: 74, h: ROW_H },
-        data: { align: "center", disabled: !view.can_configure },
-      });
-    }
-  });
-
-  if (view.role) {
-    widgets.push({
-      id: "identity",
-      kind: "label",
-      text: identityText(view),
-      rect: { x: SEATS_X, y: 336, w: SEATS_W, h: 88 },
-      data: { align: "left", tone: "muted", focusable: false },
-    });
-  }
-
-  widgets.push({
-    id: "status",
-    kind: "label",
-    text: view.status.toUpperCase(),
-    rect: { x: LEFT_X, y: 428, w: 620, h: 20 },
-    data: { align: "left", focusable: false },
-  });
-  // A terminated session outranks a dropped guest: once the lobby is over,
-  // which seat emptied first is no longer the line to read. `room_error`
-  // sits between `error` and `terminal_text`: it is what is left once
-  // `error` itself has been cleared by a later `tick` command (see that
-  // field's own doc on `LobbyModel`) -- a room-code failure this widget
-  // must keep showing, not something a coordinator terminal ever outranks.
-  let trouble = view.error ?? view.room_error ?? view.terminal_text;
-  let detail = view.terminal?.detail;
-  if (!trouble && view.departure) {
-    trouble = view.departure_text;
-    detail = view.departure.detail;
-  }
-  if (detail) {
-    trouble = `${trouble ?? ""}  (${detail})`;
-  }
-  widgets.push({
-    id: "trouble",
-    kind: "label",
-    text: trouble ? trouble.toUpperCase() : "",
-    rect: { x: LEFT_X, y: 452, w: 620, h: 28 },
-    data: { align: "left", tone: "muted", focusable: false },
-  });
-
-  widgets.push({
-    id: "leave",
-    kind: "button",
-    text: "LEAVE LOBBY",
-    focused: state.focus === "leave",
-    rect: { x: LEFT_X, y: 488, w: 200, h: 36 },
-  });
-  if (view.role) {
-    widgets.push({
-      id: "ready",
-      kind: "button",
-      text: view.ready ? "NOT READY" : "READY",
-      selected: view.ready,
-      focused: state.focus === "ready",
-      rect: { x: 380, y: 488, w: 200, h: 36 },
-      data: { disabled: !view.can_ready },
-    });
-  }
   if (view.role === "host") {
-    widgets.push({
-      id: "start",
-      kind: "button",
-      text: "START COUNTDOWN",
-      focused: state.focus === "start",
-      rect: { x: 736, y: 488, w: 200, h: 36 },
-      data: { disabled: !view.can_start },
-    });
+    control(
+      widgets,
+      state,
+      "bot_fill",
+      view.bot_fill ? "AI FILLS EMPTY SEATS: ON" : "AI FILLS EMPTY SEATS: OFF",
+      { x: LX, y: ly, w: 220, h: 38 },
+      { selected: view.bot_fill, align: "center" },
+    );
+    control(
+      widgets,
+      state,
+      "lock",
+      "LOCK MATCH",
+      { x: LX + 230, y: ly, w: 230, h: 38 },
+      { disabled: !view.can_lock, align: "center" },
+    );
   }
+
+  playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
+  footerWidgets(widgets, state, view, { showDetails: true });
   return widgets;
+}
+
+// --- manifest / assigned / ready: the mode-dependent roster, the players
+// strip, and READY / START once they apply. -------------------------------
+
+function layoutRoster(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  headerWidgets(widgets, state, view);
+  const bottom = rosterWidgets(widgets, state, view, LEFT_X, CONTENT_TOP, LEFT_COL_W);
+  if (view.preference) {
+    text(
+      widgets,
+      "preference",
+      view.preference.text,
+      { x: LEFT_X, y: bottom + 4, w: LEFT_COL_W, h: 20 },
+      { tone: "muted" },
+    );
+  }
+  playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
+  footerWidgets(widgets, state, view, {
+    showReady: view.phase === "assigned" || view.phase === "ready",
+    showStart: view.role === "host" && view.phase === "ready",
+    showDetails: true,
+  });
+  return widgets;
+}
+
+// --- countdown: hero numeral, one line, LEAVE. `ceil(ticks / 60)` seconds
+// -- a tick count is a protocol unit, not something a player's screen
+// should ever show. ---------------------------------------------------------
+
+function layoutCountdown(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  text(
+    widgets,
+    "countdown_heading",
+    "KICKOFF IN",
+    { x: 0, y: 150, w: 960, h: 20 },
+    { align: "center", kind: "eyebrow" },
+  );
+  const seconds = view.countdown !== undefined ? Math.ceil(view.countdown / 60) : undefined;
+  text(
+    widgets,
+    "countdown",
+    seconds !== undefined ? String(seconds) : "—",
+    { x: 0, y: 176, w: 960, h: 90 },
+    { align: "center", kind: "hero_title" },
+  );
+  text(
+    widgets,
+    "countdown_unit",
+    view.started ? "Starting now." : "seconds",
+    { x: 0, y: 270, w: 960, h: 24 },
+    { align: "center", tone: "muted" },
+  );
+  control(
+    widgets,
+    state,
+    "leave",
+    "LEAVE LOBBY",
+    { x: 380, y: 420, w: 200, h: 44 },
+    { align: "center" },
+  );
+  return widgets;
+}
+
+// --- terminal: a real end screen. `terminal_text` is the headline, not a
+// footnote; the identity dump is always here (a build/manifest mismatch
+// makes it load-bearing), never behind the DETAILS toggle that gates it
+// everywhere else. -----------------------------------------------------------
+
+function layoutTerminal(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  const headline = view.terminal_text ?? "The session ended.";
+  text(
+    widgets,
+    "headline",
+    headline,
+    { x: 0, y: 130, w: 960, h: 50 },
+    { align: "center", kind: "title" },
+  );
+  const detail = view.terminal?.detail;
+  if (detail) {
+    text(
+      widgets,
+      "detail",
+      detail,
+      { x: 0, y: 186, w: 960, h: 24 },
+      { align: "center", tone: "muted" },
+    );
+  }
+  displayCard(
+    widgets,
+    "identity",
+    identityLines(view),
+    { x: 280, y: 230, w: 400, h: 140 },
+    {
+      tone: "muted",
+    },
+  );
+  control(
+    widgets,
+    state,
+    "leave",
+    "LEAVE LOBBY",
+    { x: 380, y: 460, w: 200, h: 44 },
+    { align: "center" },
+  );
+  return widgets;
+}
+
+// --- running / result: this screen normally never renders these -- a
+// `start_match` effect returns `{ go: "online_match" }` and the owner
+// unmounts it -- but a defensive, minimal fallback beats a blank frame if a
+// headless caller ever drives the model past countdown without following.
+
+function layoutGeneric(state: LobbyScreenState, view: LobbyView): Layout {
+  const widgets: Widget[] = [];
+  text(widgets, "status", view.status, { x: 0, y: 240, w: 960, h: 24 }, { align: "center" });
+  control(
+    widgets,
+    state,
+    "leave",
+    "LEAVE LOBBY",
+    { x: 380, y: 460, w: 200, h: 44 },
+    { align: "center" },
+  );
+  return widgets;
+}
+
+export function layout(state: LobbyScreenState): Layout {
+  const view = lobbyView(state.ports, state.model);
+  if (view.room_entry) {
+    return layoutComposer(state, view);
+  }
+  switch (view.phase) {
+    case "role":
+      return layoutRole(state, view);
+    case "handshake":
+      return layoutHandshake(state, view);
+    case "manifest":
+    case "assigned":
+    case "ready":
+      return layoutRoster(state, view);
+    case "countdown":
+      return layoutCountdown(state, view);
+    case "terminal":
+      return layoutTerminal(state, view);
+    default:
+      return layoutGeneric(state, view);
+  }
 }
 
 function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
@@ -749,7 +1124,14 @@ function advance(
   nextFocus: string,
   effects: readonly LobbyEffect[],
 ): LobbyScreenState {
-  return { viewport: state.viewport, ports: state.ports, model, focus: nextFocus, effects };
+  return {
+    viewport: state.viewport,
+    ports: state.ports,
+    model,
+    focus: nextFocus,
+    details: state.details,
+    effects,
+  };
 }
 
 export type LobbyScreenEvent =
@@ -811,8 +1193,10 @@ export function update(
     // review, blocking finding 2). `room_cancel` already exists and already
     // lands safely back on the role screen (`roomCancel`, lobby_model.ts);
     // this is the one call site that was never wired to it. Once a role IS
-    // resolved, this condition is false and back/Escape leaves exactly as
-    // it always did.
+    // resolved -- including a room-code connection that has already reached
+    // one, e.g. via `room_created`/`room_joined` -- this condition is false
+    // and back/Escape leaves exactly as it always did: an established
+    // session is left, not silently cancelled out from under the player.
     const roomAttemptPending =
       state.model.role === undefined &&
       (state.model.room_entry !== undefined || state.model.room_active);
@@ -834,6 +1218,12 @@ export function update(
   const id = focus.activated(currentLayout, nextFocus, event);
   if (id === null) {
     return [advance(state, state.model, nextFocus, []), undefined];
+  }
+  // The DETAILS toggle is screen-local state (this file's own header):
+  // `lobby_model.ts` never sees it, so it is handled here instead of
+  // through `commandFor`/`dispatchCommand`.
+  if (id === "details") {
+    return [{ ...state, focus: id, details: !state.details, effects: [] }, undefined];
   }
   const cmd = commandFor(id, lobbyView(state.ports, state.model));
   if (!cmd) {
