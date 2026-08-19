@@ -21,7 +21,13 @@
 // implementation; a spec supplies a fake one, mirroring `starFactory`.
 
 import { draw, motion, type GraphicsBackend } from "@gc/ui";
-import { lobby, type LobbyEffect, type LobbyScreenEvent, type LobbyScreenState } from "./lobby.ts";
+import {
+  lobby,
+  ROOM_CODE_ENTRY_WIDGET,
+  type LobbyEffect,
+  type LobbyScreenEvent,
+  type LobbyScreenState,
+} from "./lobby.ts";
 import type {
   LobbyCommand,
   LobbyModelOptions,
@@ -94,14 +100,37 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly modelOptions?: LobbyModelOptions;
   /**
    * Decided on the multiplayer front door and applied here as the lobby's
-   * opening commands, so a player who already chose Host does not choose it
-   * twice. Dispatched rather than baked into `newLobbyModel` so the role's
-   * effects (opening the star, in particular) run through `run()` exactly as
-   * they do when the button is clicked — the model needs no new option, and
-   * the lobby's own role step stays the fallback when nothing was preset.
+   * opening command, so a player who already chose Host or Join does not
+   * choose it again: the lobby runs `lobby_model.ts`'s `room_pick` path for
+   * this role immediately (#597). Dispatched rather than baked into
+   * `newLobbyModel` so `room_pick`'s own effects (opening the room-code
+   * channel, in particular) run through `run()` exactly as they do when
+   * "HOST/JOIN WITH A ROOM CODE" is clicked -- the model needs no new
+   * option, and the lobby's own role screen (including the manual
+   * copy/paste fallback) stays reachable when nothing was preset, or once a
+   * preset room-code attempt is cancelled or fails.
+   *
+   * This preempts `lobby_model.ts`'s OLD preset-manual-role path
+   * (dispatching a bare `{kind:"role",...}` here) on purpose: that path
+   * locked in the manual-signaling role before the lobby ever rendered, so
+   * `lobby.ts`'s room-code buttons -- which only render while no role is
+   * chosen -- were unreachable from the front door. See multiplayer.ts's
+   * `MultiplayerAction` doc for the full mechanism.
    */
-  readonly role?: LobbyRole;
-  /** Host-side only; a guest is told the mode by the host. */
+  readonly roomIntent?: LobbyRole;
+  /**
+   * Host-side only; a guest is told the mode by the host. Applied the
+   * moment this peer first becomes the host of a real coordinator, rather
+   * than up front: `lobby_model.ts`'s `setMode` refuses a "mode" command
+   * before `chooseRole` has run (no coordinator yet), which is exactly the
+   * state `room_pick`'s host path leaves the model in until the room-code
+   * Worker confirms the room. That confirmation (`room_created`) is the
+   * common case, but not the only one that resolves this peer to host: a
+   * room-hosting attempt that fails or is cancelled falls back to the
+   * manual role screen, and a manual host pick from there must apply this
+   * mode too, or it silently reverts to `DEFAULT_MODE`. See
+   * `applyPendingModeIfHostJustResolved()`'s own doc below.
+   */
   readonly mode?: SessionMatchMode;
 }
 
@@ -155,6 +184,13 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   private readonly starFactory: (role: LobbyRole, peerId: string) => TStar | undefined;
   private readonly newLink: (star: TStar) => LobbyLinkInstance<TStar, TEvent>;
   private readonly roomSignaling: RoomSignalingFactory | undefined;
+  /**
+   * The front door's chosen match size, held until this peer first becomes
+   * the host of a real coordinator -- see `OnlineLobbyOptions.mode`'s own
+   * doc and `applyPendingModeIfHostJustResolved()` below, the only place
+   * this is read.
+   */
+  private pendingMode: SessionMatchMode | undefined;
 
   constructor(
     viewport: { readonly w: number; readonly h: number },
@@ -169,23 +205,58 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     this.starFactory = options.starFactory;
     this.newLink = options.newLink;
     this.roomSignaling = options.roomSignaling;
+    this.pendingMode = options.roomIntent === "host" ? options.mode : undefined;
     // Last, and only once every field above is set: `dispatch` runs effects,
     // and `run()` reads `starFactory`/`newLink`/`roomSignaling`.
-    if (options.role !== undefined) {
-      this.dispatch({ kind: "role", role: options.role });
-      if (options.role === "host" && options.mode !== undefined) {
-        this.dispatch({ kind: "mode", mode: options.mode });
+    if (options.roomIntent !== undefined) {
+      this.dispatch({ kind: "room_pick", role: options.roomIntent });
+      if (options.roomIntent === "guest") {
+        // `dispatchCommand` (`lobby.ts`) leaves `state.focus` exactly where
+        // it was for a command dispatched through the "lobby" event kind --
+        // only a focus-navigation event (a click, a controller move) ever
+        // changes it. The click that would normally have selected "JOIN
+        // WITH A ROOM CODE" never happened here, so the composer widget
+        // `room_pick` just revealed is claimed explicitly instead, exactly
+        // as the acceptance criteria for #597 ask: focused immediately, no
+        // extra input to reach it.
+        this.state = { ...this.state, focus: ROOM_CODE_ENTRY_WIDGET };
       }
     }
   }
 
   dispatch(command: LobbyCommand): void {
+    const hadHostRole = this.state.model.role === "host";
     const [state, action] = lobby.update(this.state, { kind: "lobby", command });
     this.state = state;
     this.run(state.effects);
     if (action && this.onAction) {
       this.onAction(action);
     }
+    this.applyPendingModeIfHostJustResolved(hadHostRole);
+  }
+
+  /**
+   * The front door's chosen mode reaches the manifest the host proposes the
+   * moment this peer FIRST becomes the host of a real coordinator -- not
+   * only via `room_created` (the room-code path this option exists for),
+   * but also via a manual "role" pick made after a preset room-hosting
+   * attempt fails or is cancelled (round-2 council review, blocking
+   * finding 1: `pendingMode` used to be read only in `dispatch()`'s
+   * `room_created` branch, so that second path silently reverted to
+   * `DEFAULT_MODE`). Both routes run `lobby_model.ts`'s `chooseRole`,
+   * which is what actually creates the coordinator `setMode` requires --
+   * so "role just became host" is the one condition that has to be
+   * checked, regardless of which command produced it. `dispatch()` covers
+   * `room_created`; `event()` covers a manual "role" click, which goes
+   * through `lobby.ts`'s general click path, never `dispatch()`.
+   */
+  private applyPendingModeIfHostJustResolved(hadHostRole: boolean): void {
+    if (hadHostRole || this.state.model.role !== "host" || this.pendingMode === undefined) {
+      return;
+    }
+    const mode = this.pendingMode;
+    this.pendingMode = undefined;
+    this.dispatch({ kind: "mode", mode });
   }
 
   private run(effects: readonly LobbyEffect[]): void {
@@ -257,12 +328,14 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   }
 
   event(evt: LobbyScreenEvent): void {
+    const hadHostRole = this.state.model.role === "host";
     const [state, action] = lobby.update(this.state, evt);
     this.state = state;
     this.run(state.effects);
     if (action && this.onAction) {
       this.onAction(action);
     }
+    this.applyPendingModeIfHostJustResolved(hadHostRole);
   }
 
   draw(backend: GraphicsBackend): void {

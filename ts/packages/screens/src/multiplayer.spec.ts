@@ -40,16 +40,16 @@ describe("multiplayer front door", () => {
     expect(s.mode, "update should not mutate its input state").toBe(DEFAULT_MODE);
   });
 
-  it("sends the host into the lobby carrying the chosen size", () => {
+  it("sends the host into the lobby with a room-hosting intent, carrying the chosen size", () => {
     let s = multiplayer.newState(VP);
     [s] = click(s, "mode_2v2");
     const [, action] = click(s, "host");
-    expect(action).toEqual({ go: "lobby", role: "host", mode: "2v2" });
+    expect(action).toEqual({ go: "lobby", intent: "host", mode: "2v2" });
   });
 
-  it("sends a guest into the lobby without a size, because the host owns it", () => {
+  it("sends a guest into the lobby with a room-joining intent and no size, because the host owns it", () => {
     const [, action] = click(multiplayer.newState(VP), "join");
-    expect(action).toEqual({ go: "lobby", role: "guest" });
+    expect(action).toEqual({ go: "lobby", intent: "guest" });
   });
 
   it("says out loud that this is peer to peer, so nobody waits for matchmaking", () => {

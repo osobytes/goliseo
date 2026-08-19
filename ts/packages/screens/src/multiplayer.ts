@@ -27,10 +27,22 @@ export interface MultiplayerScreenState {
   readonly focus: string;
 }
 
+// The lobby route no longer carries a preset manual role (`{go:"lobby",
+// role:"host"|"guest"}`): that shape dispatched `lobby_model.ts`'s "role"
+// command straight in `OnlineLobby`'s constructor, which locked in the
+// manual-signaling role before the lobby ever rendered, and `lobby.ts`'s
+// room-code buttons only render while no role is chosen -- so the
+// room-code path this screen exists to reach (#552) was unreachable from
+// here (#597). `intent` instead names which `room_pick` path the lobby
+// should run immediately: the host sees a room code with no further
+// clicks, and a guest lands on the code composer, already focused. Mode
+// stays the host's own front-door choice, applied once the lobby's model
+// legally accepts a "mode" command for a room-hosting attempt (see
+// `online_lobby.ts`'s constructor).
 export type MultiplayerAction =
   | { readonly go: "title" }
-  | { readonly go: "lobby"; readonly role: "host"; readonly mode: SessionMatchMode }
-  | { readonly go: "lobby"; readonly role: "guest" };
+  | { readonly go: "lobby"; readonly intent: "host"; readonly mode: SessionMatchMode }
+  | { readonly go: "lobby"; readonly intent: "guest" };
 
 const PANEL_Y = 196;
 const PANEL_H = 118;
@@ -146,10 +158,10 @@ function update(
     return [next, { go: "title" }];
   }
   if (id === "host") {
-    return [next, { go: "lobby", role: "host", mode: next.mode }];
+    return [next, { go: "lobby", intent: "host", mode: next.mode }];
   }
   if (id === "join") {
-    return [next, { go: "lobby", role: "guest" }];
+    return [next, { go: "lobby", intent: "guest" }];
   }
   const mode = /^mode_(.+)$/.exec(id)?.[1];
   if (mode !== undefined && MODES.includes(mode as SessionMatchMode)) {

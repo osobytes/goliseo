@@ -1433,6 +1433,56 @@ describe("room-code entry (#552)", () => {
     expect(view(state).error).not.toBe(ROOM_FAILURE_TEXT["connection_lost"]);
     expect(view(state).room_active).toBe(false);
   });
+
+  // Round-2 council review, blocking finding 2 (PR #603): the composer had
+  // no cancel control at all -- not a click target, and Escape/back (the
+  // universal handler `hosting()`'s "leave" case above exercises) dispatched
+  // "leave" unconditionally, ejecting the WHOLE lobby to the title. #566
+  // already named this "room_cancel is unreachable"; #597 promotes the
+  // composer from an optional detour reachable only after picking a manual
+  // role first to the mandatory FIRST screen a room-joining intent reaches,
+  // which turns that old gap into a real trap for a guest who wants the
+  // manual fallback instead. `roomCancel` (`lobby_model.ts`) already existed
+  // and already lands safely back on the role screen -- these four cases
+  // cover the two ways a player now reaches it, and confirm the one case
+  // that must NOT change.
+  it("Escape in the composer cancels the room attempt instead of leaving the lobby", () => {
+    const state = joining();
+    const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action, "Escape must not eject the whole lobby from the composer").toBeUndefined();
+    expect(view(next).room_entry).toBeUndefined();
+    expect(view(next).role).toBeUndefined();
+    // Back on the role screen, with the manual fallback right there.
+    const currentLayout = lobbyLayout(next);
+    expect(hit.find(currentLayout, "role_host")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_guest")).not.toBeNull();
+    expect(hit.find(currentLayout, "role_host")?.data?.disabled).toBe(false);
+  });
+
+  it("Escape cancels a host's still-connecting room-code request too, before a role is resolved", () => {
+    const state = click(newState(VP, ports()), "room_code_host");
+    expect(view(state).room_active).toBe(true);
+    const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action).toBeUndefined();
+    expect(view(next).room_active).toBe(false);
+    expect(view(next).role).toBeUndefined();
+    expect(hit.find(lobbyLayout(next), "role_host")?.data?.disabled).toBe(false);
+  });
+
+  it("a visible CANCEL widget in the composer dispatches room_cancel", () => {
+    const state = joining();
+    const cancelWidget = hit.find(lobbyLayout(state), "room_cancel");
+    expect(cancelWidget, "the composer needs a visible way out, not just Escape").not.toBeNull();
+    const next = click(state, "room_cancel");
+    expect(view(next).room_entry).toBeUndefined();
+    expect(view(next).role).toBeUndefined();
+  });
+
+  it("Escape on the plain role screen still leaves the lobby, unchanged", () => {
+    const state = newState(VP, ports());
+    const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action?.go).toBe("main_menu");
+  });
 });
 
 // The presentation pass over an unchanged model: same ids, same commands, new

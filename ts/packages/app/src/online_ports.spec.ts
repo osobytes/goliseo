@@ -132,13 +132,39 @@ describe("online_ports: production App wiring", () => {
 
     expect(app.currentRoute()).toBe("lobby");
     // A real `LobbyScreenState`, not a stub -- the model actually
-    // constructed, and the front door's Host choice actually applied rather
-    // than dropped on the way through `newLobbyScreen`'s options bag.
+    // constructed, and the front door's Host choice actually applied, as a
+    // room-hosting intent (#597), rather than dropped on the way through
+    // `newLobbyScreen`'s options bag: `room_pick`'s host path ran
+    // immediately, requesting a room code. No `roomSignaling` port is
+    // configured in this case, so the attempt never resolves to a role --
+    // `room_code_lobby.spec.ts` (this package) proves the resolved,
+    // ready-session path through a fake relay, and
+    // `multiplayer_room_flow.spec.ts` proves this exact front-door click
+    // reaching a focused room-code composer / a displayed room code.
     const lobby = app.stack.current() as OnlineLobbyScreen & {
-      readonly state: { readonly model: { readonly role?: string } };
+      readonly state: {
+        readonly model: {
+          readonly role?: string;
+          readonly room_active?: boolean;
+          readonly room_status?: string;
+        };
+      };
     };
-    expect(lobby.state.model.role).toBe("host");
+    expect(lobby.state.model.role).toBeUndefined();
+    expect(lobby.state.model.room_active).toBe(true);
+    expect(lobby.state.model.room_status).toBe("connecting");
 
+    // Escape while the room-hosting request is still connecting (no role
+    // resolved yet) cancels THAT attempt first, landing back on the lobby's
+    // own role screen rather than ejecting the whole lobby (round-2 council
+    // review, blocking finding 2 -- PR #603; `multiplayer_room_flow.spec.ts`
+    // and `lobby.spec.ts` cover this directly, at lower fakery levels).
+    app.event({ kind: "key", key: "escape" });
+    expect(app.currentRoute()).toBe("lobby");
+    expect(lobby.state.model.room_active).toBe(false);
+
+    // A second Escape, now that no room attempt is in flight, leaves the
+    // lobby exactly as before.
     app.event({ kind: "key", key: "escape" });
     expect(app.currentRoute()).toBe("title");
   });
