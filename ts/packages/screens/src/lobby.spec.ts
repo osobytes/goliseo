@@ -81,6 +81,7 @@ import type {
   Fnv1a64Port,
   InputFramePort,
   InputSlotId,
+  JoinLinkPort,
   LobbyModelPorts,
   ProtocolFixturePort,
   ProtocolPort,
@@ -202,6 +203,12 @@ function fakeFnv1a64(): Fnv1a64Port {
   };
 }
 
+// #598. `canShare` defaults to `false` -- most cases care only about COPY
+// LINK; the SHARE-specific cases below build their own port with it `true`.
+function fakeJoinLink(canShare = false): JoinLinkPort {
+  return { urlFor: (code) => `https://fixture.example/?room=${code}`, canShare };
+}
+
 // Phase/manifest/assignment bookkeeping only -- no admission, slot, or
 // preference arbitration. See this file's header.
 function fakeCoordinatorPort(): CoordinatorPort {
@@ -319,7 +326,7 @@ function fakeCoordinatorPort(): CoordinatorPort {
   };
 }
 
-function ports(): LobbyModelPorts {
+function ports(canShare = false): LobbyModelPorts {
   return {
     coordinator: fakeCoordinatorPort(),
     protocol: fakeProtocol(),
@@ -327,6 +334,7 @@ function ports(): LobbyModelPorts {
     transportContract: fakeTransportContract(),
     fnv1a64: fakeFnv1a64(),
     inputFrame: fakeInputFrame(),
+    joinLink: fakeJoinLink(canShare),
   };
 }
 
@@ -738,6 +746,7 @@ function realPorts(): LobbyModelPorts {
     transportContract: fakeTransportContract(),
     fnv1a64: fakeFnv1a64(),
     inputFrame: fakeInputFrame(),
+    joinLink: fakeJoinLink(),
   };
 }
 
@@ -1586,6 +1595,39 @@ describe("room-code entry (#552)", () => {
     expect(hit.find(currentLayout, "paste_signal")).toBeNull();
   });
 
+  // One-click join link (#598).
+  it("shows COPY LINK once a room code exists, and hides SHARE when the join-link port reports no capability", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "copy_link")).not.toBeNull();
+    // The fixture's join-link port defaults `canShare` to `false` -- SHARE
+    // must not render at all (never merely disabled) when the platform
+    // does not offer a share sheet.
+    expect(hit.find(currentLayout, "share_link")).toBeNull();
+  });
+
+  it("COPY LINK's clipboard effect carries the exact join URL the injected port builds", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    const nextState = click(state, "copy_link");
+    const clipboard = nextState.effects.find((effect) => effect.kind === "clipboard");
+    expect(clipboard?.kind === "clipboard" ? clipboard.text : undefined).toBe(
+      "https://fixture.example/?room=A3F9K2",
+    );
+  });
+
+  it("renders SHARE only when the join-link port's capability flag is on, and its effect carries the same URL", () => {
+    let state = click(newState(VP, ports(true)), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    expect(hit.find(lobbyLayout(state), "share_link")).not.toBeNull();
+    const nextState = click(state, "share_link");
+    const share = nextState.effects.find((effect) => effect.kind === "share");
+    expect(share?.kind === "share" ? share.text : undefined).toBe(
+      "https://fixture.example/?room=A3F9K2",
+    );
+  });
+
   it("room_joined picks the guest role and hides the manual signal controls too", () => {
     let state = joining();
     for (const ch of "A3F9K2") {
@@ -1954,7 +1996,10 @@ describe("online lobby presentation", () => {
       command: { kind: "signal", peer_id: "guest_1", signal: "offer:blob" },
     });
     const invite = hit.find(lobbyLayout(state), "signal_out")?.text ?? "";
-    expect(invite).toContain("GC://JOIN/");
+    // #598: the decorative `GC://JOIN/<fingerprint>` string is gone -- a
+    // real join link exists now (COPY LINK/SHARE), and this string never
+    // parsed as anything a player could act on.
+    expect(invite).not.toContain("GC://JOIN");
     expect(invite).not.toContain("offer:blob");
 
     const fingerprint = view(state).exported?.fingerprint;

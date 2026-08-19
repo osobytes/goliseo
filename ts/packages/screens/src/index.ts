@@ -111,6 +111,7 @@ export type {
   InputFramePort,
   InputSlotId,
   InputTeam,
+  JoinLinkPort,
   LobbyCommand,
   LobbyEffect,
   LobbyIdentityRow,
@@ -161,6 +162,7 @@ export { OnlineLobby } from "./online_lobby.ts";
 export type {
   LobbyClipboard,
   LobbyLinkInstance,
+  LobbyShare,
   OnlineLobbyAction,
   OnlineLobbyOptions,
   RoomSignalingEvent,

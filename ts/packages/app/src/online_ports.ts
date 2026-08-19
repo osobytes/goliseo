@@ -89,11 +89,13 @@ import {
   type InputFramePort,
   type InputSlotId,
   type InputTeam,
+  type JoinLinkPort,
   type LobbyClipboard,
   type LobbyFrameBuffer,
   type LobbyLinkInstance,
   type LobbyModelPorts,
   type LobbyRole,
+  type LobbyShare,
   type MatchContractPort,
   type MatchDriverPort,
   type MatchLobbyLinkPort,
@@ -240,6 +242,18 @@ const protocolPort: LobbyProtocolPort = {
 const transportContractPort: TransportContractPort = {
   hostPeerId: HOST_PEER_ID,
   maxGuests: MAX_GUESTS,
+};
+
+// The one-click join link's default (#598): a caller that never supplies
+// `OnlinePortsDeps.joinLink` (most specs -- see `createOnlinePorts` below)
+// gets a degenerate but harmless fallback rather than a crash. `urlFor`
+// returning the bare code instead of a real URL, and `canShare` staying
+// `false`, are both exactly what "no real page origin is known" should mean
+// -- `browser_main.ts` is the only caller that supplies the real one,
+// derived from `window.location`/`navigator.share`.
+const DEFAULT_JOIN_LINK_PORT: JoinLinkPort = {
+  urlFor: (code: string) => code,
+  canShare: false,
 };
 
 // A cosmetic digest only -- `LobbySignalRecord.fingerprint`, shown so two
@@ -1081,6 +1095,18 @@ export interface OnlinePortsDeps {
    * manual select/copy, it does not break it). `browser_main.ts` supplies
    * a real one; a spec typically omits this entirely. */
   readonly clipboard?: LobbyClipboard;
+  /** The one-click join link's native share sheet (#598) -- see
+   * `LobbyShare`'s own doc (`@gc/screens`). `browser_main.ts` supplies a
+   * real one, wrapping `navigator.share`; a spec typically omits this, and
+   * `OnlineLobby`'s own `run()` simply does nothing with a `"share"`
+   * effect when it is absent. */
+  readonly share?: LobbyShare;
+  /** The one-click join link's URL builder and share-sheet capability flag
+   * (#598) -- see `JoinLinkPort`'s own doc (`@gc/screens`). Defaults to
+   * `DEFAULT_JOIN_LINK_PORT` (bare code, no share sheet) so a spec that
+   * never drives COPY LINK/SHARE can omit this entirely; `browser_main.ts`
+   * supplies the real one, derived from `window.location`/`navigator.share`. */
+  readonly joinLink?: JoinLinkPort;
   /** The room-code signaling channel (#552) -- `room_signaling_port.ts`'s
    * real, WebSocket-backed factory in production (`browser_main.ts`), a
    * fake in a spec. Defaults to `OnlineLobby`'s own inert fallback (its
@@ -1107,6 +1133,7 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
     transportContract: transportContractPort,
     fnv1a64: fnv1a64Port,
     inputFrame: inputFramePort,
+    joinLink: deps.joinLink ?? DEFAULT_JOIN_LINK_PORT,
   };
   const matchModelPorts: OnlineMatchModelPorts<RealCoordinatorState> = {
     coordinator: matchCoordinatorPort<RealCoordinatorState>(),
@@ -1153,20 +1180,28 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
       // They are split out here rather than spread into `modelOptions`,
       // where they would be silently ignored and the player would pick
       // Host/Join twice.
-      const { intent, mode, botFill, ...modelOptions } = options as {
+      // `presetRoomCode` (#598) is the join-link's boot-time code, the same
+      // kind of "decided before the lobby existed" fact `intent`/`mode`/
+      // `botFill` already are -- split out here for the identical reason:
+      // spread into `modelOptions` it would be silently ignored rather than
+      // pre-filling and auto-submitting the composer.
+      const { intent, mode, botFill, presetRoomCode, ...modelOptions } = options as {
         readonly template?: (mode: SessionMatchMode) => SessionManifest;
         readonly intent?: LobbyRole;
         readonly mode?: SessionMatchMode;
         readonly botFill?: boolean;
+        readonly presetRoomCode?: string;
       };
       const screen = new OnlineLobby({ w: 960, h: 540 }, onAction, {
         starFactory: (lobbyRole: LobbyRole, peerId: string) => deps.starFactory(lobbyRole, peerId),
         newLink: (star: StarTransportAdapter) => realLobbyLink(star),
         ...(deps.clipboard !== undefined ? { clipboard: deps.clipboard } : {}),
+        ...(deps.share !== undefined ? { share: deps.share } : {}),
         ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
         ...(intent !== undefined ? { roomIntent: intent } : {}),
         ...(mode !== undefined ? { mode } : {}),
         ...(botFill !== undefined ? { botFill } : {}),
+        ...(presetRoomCode !== undefined ? { presetRoomCode } : {}),
         modelPorts,
         modelOptions: { seed: Math.floor(Date.now() % 1_000_000), ...modelOptions },
       });

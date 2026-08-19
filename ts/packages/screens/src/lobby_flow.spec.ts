@@ -88,6 +88,7 @@ import type {
   InputFramePort,
   InputSlotId,
   InputTeam,
+  JoinLinkPort,
   LobbyCommand,
   LobbyEffect,
   LobbyModel,
@@ -277,6 +278,12 @@ function simpleHash(text: string): string {
 
 function fakeFnv1a64(): Fnv1a64Port {
   return { hash: simpleHash };
+}
+
+// #598 -- this file never drives COPY LINK/SHARE itself (`lobby.spec.ts`
+// owns that coverage); `canShare: false` is a harmless, inert default.
+function fakeJoinLink(): JoinLinkPort {
+  return { urlFor: (code) => `https://fixture.example/?room=${code}`, canShare: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -1766,6 +1773,7 @@ function ports(): LobbyModelPorts {
     transportContract: fakeTransportContract(),
     fnv1a64: fakeFnv1a64(),
     inputFrame: fakeInputFrame(),
+    joinLink: fakeJoinLink(),
   };
 }
 

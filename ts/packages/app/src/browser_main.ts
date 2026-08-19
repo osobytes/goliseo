@@ -48,6 +48,7 @@ import { createBrowserSimHost, ensureBrowserSimHostReady } from "./browser_sim_h
 import { loadOnlineWasmHost } from "./browser_online_wasm_host.ts";
 import { createOnlinePorts, browserStarEval } from "./online_ports.ts";
 import { forceRelayFromSearch, newIceConfig, type IceConfig } from "./ice_config.ts";
+import { joinUrl, roomCodeFromSearch, withoutRoomParam } from "./join_link.ts";
 import { fetchTurnCredentials } from "./turn_credentials.ts";
 import { connectRoomGuest, connectRoomHost } from "./room_signaling_port.ts";
 import { APP_CONTENT } from "./browser_content.ts";
@@ -291,6 +292,22 @@ async function main(): Promise<void> {
   }
   installGoliseoStarTransport(window, { iceConfig: currentIceConfig });
 
+  // One-click join link, boot half (#598): `?room=<CODE>` is parsed and
+  // validated once, here (`join_link.ts`'s pure `roomCodeFromSearch`,
+  // against the SAME alphabet/length `@gc/online`'s `room_signaling.ts`
+  // exports -- see that module's own header for why this never re-derives
+  // them). `presetRoomCode` reaches `bootstrap.new` below, which routes the
+  // very first screen straight into the lobby as a guest instead of the
+  // title screen (`app.ts`'s constructor). The parameter is stripped from
+  // the address bar unconditionally, whether or not it actually named a
+  // valid code -- a reload or a bookmark of the resulting URL must not
+  // re-attempt joining a room that may already be gone, or carry forward
+  // junk either way.
+  const presetRoomCode = roomCodeFromSearch(window.location.search);
+  if (new URLSearchParams(window.location.search).has("room")) {
+    window.history.replaceState(null, "", withoutRoomParam(window.location.href));
+  }
+
   // The lobby's manual-signaling copy/paste seam. `LobbyClipboard.read()` is
   // synchronous (`online_lobby.ts`'s own contract), but `navigator.clipboard.readText()`
   // is always async and typically gated behind a user gesture/permission --
@@ -317,6 +334,27 @@ async function main(): Promise<void> {
     },
   };
 
+  // The one-click join link's remaining impure half (#598): the URL builder
+  // (`join_link.ts`'s pure `joinUrl`, closed over this page's own origin --
+  // `lobby_model.ts`'s model never reads `window.location` itself) and the
+  // `navigator.share` feature-detection/invocation `LobbyShare` wraps.
+  // `canShare` is resolved exactly once, here, and threaded through as a
+  // capability flag -- `lobby_model.ts`'s `view()` reads it to decide
+  // whether SHARE renders at all, never sniffing `navigator` itself.
+  const joinLink = {
+    urlFor: (code: string) => joinUrl(window.location.origin, code),
+    canShare: typeof navigator.share === "function",
+  };
+  const share = {
+    share: (text: string): void => {
+      void navigator.share?.({ url: text }).catch(() => {
+        // Best-effort, mirroring `clipboard.write` above -- COPY LINK stays
+        // available regardless, so a cancelled or failed share sheet never
+        // strands the player without a way to invite a friend.
+      });
+    },
+  };
+
   const onlinePorts = createOnlinePorts({
     wasm: loadOnlineWasmHost(),
     starFactory: (role) => {
@@ -327,6 +365,8 @@ async function main(): Promise<void> {
     renderer,
     keyboard,
     clipboard,
+    joinLink,
+    share,
     onLobbyEntry: ensureTurnCredentialsFetch,
     // Room-code signaling (#552): same-origin by default
     // (`room_signaling_port.ts`'s own header). On a static host with no
@@ -343,6 +383,7 @@ async function main(): Promise<void> {
     settingsStorage: localStorageSettings(SETTINGS_STORAGE_KEY),
     teamSettingsStorage: localStorageSettings(TEAM_SETTINGS_STORAGE_KEY),
     online: onlinePorts,
+    ...(presetRoomCode !== undefined ? { presetRoomCode } : {}),
     requestQuit: () => {
       // A browser tab cannot reliably self-close outside a script-opened
       // window -- nothing better to do here than log.

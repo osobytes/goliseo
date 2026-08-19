@@ -41,6 +41,16 @@ export interface LobbyClipboard {
   write(text: string): void;
 }
 
+/** The one-click join link's native share sheet (#598) -- a separate port
+ * from `LobbyClipboard` because it hands off to a whole OS surface
+ * (`navigator.share`), not a silent write. Optional, mirroring
+ * `LobbyClipboard`/`RoomSignalingFactory`: a caller that never drives the
+ * SHARE control (most specs) can omit it entirely, and `run()`'s `"share"`
+ * handling below is then simply inert. */
+export interface LobbyShare {
+  share(text: string): void;
+}
+
 /** `@gc/online`'s `lobby_link.ts`'s `LobbyLink` instance, injected -- see this module's header. */
 export interface LobbyLinkInstance<TStar, TEvent extends LobbyCommand> {
   readonly star: TStar;
@@ -101,6 +111,9 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly starFactory: (role: LobbyRole, peerId: string) => TStar | undefined;
   readonly newLink: (star: TStar) => LobbyLinkInstance<TStar, TEvent>;
   readonly clipboard?: LobbyClipboard;
+  /** The one-click join link's native share sheet (#598) -- see
+   * `LobbyShare`'s own doc. */
+  readonly share?: LobbyShare;
   readonly roomSignaling?: RoomSignalingFactory;
   readonly modelPorts: LobbyModelPorts;
   readonly modelOptions?: LobbyModelOptions;
@@ -152,6 +165,20 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
    * (`bot_fill: false`) already matches.
    */
   readonly botFill?: boolean;
+  /**
+   * A join-link's room code (#598: `?room=<CODE>` at boot -- see
+   * `browser_main.ts`'s own parsing), pre-filled and auto-submitted the
+   * moment this instance's `roomIntent: "guest"` composer is revealed. This
+   * types each character through the SAME `room_key` command the composer
+   * widget dispatches on every keystroke, then dispatches `room_submit`
+   * exactly as ENTER/click on the widget does -- deliberately the same
+   * path a manually-typed code takes, not a parallel fast lane, so a bad
+   * code fails exactly the way a mistyped one already does (#602's own
+   * distinct room-failure copy, the role screen's composer left reachable
+   * to retry). Ignored unless `roomIntent === "guest"`; a caller that omits
+   * it gets the pre-#598 behavior (an empty, focused composer).
+   */
+  readonly presetRoomCode?: string;
 }
 
 export type OnlineLobbyAction = { readonly go: string; readonly [key: string]: unknown };
@@ -202,6 +229,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   private roomLink: RoomSignalingHandle | undefined;
   private readonly onAction: ((action: OnlineLobbyAction) => void) | undefined;
   private readonly clipboard: LobbyClipboard;
+  private readonly share: LobbyShare | undefined;
   private readonly starFactory: (role: LobbyRole, peerId: string) => TStar | undefined;
   private readonly newLink: (star: TStar) => LobbyLinkInstance<TStar, TEvent>;
   private readonly roomSignaling: RoomSignalingFactory | undefined;
@@ -228,6 +256,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     });
     this.onAction = onAction;
     this.clipboard = options.clipboard ?? { read: () => undefined, write: () => undefined };
+    this.share = options.share;
     this.starFactory = options.starFactory;
     this.newLink = options.newLink;
     this.roomSignaling = options.roomSignaling;
@@ -247,6 +276,18 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
         // as the acceptance criteria for #597 ask: focused immediately, no
         // extra input to reach it.
         this.state = { ...this.state, focus: ROOM_CODE_ENTRY_WIDGET };
+        // The one-click join link (#598): pre-fill and auto-submit the
+        // composer `room_pick` just revealed and focused, character by
+        // character through `room_key` -- the exact command every real
+        // keystroke on the widget dispatches -- then `room_submit`, exactly
+        // as ENTER/click on it does. See `OnlineLobbyOptions.presetRoomCode`'s
+        // own doc for why this is the same path rather than a parallel one.
+        if (options.presetRoomCode !== undefined) {
+          for (const key of options.presetRoomCode) {
+            this.dispatch({ kind: "room_key", key });
+          }
+          this.dispatch({ kind: "room_submit" });
+        }
       }
       // No synchronous `bot_fill` dispatch here (there used to be one,
       // gated on a `role` option #603 removed): `room_pick`'s host path
@@ -313,6 +354,8 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
         }
       } else if (effect.kind === "clipboard") {
         this.clipboard.write(effect.text);
+      } else if (effect.kind === "share") {
+        this.share?.share(effect.text);
       } else if (effect.kind === "paste_request") {
         const text = this.clipboard.read();
         // Straight back into the pure model, which keeps only a digest.

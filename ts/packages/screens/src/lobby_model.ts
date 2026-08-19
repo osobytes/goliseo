@@ -24,6 +24,11 @@
 // (`RollbackEventsPort`/`MatchDriverPort`). `InputFramePort` likewise wraps
 // Rust-owned state; only the two constants this module reads
 // (`SLOT_COUNT`/`slot`) are threaded through the same port bundle.
+// `JoinLinkPort` (#598) is the odd one out in this list: it wraps no
+// Rust/wasm state at all, only a browser fact (`window.location`'s origin,
+// `navigator.share`'s presence) `browser_main.ts` resolves once at boot --
+// injected through the same bundle regardless, because `view()` needs it
+// exactly as purely as it needs everything else here.
 //
 // `CoordinatorState` and the session/protocol shapes it carries
 // (`SessionManifest`, `SessionSlotProducer`, ...) are given concrete
@@ -138,6 +143,11 @@ export type LobbyEffect =
   | { readonly kind: "send"; readonly link_id: string; readonly wire: string }
   | { readonly kind: "close"; readonly link_id: string; readonly detail?: string }
   | { readonly kind: "clipboard"; readonly text: string }
+  /** The one-click join link's native share sheet (#598) -- distinct from
+   * `"clipboard"` because a friend's clipboard is written to silently while
+   * a share sheet is a whole OS surface `online_lobby.ts` hands off to a
+   * separate injected port, never the clipboard one. */
+  | { readonly kind: "share"; readonly text: string }
   | { readonly kind: "paste_request" }
   | { readonly kind: "start_match"; readonly freeze: unknown }
   | { readonly kind: "shutdown" }
@@ -365,6 +375,29 @@ export interface InputFramePort {
   slot(index: number): { readonly id: InputSlotId; readonly team: InputTeam } | undefined;
 }
 
+/**
+ * The one-click join link (#598): builds the shareable URL for a room code,
+ * and reports whether the platform offers a native share sheet. Both facts
+ * live behind `window.location`/`navigator.share` -- browser globals this
+ * module must never read itself (AGENTS.md §2's "pure" rule) -- so they are
+ * injected exactly like every other environment fact this port bundle
+ * already carries (`TransportContractPort.hostPeerId`, for one). The app
+ * shell (`browser_main.ts`) supplies the real implementation; a spec
+ * supplies a fake. `canShare` in particular is a plain capability flag
+ * rather than a method the model could call to "check" sharing -- `view()`
+ * reads it to decide whether the SHARE control renders at all, and a
+ * boolean is the whole of what it needs.
+ */
+export interface JoinLinkPort {
+  /** The full, shareable URL a friend can click to land directly in this
+   * room -- typically `${origin}/?room=${code}`, composed by the app shell
+   * from a fact (the page origin) this module never touches. */
+  urlFor(code: string): string;
+  /** Whether `navigator.share` exists on this device, resolved once by the
+   * app shell. Pure code never sniffs `navigator` to find out. */
+  readonly canShare: boolean;
+}
+
 export interface LobbyModelPorts {
   readonly coordinator: CoordinatorPort;
   readonly protocol: ProtocolPort;
@@ -372,6 +405,7 @@ export interface LobbyModelPorts {
   readonly transportContract: TransportContractPort;
   readonly fnv1a64: Fnv1a64Port;
   readonly inputFrame: InputFramePort;
+  readonly joinLink: JoinLinkPort;
 }
 
 export interface LobbyModelOptions {
@@ -934,6 +968,33 @@ function exportSignal(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
   // it, nothing logs it, and a later screenshot cannot leak it.
   const { outgoing: _outgoing, ...rest } = model;
   return { ...rest, status: "Signal copied. Send it to your peer." };
+}
+
+// --- one-click join link (#598) --------------------------------------------
+//
+// `model.room_code` is only ever set on the host side (`roomCreated` below;
+// a guest's `roomJoined` never sets it), so gating on it is already the
+// whole of "host only" -- the explicit `role` check below is defense in
+// depth, matching every other host-only command's own guard style, not a
+// case that can actually diverge from it today.
+
+function copyLink(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
+  if (model.role !== "host" || model.room_code === undefined) {
+    return { ...model, error: "no room code to share yet" };
+  }
+  effects.push({ kind: "clipboard", text: ports.joinLink.urlFor(model.room_code) });
+  return { ...model, status: "Join link copied." };
+}
+
+function shareLink(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
+  if (model.role !== "host" || model.room_code === undefined) {
+    return { ...model, error: "no room code to share yet" };
+  }
+  if (!ports.joinLink.canShare) {
+    return { ...model, error: "sharing is not available on this device" };
+  }
+  effects.push({ kind: "share", text: ports.joinLink.urlFor(model.room_code) });
+  return { ...model, status: "Opening the share sheet." };
 }
 
 function importSignal(
@@ -1582,6 +1643,11 @@ export type LobbyCommand =
   | { readonly kind: "bot_fill" }
   | { readonly kind: "invite" }
   | { readonly kind: "copy" }
+  // The one-click join link (#598): host-only, valid once `room_code` is
+  // set. "copy" (above) is the pre-existing manual offer/answer blob;
+  // these two are the room-code hero's own share actions.
+  | { readonly kind: "copy_link" }
+  | { readonly kind: "share_link" }
   | { readonly kind: "paste_request" }
   | { readonly kind: "paste"; readonly text: unknown }
   | { readonly kind: "lock" }
@@ -1702,6 +1768,12 @@ export function command(
       break;
     case "copy":
       next = exportSignal(next, effects);
+      break;
+    case "copy_link":
+      next = copyLink(next, ports, effects);
+      break;
+    case "share_link":
+      next = shareLink(next, ports, effects);
       break;
     case "paste_request":
       effects.push({ kind: "paste_request" });
@@ -1881,6 +1953,11 @@ export interface LobbyView {
   readonly ready: boolean;
   readonly can_start: boolean;
   readonly started: boolean;
+  /** Whether the SHARE (native share sheet) control should render next to
+   * COPY LINK -- true only once a host has a room code AND the injected
+   * `JoinLinkPort` reports the platform actually offers one (#598: a
+   * capability flag, never sniffed here). */
+  readonly can_share: boolean;
 
   // --- Room-code signaling (#552) -- see this module's header. ---------
 
@@ -2106,6 +2183,7 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     ready,
     can_start: model.role === "host" && phase === "ready",
     started: model.started,
+    can_share: model.role === "host" && model.room_code !== undefined && ports.joinLink.canShare,
     ...(model.room_entry !== undefined ? { room_entry: model.room_entry } : {}),
     ...(model.room_code !== undefined ? { room_code: model.room_code } : {}),
     ...(model.room_status !== undefined ? { room_status: model.room_status } : {}),
