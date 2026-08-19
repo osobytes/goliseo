@@ -2978,14 +2978,31 @@ describe("room-code guest slot assignment (#601)", () => {
     }
   });
 
+  // Drives the SAME commands a room-code guest's composer would (`room_pick`
+  // -> typing the code -> `room_submit` -> `room_joined`), so `room_active`
+  // is genuinely `true` the way it is in production by the time
+  // `room_joined` fires -- not skipped straight to `room_joined`, which
+  // would leave `room_active` `false` and understate what this deferred
+  // window actually looks like (the "identity" guard below specifically
+  // depends on it).
+  function freshRoomCodeGuest(modelPorts: LobbyModelPorts): LobbyModel {
+    let model = newLobbyModel(modelPorts);
+    [model] = command(model, modelPorts, { kind: "room_pick", role: "guest" });
+    for (const ch of ROOM_CODE) {
+      [model] = command(model, modelPorts, { kind: "room_key", key: ch });
+    }
+    [model] = command(model, modelPorts, { kind: "room_submit" });
+    [model] = command(model, modelPorts, { kind: "room_joined" });
+    return model;
+  }
+
   // Narrower, model-only pins of the two mechanisms the cases above
   // exercise end to end -- no `Driver`/`FakeTransport` needed for either.
   it("defers coordinator creation until the host's offer names a slot", () => {
     const modelPorts = ports();
-    let model = newLobbyModel(modelPorts);
-    [model] = command(model, modelPorts, { kind: "room_pick", role: "guest" });
-    [model] = command(model, modelPorts, { kind: "room_joined" });
+    let model = freshRoomCodeGuest(modelPorts);
     expect(model.role).toBe("guest");
+    expect(model.room_active).toBe(true);
     expect(model.coordinator).toBeUndefined();
 
     const [nextModel, effects] = command(model, modelPorts, {
@@ -2998,6 +3015,67 @@ describe("room-code guest slot assignment (#601)", () => {
     expect(model.coordinator).toBeDefined();
     expect(effects.some((effect) => effect.kind === "open_star")).toBe(true);
     expect(effects.some((effect) => effect.kind === "accept_offer")).toBe(true);
+  });
+
+  // Round-2 council review, blocking finding 2: deploy-window skew (an old
+  // host with no #601 fix of its own, or any relay hop that dropped the
+  // slot en route) must not leave a fresh room-code guest stuck -- it
+  // proceeds with whatever `peer_id` it already had, exactly the pre-#601
+  // behavior, so a single-guest room against an old host still works. This
+  // is the model-level counterpart of `room_signaling_port.spec.ts`'s
+  // "falls back to no slot..." case (`@gc/app`) -- that one pins the PORT
+  // correctly reporting an absent `slot`; this one pins that
+  // `roomPeerSignal` still creates a working coordinator when it gets one.
+  it("falls back to the guest's existing default identity when no slot is given", () => {
+    const modelPorts = ports();
+    let model = freshRoomCodeGuest(modelPorts);
+    const defaultPeerId = model.peer_id;
+    expect(model.coordinator).toBeUndefined();
+
+    const [nextModel, effects] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      signal: "offer:legacy",
+      // No `slot` -- an old host, or any parse miss upstream.
+    });
+    model = nextModel;
+    expect(model.peer_id).toBe(defaultPeerId);
+    expect(model.coordinator).toBeDefined();
+    expect(effects.some((effect) => effect.kind === "open_star")).toBe(true);
+    expect(effects.some((effect) => effect.kind === "accept_offer")).toBe(true);
+  });
+
+  // Round-2 council review, cheap hardening: a room-code guest waiting on
+  // its slot has no `coordinator` yet (`roomJoined`'s own doc), and
+  // `step()` already no-ops gracefully without one (`step`'s own "if
+  // (!state) return [model, undefined]") -- pinned here for "ready" and
+  // "tick" so a future change to that guard is caught. "identity" is
+  // NOT a no-op in the sense of doing nothing observable: it refuses,
+  // visibly, rather than silently cycling `peer_id` out from under a slot
+  // the host may name at any moment (this file's own "identity" guard,
+  // mirroring the "role" command's precedent).
+  it("no-ops ready/tick and refuses identity for a guest still waiting on its slot", () => {
+    const modelPorts = ports();
+    let model = freshRoomCodeGuest(modelPorts);
+    const waitingPeerId = model.peer_id;
+    expect(model.role).toBe("guest");
+    expect(model.room_active).toBe(true);
+    expect(model.coordinator).toBeUndefined();
+
+    let effects: readonly LobbyEffect[];
+    [model, effects] = command(model, modelPorts, { kind: "ready", ready: true });
+    expect(model.coordinator).toBeUndefined();
+    expect(model.peer_id).toBe(waitingPeerId);
+    expect(effects).toEqual([]);
+
+    [model, effects] = command(model, modelPorts, { kind: "tick" });
+    expect(model.coordinator).toBeUndefined();
+    expect(effects).toEqual([]);
+
+    [model, effects] = command(model, modelPorts, { kind: "identity" });
+    expect(model.peer_id).toBe(waitingPeerId);
+    expect(model.coordinator).toBeUndefined();
+    expect(model.error).toBe("identity is assigned by the room code, not chosen manually");
+    expect(effects).toEqual([]);
   });
 
   it("traces a dropped signal instead of discarding it silently", () => {
@@ -3031,5 +3109,16 @@ describe("room-code guest slot assignment (#601)", () => {
     expect(lobbyModelView(modelPorts, model).last_dropped_signal).toEqual(
       model.last_dropped_signal,
     );
+
+    // Round-2 council review, cheap hardening: a signal that routes
+    // correctly right now clears any earlier drop trace -- stale history,
+    // not a live diagnostic to keep showing once the connection recovers.
+    [model] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      guest_id: "the-real-pending-guest",
+      signal: "answer:recovered",
+    });
+    expect(model.last_dropped_signal).toBeUndefined();
+    expect(lobbyModelView(modelPorts, model).last_dropped_signal).toBeUndefined();
   });
 });

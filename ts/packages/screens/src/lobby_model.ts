@@ -963,7 +963,12 @@ function importSignal(
     bytes: text.length,
     fingerprint: fingerprint(ports, text),
   };
-  let next: LobbyModel = { ...model, imported };
+  // A signal reaching this point is routing correctly RIGHT NOW -- any
+  // earlier drop `roomPeerSignal`'s host branch traced (#601,
+  // `last_dropped_signal`'s own doc) is stale history once the connection
+  // has recovered, not a live diagnostic to keep showing.
+  const { last_dropped_signal: _lastDroppedSignal, ...withoutDrop } = model;
+  let next: LobbyModel = { ...withoutDrop, imported };
   if (hostSide) {
     const pending = model.pending_link as string;
     effects.push({ kind: "accept_answer", peer_id: pending, signal: text });
@@ -1651,6 +1656,20 @@ export function command(
     case "identity": {
       if (next.coordinator) {
         next = { ...next, error: "identity is fixed once the session starts" };
+        break;
+      }
+      // The same race the "role" command's own guard above refuses
+      // (round-2 council review, blocking finding 2) -- and #601's own
+      // deferred-slot window makes it reachable here in a NEW way: a
+      // room-code guest can now have `role === "guest"` with no
+      // `coordinator` yet (`roomJoined`'s own doc), so the guard just
+      // above no longer covers this command for that guest at all. A
+      // room-code guest's identity is the host's to assign
+      // (`roomPeerSignal`'s own doc), never this manual-flow-only
+      // control's, for the entire window a room-code connection is in
+      // flight or established.
+      if (next.room_active) {
+        next = { ...next, error: "identity is assigned by the room code, not chosen manually" };
         break;
       }
       const match = /^guest_(\d+)$/.exec(next.peer_id);
