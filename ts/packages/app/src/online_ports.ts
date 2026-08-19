@@ -1144,14 +1144,17 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
 
     newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen {
       deps.onLobbyEntry?.();
-      // `role`/`mode` are the multiplayer front door's decision, not model
-      // options -- `OnlineLobby` applies them as its opening commands. They are
-      // split out here rather than spread into `modelOptions`, where they would
-      // be silently ignored and the player would pick Host twice.
-      const { role, mode, ...modelOptions } = options as {
+      // `role`/`mode`/`botFill` are the multiplayer front door's decision
+      // (`botFill` specifically: `app.ts`'s persisted "last bot fill
+      // choice"), not model options -- `OnlineLobby` applies them as its
+      // opening commands. They are split out here rather than spread into
+      // `modelOptions`, where they would be silently ignored and the player
+      // would pick Host twice.
+      const { role, mode, botFill, ...modelOptions } = options as {
         readonly template?: (mode: SessionMatchMode) => SessionManifest;
         readonly role?: LobbyRole;
         readonly mode?: SessionMatchMode;
+        readonly botFill?: boolean;
       };
       const screen = new OnlineLobby({ w: 960, h: 540 }, onAction, {
         starFactory: (lobbyRole: LobbyRole, peerId: string) => deps.starFactory(lobbyRole, peerId),
@@ -1160,6 +1163,7 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
         ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
         ...(role !== undefined ? { role } : {}),
         ...(mode !== undefined ? { mode } : {}),
+        ...(botFill !== undefined ? { botFill } : {}),
         modelPorts,
         modelOptions: { seed: Math.floor(Date.now() % 1_000_000), ...modelOptions },
       });

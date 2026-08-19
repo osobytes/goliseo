@@ -34,17 +34,33 @@ import {
   settings as settingsScreen,
   teamSheet,
   title,
+  LOBBY_DEFAULT_MODE,
+  LOBBY_MODES,
   LOBBY_TERMINAL_TEXT,
   type BuildInfo as ScreensBuildInfo,
+  type SessionMatchMode,
   type TeamSheetContentData,
 } from "@gc/screens";
 import { matchAdapter, type MatchAdapter, type MatchAdapterCallbacks } from "./match_adapter.ts";
 import { ScreenStack, type Screen } from "./screen_stack.ts";
 import { session, type GameSession } from "./session.ts";
 import { settings as settingsModule, type GameSettings, type SettingsStorage } from "./settings.ts";
+import { teamSettings } from "./team_settings.ts";
 import { viewport, viewportMapper, type ViewportTransform } from "./ui_bridge.ts";
 import type { MatchContractContent, TeamData } from "./content.ts";
 import type { ProductMatchResult } from "./match_contract.ts";
+
+/** Only a value `LOBBY_MODES` actually carries survives -- a stored id from
+ * an older build (or hand-edited storage) falls back to the protocol's own
+ * default, the same "content may drift" discipline `team_settings.ts` uses
+ * for formations/tactics (AGENTS.md §8). Match modes are a fixed protocol
+ * enum rather than Rust-owned content, so this check lives here rather than
+ * in `team_settings.ts`, which deliberately keeps no `@gc/screens` dependency. */
+function validatedOnlineMode(stored: string): SessionMatchMode {
+  return (LOBBY_MODES as readonly string[]).includes(stored)
+    ? (stored as SessionMatchMode)
+    : LOBBY_DEFAULT_MODE;
+}
 
 export interface Viewport {
   readonly w: number;
@@ -64,7 +80,15 @@ export interface OnlineLobbyCoordinatorState {
  * header for why this exists (it did not, before).
  */
 export interface OnlineLobbyScreen extends Screen<ControllerInputEvent, GameSettings> {
-  readonly state: { readonly model: { readonly coordinator?: OnlineLobbyCoordinatorState } };
+  readonly state: {
+    readonly model: {
+      readonly coordinator?: OnlineLobbyCoordinatorState;
+      /** `lobby_model.ts`'s own `LobbyModel.bot_fill` -- read on leaving a
+       * hosted lobby so the choice survives to the next one
+       * (`handleAction`'s `main_menu` branch). */
+      readonly bot_fill?: boolean;
+    };
+  };
   readonly link: unknown;
 }
 
@@ -106,6 +130,11 @@ export interface AppOptions {
   readonly actualH?: number;
   readonly settings?: GameSettings;
   readonly settingsStorage?: SettingsStorage;
+  /** `team_settings.ts` storage for the team sheet + last online lobby
+   * choices -- a separate port from `settingsStorage` (a separate storage
+   * key at the browser edge, `browser_main.ts`), mirroring how the two
+   * modules are separate files with a shared discipline rather than one. */
+  readonly teamSettingsStorage?: SettingsStorage;
   readonly matchAdapter?: MatchAdapter;
   readonly applySettings?: (settings: GameSettings) => void;
   readonly requestQuit?: () => void;
@@ -129,6 +158,19 @@ export class App {
   session: GameSession;
   settings: GameSettings;
   readonly settingsStorage: SettingsStorage | undefined;
+  readonly teamSettingsStorage: SettingsStorage | undefined;
+  /** Seeds `showMultiplayer`'s mode picker and, on a host commit, is
+   * re-saved (`team_settings.ts`'s "last online mode"). */
+  lastOnlineMode: SessionMatchMode;
+  /** Seeds a hosted lobby's `bot_fill` and, on leaving one hosted, is
+   * re-saved (`team_settings.ts`'s "last bot-fill choice"). */
+  lastBotFill: boolean;
+  /** The role this app entered the CURRENT lobby route with, if any --
+   * `bot_fill` is host-only (`lobby_model.ts`'s own rule), so only a host's
+   * departure re-saves it; a guest's `bot_fill` stays permanently `false`
+   * and must never overwrite a real preference. Cleared once the lobby
+   * route is left. */
+  private currentLobbyRole: "host" | "guest" | undefined;
   readonly viewport: Viewport = { w: 960, h: 540 };
   transform: ViewportTransform;
   adapter: MatchAdapter;
@@ -145,7 +187,16 @@ export class App {
   constructor(content: AppContent, opts: AppOptions = {}) {
     this.content = content;
     this.online = opts.online;
-    this.session = session.new(content.homeTeam);
+    this.teamSettingsStorage = opts.teamSettingsStorage;
+    const storedPreferences = teamSettings.load(opts.teamSettingsStorage);
+    const preferences = teamSettings.validateAgainstContent(
+      content.matchContract,
+      content.homeTeam,
+      storedPreferences,
+    );
+    this.session = session.new(content.homeTeam, preferences);
+    this.lastOnlineMode = validatedOnlineMode(storedPreferences.lastOnlineMode);
+    this.lastBotFill = storedPreferences.lastBotFill;
     this.settingsStorage = opts.settingsStorage;
     this.settings = opts.settings
       ? settingsModule.validate(opts.settings)
@@ -160,6 +211,22 @@ export class App {
     } else {
       this.showTitle();
     }
+  }
+
+  /** The impure write half of `team_settings.ts`'s discipline -- the pure
+   * screens never call this (AGENTS.md §9); every commit point below does. */
+  private saveTeamPreferences(): void {
+    teamSettings.save(
+      {
+        starterIds: this.session.starterIds,
+        formationId: this.session.formationId,
+        tacticId: this.session.tacticId,
+        combatEnabled: this.session.combatEnabled,
+        lastOnlineMode: this.lastOnlineMode,
+        lastBotFill: this.lastBotFill,
+      },
+      this.teamSettingsStorage,
+    );
   }
 
   private replaceRoute(route: string, screen: Screen<ControllerInputEvent, GameSettings>): void {
@@ -214,7 +281,11 @@ export class App {
   }
 
   showMultiplayer(): void {
-    const menu = new Menu(multiplayer, multiplayer.newState(this.viewport), this.onAction());
+    const menu = new Menu(
+      multiplayer,
+      multiplayer.newState(this.viewport, { mode: this.lastOnlineMode }),
+      this.onAction(),
+    );
     this.replaceRoute("multiplayer", asMenu(menu));
   }
 
@@ -308,12 +379,17 @@ export class App {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
     }
+    this.currentLobbyRole = options?.role;
     const modelOptions = options?.modelOptions ?? {};
     const resolved = {
       ...modelOptions,
       template: modelOptions.template ?? this.online.matchManifestTemplate,
       ...(options?.role !== undefined ? { role: options.role } : {}),
       ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+      // Host-only, mirroring `mode` above -- see `OnlineLobbyOptions.botFill`'s
+      // own doc for why this is safe to pass unconditionally (a non-host
+      // value is simply never dispatched).
+      ...(options?.role === "host" ? { botFill: this.lastBotFill } : {}),
     };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
     this.pushRoute("lobby", screen);
@@ -386,11 +462,23 @@ export class App {
       }
     } else if (route === "title" && action.go === "play") {
       this.showTeamSheet();
+    } else if (route === "title" && action.go === "team") {
+      // Reached from the menu directly, rather than through Play -- see
+      // `title.ts`'s header. Same destination either way: `team_sheet`'s
+      // own `back` always emits `{go: "title"}` regardless of how it was
+      // entered, so "visit, edit, leave" and "on the way to a match" share
+      // one route and one commit point (`route === "team_sheet" && action.go
+      // === "match"` below).
+      this.showTeamSheet();
     } else if (route === "title" && action.go === "multiplayer") {
       this.showMultiplayer();
     } else if (route === "multiplayer" && action.go === "title") {
       this.showTitle();
     } else if (route === "multiplayer" && action.go === "lobby") {
+      if (action.role === "host" && action.mode !== undefined) {
+        this.lastOnlineMode = action.mode as SessionMatchMode;
+        this.saveTeamPreferences();
+      }
       this.showLobby({
         ...(action.role !== undefined ? { role: action.role as "host" | "guest" } : {}),
         ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
@@ -472,12 +560,25 @@ export class App {
       session.setFormation(this.session, action.formationId as string);
       session.setTactic(this.session, action.tacticId as string);
       session.setCombatEnabled(this.session, action.combatEnabled === true);
+      this.saveTeamPreferences();
       this.startMatch();
     } else if (route === "result" && action.go === "rematch") {
       this.startMatch();
     } else if (route === "result" && action.go === "change_plan") {
       this.showTeamSheet();
     } else if (action.go === "main_menu") {
+      // A hosted lobby's `bot_fill` has no commit point of its own (it is
+      // toggled inside the lobby, not chosen before entering it, unlike
+      // `mode` above) -- so it is read off the departing screen here,
+      // instead. Host-only: `lobby_model.ts` refuses a non-host toggle, so a
+      // guest's `bot_fill` is always `false` and must never overwrite a real
+      // host preference (`currentLobbyRole`'s own doc).
+      if (route === "lobby" && this.currentLobbyRole === "host") {
+        const lobbyScreen = this.stack.current() as OnlineLobbyScreen;
+        this.lastBotFill = lobbyScreen.state.model.bot_fill === true;
+        this.saveTeamPreferences();
+      }
+      this.currentLobbyRole = undefined;
       this.showTitle();
     } else if (route === "pause" && action.go === "resume") {
       this.popRoute();

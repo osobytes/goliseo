@@ -10,6 +10,8 @@ export interface BootstrapOptions {
   readonly applySettings?: (settings: GameSettings) => void;
   readonly requestQuit?: () => void;
   readonly settingsStorage?: SettingsStorage;
+  /** `team_settings.ts` storage -- see `app.ts`'s `AppOptions.teamSettingsStorage`. */
+  readonly teamSettingsStorage?: SettingsStorage;
   /** playtest: boot straight into a match. */
   readonly quickMatch?: boolean;
   readonly online?: OnlinePorts;
@@ -29,6 +31,9 @@ function newApp(
     ...(opts.applySettings !== undefined ? { applySettings: opts.applySettings } : {}),
     ...(opts.requestQuit !== undefined ? { requestQuit: opts.requestQuit } : {}),
     ...(opts.settingsStorage !== undefined ? { settingsStorage: opts.settingsStorage } : {}),
+    ...(opts.teamSettingsStorage !== undefined
+      ? { teamSettingsStorage: opts.teamSettingsStorage }
+      : {}),
     ...(opts.quickMatch !== undefined ? { quickMatch: opts.quickMatch } : {}),
     ...(opts.online !== undefined ? { online: opts.online } : {}),
   });

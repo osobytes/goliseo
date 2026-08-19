@@ -2652,6 +2652,41 @@ describe("online lobby screen shell", () => {
   // `packages/app/src/lobby_flow.spec.ts`: the case is about `game.app`'s
   // routing, and `@gc/screens` cannot depend on `@gc/app` (the dependency
   // runs the other way).
+
+  // #600: `app.ts` seeds a hosted lobby's opening `mode`/`bot_fill` from the
+  // player's persisted preferences (`team_settings.ts`) through exactly
+  // these constructor options -- `role`/`mode` already worked this way;
+  // `botFill` is the new one this issue added.
+  it("applies role/mode/botFill options as opening commands, host-only", async () => {
+    const { OnlineLobby } = await import("./online_lobby.ts");
+    // `starFactory` always declines, so `newLink` is never reached -- it
+    // throws if that assumption ever stops holding.
+    const neverNewLink = (): never => {
+      throw new Error("not exercised by this case");
+    };
+    const host = new OnlineLobby({ w: 960, h: 540 }, undefined, {
+      starFactory: () => undefined,
+      newLink: neverNewLink,
+      modelPorts: ports(),
+      role: "host",
+      mode: "2v2",
+      botFill: true,
+    });
+    expect(host.state.model.mode).toBe("2v2");
+    expect(host.state.model.bot_fill).toBe(true);
+
+    // `false`/`undefined` dispatches nothing -- the model's own default
+    // already matches, so a guest (who cannot toggle bot fill at all --
+    // `lobby_model.ts`'s own host-only rule) is unaffected either way.
+    const guest = new OnlineLobby({ w: 960, h: 540 }, undefined, {
+      starFactory: () => undefined,
+      newLink: neverNewLink,
+      modelPorts: ports(),
+      role: "guest",
+      botFill: true,
+    });
+    expect(guest.state.model.bot_fill).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

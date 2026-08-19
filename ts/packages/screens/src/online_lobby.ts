@@ -96,6 +96,15 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly role?: LobbyRole;
   /** Host-side only; a guest is told the mode by the host. */
   readonly mode?: SessionMatchMode;
+  /**
+   * Host-side only, the same reasoning as `mode`: the persisted "last bot
+   * fill choice" (`app.ts`'s `team_settings.ts`), applied as a `bot_fill`
+   * toggle right after the role/mode commands above rather than baked into
+   * `newLobbyModel` (which always starts `bot_fill: false` -- `lobby_model.ts`'s
+   * own default). `false`/`undefined` dispatches nothing, since the model
+   * default already matches.
+   */
+  readonly botFill?: boolean;
 }
 
 export type OnlineLobbyAction = { readonly go: string; readonly [key: string]: unknown };
@@ -161,6 +170,9 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
       this.dispatch({ kind: "role", role: options.role });
       if (options.role === "host" && options.mode !== undefined) {
         this.dispatch({ kind: "mode", mode: options.mode });
+      }
+      if (options.role === "host" && options.botFill === true) {
+        this.dispatch({ kind: "bot_fill" });
       }
     }
   }

@@ -22,16 +22,28 @@ export interface GameSession {
   combatEnabled: boolean;
 }
 
-function newState(homeTeam: TeamData): GameSession {
+/** What a fresh session may be seeded with, e.g. `team_settings.ts`'s
+ * content-validated `TeamPreferences` -- kept structural here rather than
+ * importing that type, since a caller with no persistence at all (a spec)
+ * still constructs a session with no seed. */
+export interface GameSessionSeed {
+  readonly starterIds?: readonly string[];
+  readonly formationId?: string;
+  readonly tacticId?: string;
+  readonly combatEnabled?: boolean;
+}
+
+function newState(homeTeam: TeamData, seed?: GameSessionSeed): GameSession {
   return {
-    starterIds: [...homeTeam.roster],
-    formationId: homeTeam.formation,
-    tacticId: "balanced",
+    starterIds: [...(seed?.starterIds ?? homeTeam.roster)],
+    formationId: seed?.formationId ?? homeTeam.formation,
+    tacticId: seed?.tacticId ?? "balanced",
     firstMatch: true,
     matchNumber: 0,
-    // Combat ships on. It stopped being a hidden prototype behind a second
-    // Play button and became a visible toggle on the team sheet.
-    combatEnabled: true,
+    // Combat ships on by default. It stopped being a hidden prototype
+    // behind a second Play button and became a visible toggle on the team
+    // sheet -- and now a persisted one (`team_settings.ts`).
+    combatEnabled: seed?.combatEnabled ?? true,
   };
 }
 
