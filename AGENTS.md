@@ -25,7 +25,7 @@ Game vision and public product scope live in `docs/`.
 | Renderer       | three.js                                 | `ts/packages/render`                                          |
 | Formatting     | rustfmt + prettier                       | `rust/rustfmt.toml`, `ts/.prettierrc.json` — never hand-format |
 | Linting        | clippy `-D warnings`; type-aware eslint  | `rust/clippy.toml`, `ts/eslint.config.mjs`                    |
-| Testing        | `cargo test` + vitest, both headless     | tiers in §9                                                   |
+| Testing        | `cargo nextest` + vitest, both headless  | tiers in §9; doctests via `cargo test --doc`                  |
 | Package manager| pnpm — **never npm**                     | `ts/package.json`'s `packageManager`                          |
 
 Run before every commit:
