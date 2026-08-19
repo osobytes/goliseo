@@ -256,12 +256,17 @@ function slotTag(slot: LobbySlotView): string {
  * display — so the digest is what a player shares to confirm both sides
  * exchanged the same thing. The blob still travels by clipboard; this is the
  * human-readable handle on it, not a substitute for it.
+ *
+ * Used to render a `GC://JOIN/<fingerprint>` string here -- decorative, per
+ * #598: nothing ever parsed it, so a player who pasted it anywhere got
+ * nothing. Real join links exist now (`layoutHandshake`'s COPY LINK/SHARE),
+ * so the fake protocol string is gone rather than left to mislead.
  */
 function inviteText(record: LobbySignalRecord | undefined): string {
   if (!record) {
     return "No invite yet — invite a peer to create one.";
   }
-  return `Invite code GC://JOIN/${record.fingerprint.toUpperCase()} — ${record.direction}, ${record.bytes} bytes.`;
+  return `Invite ${record.direction} #${record.fingerprint.toUpperCase()} — ${record.bytes} bytes.`;
 }
 
 function answerText(record: LobbySignalRecord | undefined): string {
@@ -825,6 +830,32 @@ function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
       { kind: "hero_title" },
     );
     ly += 20 + 44 + 8;
+    // The one-click join link (#598): COPY LINK is the primary share
+    // action -- a friend clicking it lands straight in this room, no code
+    // to transcribe -- with SHARE beside it only where the platform offers
+    // a native share sheet (`view.can_share`, a capability flag the model
+    // was handed, never sniffed here). The six-character code stays the
+    // hero above for the voice-chat case.
+    const linkBtnW = 200;
+    control(
+      widgets,
+      state,
+      "copy_link",
+      "COPY LINK",
+      { x: LX, y: ly, w: linkBtnW, h: 38 },
+      { align: "center" },
+    );
+    if (view.can_share) {
+      control(
+        widgets,
+        state,
+        "share_link",
+        "SHARE",
+        { x: LX + linkBtnW + 10, y: ly, w: 140, h: 38 },
+        { align: "center" },
+      );
+    }
+    ly += 46;
   } else if (view.role === "guest" && view.room_active) {
     text(
       widgets,
@@ -1094,6 +1125,10 @@ function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
       return { kind: "invite" };
     case "copy_signal":
       return { kind: "copy" };
+    case "copy_link":
+      return { kind: "copy_link" };
+    case "share_link":
+      return { kind: "share_link" };
     case "paste_signal":
       return { kind: "paste_request" };
     case "lock":
