@@ -1095,7 +1095,20 @@ export function layout(state: LobbyScreenState): Layout {
   }
   switch (view.phase) {
     case "role":
-      return layoutRole(state, view);
+      // A room-code guest defers coordinator creation until it learns its
+      // invitation slot (#601, `lobby_model.ts`'s own header): `view.role`
+      // can already be "guest" here, with `phase` still "role", for the
+      // whole window between `room_joined` and the first `room_peer_signal`
+      // that names a slot. `layoutRole`'s own comment assumes "role" phase
+      // means no role has been chosen yet ("this whole phase stops
+      // rendering the moment `view.role` is set") -- once one has, showing
+      // the role picker again is a regression a phase-only switch cannot
+      // see (round-2 council review on #601's own PR). `layoutHandshake`
+      // already renders exactly this waiting state once a room-code
+      // guest's coordinator exists (`room_code_active`, "Connected via
+      // room code."); every field it reads off `view` degrades the same
+      // way with none, so it is the correct screen here too, not a new one.
+      return view.role !== undefined ? layoutHandshake(state, view) : layoutRole(state, view);
     case "handshake":
       return layoutHandshake(state, view);
     case "manifest":

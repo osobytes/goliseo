@@ -70,6 +70,38 @@
 // `invite()` only ever has one invitation in flight
 // (`model.pending_link`) -- exactly the constraint the manual flow already
 // enforces, room codes do not relax it.
+//
+// ## A guest learns its own slot from the host (#601)
+//
+// The host hands out `guest_N` sequentially (`invite()`), but a room-code
+// guest has no way to learn WHICH `N` it was given -- unlike the manual
+// flow, there is no "identity" control for a player to click before
+// connecting. Guessing (defaulting to `guest_1`, or whatever the local
+// `identity` command last cycled to) is wrong the moment a second guest
+// joins the same room: two guests both presenting as `guest_1` collide at
+// the coordinator's own admission check (`peer_id` must be unique), and the
+// second is refused.
+//
+// The fix travels over the SAME relay that already carries the offer
+// itself, not a new channel: `onSignal`'s host branch stamps the
+// invitation's own link id onto `room_send` as `slot` (`LobbyEffect`'s own
+// doc), and a guest's `roomPeerSignal` adopts that value as `model.peer_id`
+// -- BEFORE creating a coordinator -- the first time a signal arrives with
+// no coordinator yet. That is why `roomJoined` (fired by `room_joined`,
+// well before any offer exists) no longer calls `chooseRole` itself: doing
+// so would lock in the guest's own guess before the host's slot has had any
+// chance to correct it. `model.role` is set immediately regardless (a
+// room-code guest is unambiguously a guest the moment the Worker admits it)
+// -- only coordinator creation, and the `open_star` effect that goes with
+// it, waits. This never reaches the manual flow: a manually-paired guest's
+// `chooseRole` still runs from the "role" command, synchronously, exactly
+// as before.
+//
+// `LobbyModel.last_dropped_signal` is a separate, narrower diagnostic: when
+// `roomPeerSignal`'s host branch drops a signal whose sender does not match
+// the currently pending invitation (correct routing, but previously silent
+// -- see that function's own doc), it now records why, muted (no `error`,
+// no `room_error`) for a details/terminal card to surface later (#566).
 
 export type LobbyRole = "host" | "guest";
 export type LobbySignalDirection = "offer" | "answer";
@@ -123,7 +155,16 @@ export type LobbyEffect =
   // Room-code signaling (#552) -- see this module's header.
   | { readonly kind: "room_open_host" }
   | { readonly kind: "room_open_guest"; readonly code: string }
-  | { readonly kind: "room_send"; readonly to?: string; readonly signal: string }
+  // `slot` is present only on a HOST's outgoing offer (`onSignal`'s own
+  // comment) -- the invitation link id (`guest_N`) this offer answers,
+  // carried so the guest on the other end can adopt it as its own identity
+  // before creating a coordinator (#601, this module's header).
+  | {
+      readonly kind: "room_send";
+      readonly to?: string;
+      readonly signal: string;
+      readonly slot?: string;
+    }
   | { readonly kind: "room_close" };
 
 // --- game.online.protocol / protocol_fixture / coordinator, injected -------
@@ -429,6 +470,24 @@ export interface LobbyModel {
   /** Host-only: room-code guest ids still waiting their turn to be invited,
    * in arrival order. */
   readonly room_queue: readonly string[];
+  /** Host-only: set the last time `roomPeerSignal` dropped a signal whose
+   * sender did not match the pending invitation (#601) -- see this
+   * module's header, "A guest learns its own slot from the host". Muted
+   * (no `error`/`room_error`): a future details/terminal card renders it
+   * (#566), it does not interrupt the player. */
+  readonly last_dropped_signal?: LobbyDroppedSignal;
+}
+
+/** Why `roomPeerSignal`'s host branch dropped a signal instead of routing
+ * it to `importSignal` -- see `LobbyModel.last_dropped_signal`'s own doc. */
+export interface LobbyDroppedSignal {
+  /** The room-code guest id the signal actually came from, when the relay
+   * reported one. */
+  readonly from?: string;
+  /** The guest id the currently pending invitation expects instead, when
+   * there is one. */
+  readonly expected?: string;
+  readonly reason: "no_pending_invite" | "sender_unknown" | "sender_mismatch";
 }
 
 /** A guest's in-progress room-code composer: `ROOM_CODE_LENGTH` character
@@ -965,7 +1024,12 @@ function importSignal(
     bytes: text.length,
     fingerprint: fingerprint(ports, text),
   };
-  let next: LobbyModel = { ...model, imported };
+  // A signal reaching this point is routing correctly RIGHT NOW -- any
+  // earlier drop `roomPeerSignal`'s host branch traced (#601,
+  // `last_dropped_signal`'s own doc) is stale history once the connection
+  // has recovered, not a live diagnostic to keep showing.
+  const { last_dropped_signal: _lastDroppedSignal, ...withoutDrop } = model;
+  let next: LobbyModel = { ...withoutDrop, imported };
   if (hostSide) {
     const pending = model.pending_link as string;
     effects.push({ kind: "accept_answer", peer_id: pending, signal: text });
@@ -1211,7 +1275,16 @@ function onSignal(
     // state above rather than silently dropping the blob.
     return next;
   }
-  effects.push({ kind: "room_send", ...(to !== undefined ? { to } : {}), signal: command.signal });
+  effects.push({
+    kind: "room_send",
+    ...(to !== undefined ? { to } : {}),
+    signal: command.signal,
+    // The host's own invitation link id (`guest_N`) this offer answers --
+    // the only thing on this side of the relay that knows it (#601, this
+    // module's header). A guest's own outgoing "answer" needs no slot: the
+    // host already knows which invitation is pending from `pending_link`.
+    ...(next.role === "host" ? { slot: command.peer_id } : {}),
+  });
   const { outgoing: _outgoing, ...rest } = next;
   return {
     ...rest,
@@ -1305,7 +1378,7 @@ function roomPick(
     };
   }
   effects.push({ kind: "room_open_host" });
-  const { room_error: _roomError, ...rest } = model;
+  const { room_error: _roomError, last_dropped_signal: _lastDroppedSignal, ...rest } = model;
   return {
     ...rest,
     room_status: "connecting",
@@ -1389,7 +1462,13 @@ function roomCancel(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
   if (model.room_active) {
     effects.push({ kind: "room_close" });
   }
-  const { room_entry: _entry, room_status: _status, room_error: _roomError, ...rest } = model;
+  const {
+    room_entry: _entry,
+    room_status: _status,
+    room_error: _roomError,
+    last_dropped_signal: _lastDroppedSignal,
+    ...rest
+  } = model;
   return { ...rest, room_active: false, status: "Host a session or join one with a pasted offer." };
 }
 
@@ -1400,14 +1479,31 @@ function roomCreated(
   effects: LobbyEffect[],
 ): LobbyModel {
   const next = chooseRole(model, ports, "host", effects);
-  const { room_error: _roomError, ...rest } = next;
+  const { room_error: _roomError, last_dropped_signal: _lastDroppedSignal, ...rest } = next;
   return { ...rest, room_code: code, room_status: "connected", status: `Room code ${code}.` };
 }
 
-function roomJoined(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
-  const next = chooseRole(model, ports, "guest", effects);
-  const { room_error: _roomError, ...rest } = next;
-  return { ...rest, room_status: "connected" };
+// Deliberately does NOT call `chooseRole` -- unlike `roomCreated` (the host
+// branch, which already knows its own identity), a room-code guest does not
+// yet know which invitation slot it is answering; that arrives later, on
+// the host's relayed offer (`roomPeerSignal`'s guest branch, this module's
+// header). Choosing a coordinator identity here would lock in whatever
+// `model.peer_id` already defaulted to, which is exactly #601's bug.
+// `model.role` is still set immediately: a room-code guest is unambiguously
+// a guest the instant the Worker admits it, and nothing downstream (view(),
+// `importSignal`'s role check) needs a coordinator to already exist for
+// that to be true.
+function roomJoined(model: LobbyModel): LobbyModel {
+  if (model.coordinator) {
+    return { ...model, error: "the session role is already chosen" };
+  }
+  const { room_error: _roomError, ...rest } = model;
+  return {
+    ...rest,
+    role: "guest",
+    room_status: "connected",
+    status: "Waiting for the host to assign your seat.",
+  };
 }
 
 function roomGuestJoined(
@@ -1464,6 +1560,7 @@ function roomPeerSignal(
   ports: LobbyModelPorts,
   guestId: string | undefined,
   signal: string,
+  slot: string | undefined,
   effects: LobbyEffect[],
 ): LobbyModel {
   if (model.role === "host") {
@@ -1472,13 +1569,40 @@ function roomPeerSignal(
     // (`invite()`'s own "finish the pending invitation first" guard). A
     // signal for any other guest id is stray (e.g. arrived after that
     // guest already left) and is ignored rather than misrouted onto an
-    // unrelated link.
+    // unrelated link -- but not silently: `last_dropped_signal` records why
+    // (#601, this module's header), so a future regression here has a trace
+    // instead of "nothing happened" as its only symptom.
     const linkId = model.pending_link;
-    if (linkId === undefined || guestId === undefined || model.room_guest_map[linkId] !== guestId) {
-      return model;
+    const expected = linkId !== undefined ? model.room_guest_map[linkId] : undefined;
+    if (linkId === undefined || guestId === undefined || expected !== guestId) {
+      const reason: LobbyDroppedSignal["reason"] =
+        linkId === undefined
+          ? "no_pending_invite"
+          : guestId === undefined
+            ? "sender_unknown"
+            : "sender_mismatch";
+      return {
+        ...model,
+        last_dropped_signal: {
+          ...(guestId !== undefined ? { from: guestId } : {}),
+          ...(expected !== undefined ? { expected } : {}),
+          reason,
+        },
+      };
     }
+    return importSignal(model, ports, signal, effects);
   }
-  return importSignal(model, ports, signal, effects);
+  // Guest role: the host's relayed offer is where this guest first learns
+  // which invitation slot it is answering (#601, this module's header).
+  // `chooseRole`'s coordinator creation is deferred from `roomJoined` to
+  // exactly here, the first time a signal arrives with no coordinator yet,
+  // so the adopted `peer_id` -- not whatever `model.peer_id` defaulted to --
+  // is what the coordinator is built with.
+  if (model.coordinator) {
+    return importSignal(model, ports, signal, effects);
+  }
+  const withSlot = slot !== undefined ? { ...model, peer_id: slot } : model;
+  return importSignal(chooseRole(withSlot, ports, "guest", effects), ports, signal, effects);
 }
 
 function roomFailed(model: LobbyModel, reason: string): LobbyModel {
@@ -1555,6 +1679,11 @@ export type LobbyCommand =
       readonly kind: "room_peer_signal";
       readonly guest_id?: string;
       readonly signal: string;
+      // The invitation slot this offer answers -- present only when a host
+      // sent it (#601, this module's header). Absent for a guest's own
+      // outgoing answer, and for anything relayed before this module's own
+      // room-code seam carried it.
+      readonly slot?: string;
     }
   | { readonly kind: "room_failed"; readonly reason: string }
   | { readonly kind: "room_dropped" };
@@ -1593,6 +1722,20 @@ export function command(
     case "identity": {
       if (next.coordinator) {
         next = { ...next, error: "identity is fixed once the session starts" };
+        break;
+      }
+      // The same race the "role" command's own guard above refuses
+      // (round-2 council review, blocking finding 2) -- and #601's own
+      // deferred-slot window makes it reachable here in a NEW way: a
+      // room-code guest can now have `role === "guest"` with no
+      // `coordinator` yet (`roomJoined`'s own doc), so the guard just
+      // above no longer covers this command for that guest at all. A
+      // room-code guest's identity is the host's to assign
+      // (`roomPeerSignal`'s own doc), never this manual-flow-only
+      // control's, for the entire window a room-code connection is in
+      // flight or established.
+      if (next.room_active) {
+        next = { ...next, error: "identity is assigned by the room code, not chosen manually" };
         break;
       }
       const match = /^guest_(\d+)$/.exec(next.peer_id);
@@ -1704,7 +1847,7 @@ export function command(
       next = roomCreated(next, ports, cmd.code, effects);
       break;
     case "room_joined":
-      next = roomJoined(next, ports, effects);
+      next = roomJoined(next);
       break;
     case "room_guest_joined":
       next = roomGuestJoined(next, ports, cmd.guest_id, effects);
@@ -1713,7 +1856,7 @@ export function command(
       next = roomGuestLeft(next, ports, cmd.guest_id, effects);
       break;
     case "room_peer_signal":
-      next = roomPeerSignal(next, ports, cmd.guest_id, cmd.signal, effects);
+      next = roomPeerSignal(next, ports, cmd.guest_id, cmd.signal, cmd.slot, effects);
       break;
     case "room_failed":
       next = roomFailed(next, cmd.reason);
@@ -1825,6 +1968,8 @@ export interface LobbyView {
    * `room_error`'s own doc on `LobbyModel`. */
   readonly room_error?: string;
   readonly room_active: boolean;
+  /** See `LobbyModel.last_dropped_signal`'s own doc (#601). */
+  readonly last_dropped_signal?: LobbyDroppedSignal;
 }
 
 function visibleAssignments(
@@ -2044,5 +2189,8 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     ...(model.room_status !== undefined ? { room_status: model.room_status } : {}),
     ...(model.room_error !== undefined ? { room_error: model.room_error } : {}),
     room_active: model.room_active,
+    ...(model.last_dropped_signal !== undefined
+      ? { last_dropped_signal: model.last_dropped_signal }
+      : {}),
   };
 }

@@ -129,6 +129,13 @@ function connect(
           // signal events carry no guest id at all -- `lobby_model.ts`'s
           // `room_peer_signal` command treats an absent `guest_id` that way.
           ...(role === "host" ? { guest_id: frame.from } : {}),
+          // `slot` (#601, `room_signaling.ts`'s own header) only ever
+          // arrives on a GUEST's own incoming signal -- a host never
+          // receives one back (a guest's own outgoing answer is never
+          // enveloped). `frame.slot` is already absent for a slotless
+          // envelope or a plain-string body, so this mirrors `guest_id`'s
+          // own role guard exactly.
+          ...(role === "guest" && frame.slot !== undefined ? { slot: frame.slot } : {}),
         });
       } else if (frame.type === "host_left") {
         // The host's socket dropped and the DO closed the room
@@ -185,7 +192,7 @@ function connect(
     poll(): readonly RoomSignalingEvent[] {
       return events.splice(0, events.length);
     },
-    send(effect: { readonly to?: string; readonly signal: string }): void {
+    send(effect: { readonly to?: string; readonly signal: string; readonly slot?: string }): void {
       if (socket === undefined || socket.readyState !== OPEN_STATE) {
         return;
       }
@@ -193,7 +200,10 @@ function connect(
         if (effect.to === undefined) {
           return; // Defensive: a host always addresses a specific guest.
         }
-        socket.send(encodeHostSignal(effect.to, effect.signal));
+        // `effect.slot` (#601): `encodeHostSignal` wraps `signal` in the
+        // `v: 1` slot envelope when given -- see `room_signaling.ts`'s
+        // header for the wire shape and its compatibility argument.
+        socket.send(encodeHostSignal(effect.to, effect.signal, effect.slot));
       } else {
         // A guest has exactly one possible recipient and sends its raw
         // signal text with no envelope -- see `room_signaling.ts`'s header.

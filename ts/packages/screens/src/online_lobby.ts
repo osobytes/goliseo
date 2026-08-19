@@ -78,15 +78,21 @@ export interface RoomSignalingEvent {
   readonly guest_id?: string;
   readonly signal?: string;
   readonly reason?: string;
+  /** Present only on a "signal" a GUEST receives from the host: the
+   * invitation slot (`guest_N`) that offer answers (#601, `lobby_model.ts`'s
+   * own header). A guest adopts this as its own identity before creating a
+   * coordinator, instead of guessing. */
+  readonly slot?: string;
 }
 
 /** A live room-code connection -- structurally `@gc/app`'s
  * `RoomSignalingHandle`, never imported. `send`'s shape mirrors
  * `lobby_model.ts`'s own `room_send` effect (`to` omitted means "the only
- * possible recipient", i.e. a guest addressing its host). */
+ * possible recipient", i.e. a guest addressing its host; `slot` is present
+ * only on a HOST's outgoing offer, #601). */
 export interface RoomSignalingHandle {
   poll(): readonly RoomSignalingEvent[];
-  send(effect: { readonly to?: string; readonly signal: string }): void;
+  send(effect: { readonly to?: string; readonly signal: string; readonly slot?: string }): void;
   close(): void;
 }
 
@@ -199,6 +205,7 @@ function roomCommandFor(event: RoomSignalingEvent): LobbyCommand {
         kind: "room_peer_signal",
         signal: event.signal ?? "",
         ...(event.guest_id !== undefined ? { guest_id: event.guest_id } : {}),
+        ...(event.slot !== undefined ? { slot: event.slot } : {}),
       };
     case "failed":
       return { kind: "room_failed", reason: event.reason ?? "unknown" };
@@ -375,6 +382,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
         this.roomLink?.send({
           ...(effect.to !== undefined ? { to: effect.to } : {}),
           signal: effect.signal,
+          ...(effect.slot !== undefined ? { slot: effect.slot } : {}),
         });
       } else if (effect.kind === "room_close") {
         this.closeRoomLink();

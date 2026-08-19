@@ -1642,6 +1642,39 @@ describe("room-code entry (#552)", () => {
     expect(hit.find(currentLayout, "room_code_active")).not.toBeNull();
   });
 
+  // #601 (round-2 council review on that PR): `roomJoined` defers
+  // coordinator creation until the host's offer names this guest's slot,
+  // so `view.phase` stays "role" (`lobby_model.ts`'s own `view()`: no
+  // coordinator means no real phase to report) for the whole window
+  // between `room_joined` and the first `room_peer_signal`. A phase-only
+  // switch would send that straight back to `layoutRole` -- the picker a
+  // player who already knows they are a guest has no business seeing
+  // again. Pins that it does not.
+  it("shows a waiting screen, not the role picker, while a room-code guest's slot is still unknown", () => {
+    let state = joining();
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "key", key: ch, pressed: true });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_joined" } });
+    expect(view(state).role).toBe("guest");
+    expect(view(state).room_active).toBe(true);
+    expect(state.model.coordinator).toBeUndefined();
+
+    const currentLayout = lobbyLayout(state);
+    // Not the role picker: neither the room-code buttons nor the manual
+    // fallback controls it offers.
+    expect(hit.find(currentLayout, "room_code_host")).toBeNull();
+    expect(hit.find(currentLayout, "room_code_join")).toBeNull();
+    expect(hit.find(currentLayout, "role_host")).toBeNull();
+    expect(hit.find(currentLayout, "role_guest")).toBeNull();
+    // The same waiting state a room-code guest sees once its coordinator
+    // DOES exist (`layoutHandshake`'s own "Connected via room code.").
+    expect(hit.find(currentLayout, "room_code_active")).not.toBeNull();
+    // Never stuck: leaving is still reachable.
+    expect(hit.find(currentLayout, "leave")).not.toBeNull();
+  });
+
   it("surfaces a handshake failure as a readable error, not a hang", () => {
     let state = joining();
     for (const ch of "A3F9K2") {

@@ -263,6 +263,11 @@ function fakeTransportContract(): TransportContractPort {
   return { hostPeerId: "host", maxGuests: 7 };
 }
 
+// Any 6-character string works here -- `roomHost`/`roomGuest` (`Driver`'s
+// own methods) never touch the real room-code Worker, so nothing checks
+// this against `ROOM_CODE_ALPHABET`/`ROOM_CODE_LENGTH`.
+const ROOM_CODE = "A3F9K2";
+
 function simpleHash(text: string): string {
   let h = 0;
   for (let i = 0; i < text.length; i += 1) {
@@ -903,8 +908,24 @@ function handleConnect(state: FakeCoordState): readonly [FakeCoordState, Coordin
   const next: FakeCoordState = { ...state, phase: "handshake" };
   const actions: CoordinatorAction[] = [
     {
+      // `peer_id` mirrors the real wire's `ControlMessage.peer_id` envelope
+      // field (`crates/gc-netcode/src/protocol.rs`'s own doc: "the peer
+      // that authored this message") -- every control message carries the
+      // sender's own claimed identity, not just the handshake, and
+      // `admitGuest` below is what actually reads it. Carrying it here,
+      // where the guest's own coordinator constructs its FIRST message, is
+      // what makes a room-code guest's slot-adoption (#601, `lobby_model.ts`'s
+      // own header) observable through this fake at all: this module's own
+      // `state.peer_id` is exactly `LobbyModelPorts.coordinator.create`'s
+      // `peer_id` option, i.e. `lobby_model.ts`'s `model.peer_id` at the
+      // moment `chooseRole` built the coordinator.
       kind: "send",
-      message: { kind: "handshake", role: "guest", build_id: state.buildId },
+      message: {
+        kind: "handshake",
+        role: "guest",
+        peer_id: state.peer_id,
+        build_id: state.buildId,
+      },
       targets: linkTargets(state),
     },
   ];
@@ -1233,12 +1254,33 @@ function admitGuest(
   if (state.role !== "host") {
     return [state, { accepted: true, actions: [] }];
   }
-  if (state.peers.some((peer) => peer.peer_id === linkId)) {
+  if (state.peers.some((peer) => peer.link_id === linkId)) {
+    // A repeat handshake on an already-admitted transport link -- an
+    // idempotent retry, not a new peer.
+    return [state, { accepted: true, actions: [] }];
+  }
+  // The peer's OWN claimed identity (`handleConnect`'s own doc), not the
+  // transport link it arrived on -- mirrors the real coordinator's own
+  // admission rule exactly (`crates/gc-netcode/src/coordinator.rs`'s
+  // `admit_guest`: `Peer{ peer_id: message.peer_id, link_id: Some(link_id),
+  // ...}`). This is the distinction #601 is about: two room-code guests
+  // connecting over two DIFFERENT links can still declare the SAME
+  // `peer_id` if neither has learned its real slot yet, and it is this
+  // check -- not anything link-shaped -- that then refuses the second one.
+  const declaredPeerId = message["peer_id"] as string;
+  if (state.peers.some((peer) => peer.peer_id === declaredPeerId)) {
+    // Mirrors `admit_guest`'s own "peer id is already admitted" rejection,
+    // simplified to a silent no-op rather than the real `reject_link`'s
+    // abort+close: this fake exists to exercise `lobby_model.ts`'s OWN
+    // control flow (this file's header), and "the colliding guest never
+    // gets admitted" is already enough signal for a lobby_model-level test
+    // -- the real rejection's own wire shape is `crates/gc-netcode/tests/
+    // coordinator.rs`'s job, not this file's.
     return [state, { accepted: true, actions: [] }];
   }
   const buildId = message["build_id"] as string;
   const newPeer: FakePeer = {
-    peer_id: linkId,
+    peer_id: declaredPeerId,
     link_id: linkId,
     role: "guest",
     build_id: buildId,
@@ -1834,6 +1876,13 @@ class FakeTransport {
 // ---------------------------------------------------------------------------
 
 interface TestPeer {
+  // A STABLE label this driver uses for itself -- the room-code guest id a
+  // `room_guest_joined`/`room_send` relay addresses (#601). For the manual
+  // flow this is chosen to equal `model.peer_id` up front (`add()`'s own
+  // doc), so every existing case here is unaffected; a room-code guest
+  // (`roomGuest()`) is the one case where the two genuinely differ for a
+  // while -- `id` never changes, `model.peer_id` starts wrong and is
+  // corrected once the host's offer names its real slot.
   readonly id: string;
   model: LobbyModel;
   clipboard?: string;
@@ -1863,6 +1912,9 @@ class Driver {
     peerId: string,
     template?: (mode: SessionMatchMode) => SessionManifest,
   ): TestPeer {
+    // The manual flow's own `id`/`model.peer_id` equality (`TestPeer.id`'s
+    // own doc) -- a manually-connected peer always knows its identity up
+    // front, unlike a room-code guest.
     const peer: TestPeer = {
       id: peerId,
       model: newLobbyModel(this.modelPorts, { peer_id: peerId, ...(template ? { template } : {}) }),
@@ -1871,6 +1923,41 @@ class Driver {
     };
     this.peers.push(peer);
     this.send(peer, { kind: "role", role });
+    return peer;
+  }
+
+  // A room-code guest (#601): unlike `add()`, this never hands `peer_id` to
+  // `newLobbyModel` -- it starts on whatever the model's own default is
+  // (`GUEST_LINK_PREFIX`1", i.e. "guest_1"), the wrong-by-construction
+  // starting point this issue is about, and the driver must not correct it
+  // up front or the property below would not be testing anything. `id` is
+  // this driver's own stable label for it (`TestPeer.id`'s own doc), used
+  // ONLY for `room_guest_joined`/`room_send` addressing, never for star
+  // routing -- see `runEffect`'s own comment.
+  roomGuest(id: string): TestPeer {
+    const peer: TestPeer = { id, model: newLobbyModel(this.modelPorts), left: false, sent: [] };
+    this.peers.push(peer);
+    this.send(peer, { kind: "room_pick", role: "guest" });
+    for (const ch of ROOM_CODE) {
+      this.send(peer, { kind: "room_key", key: ch });
+    }
+    this.send(peer, { kind: "room_submit" });
+    this.send(peer, { kind: "room_joined" });
+    return peer;
+  }
+
+  // The host's side of a room-code session: claims a code and is ready to
+  // receive `room_guest_joined` events (`roomGuest()`'s own doc).
+  roomHost(): TestPeer {
+    const peer: TestPeer = {
+      id: "host",
+      model: newLobbyModel(this.modelPorts),
+      left: false,
+      sent: [],
+    };
+    this.peers.push(peer);
+    this.send(peer, { kind: "room_pick", role: "host" });
+    this.send(peer, { kind: "room_created", code: ROOM_CODE });
     return peer;
   }
 
@@ -1891,11 +1978,35 @@ class Driver {
       peer.left = true;
     } else if (effect.kind === "paste_request") {
       // Only meaningful for the mounted-screen shell, not the bare driver.
+    } else if (effect.kind === "room_send") {
+      // The room-code relay (#552/#601): its target is a room-code guest id
+      // (`TestPeer.id`), never a star transport identity, so it is routed
+      // directly by this driver rather than through `FakeTransport`. A host
+      // addresses a specific guest (`effect.to`); a guest has exactly one
+      // recipient, the host -- see `lobby_model.ts`'s `onSignal`.
+      const target =
+        effect.to !== undefined
+          ? this.peers.find((candidate) => candidate.id === effect.to)
+          : this.peers.find((candidate) => candidate.model.role === "host");
+      if (target) {
+        this.send(target, {
+          kind: "room_peer_signal",
+          signal: effect.signal,
+          ...(effect.to === undefined ? { guest_id: peer.id } : {}),
+          ...(effect.slot !== undefined ? { slot: effect.slot } : {}),
+        });
+      }
     } else if (effect.kind === "send") {
       peer.sent.push(effect.wire);
-      this.network.applyEffect(peer.id, effect);
+      // `peer.model.peer_id`, NOT `peer.id` (`TestPeer.id`'s own doc): a
+      // room-code guest's star identity is whatever it most recently
+      // adopted, and every effect from here on (`open_peer`'s `peer_id`,
+      // `accept_offer`/`accept_answer`'s pending-link lookups, this
+      // message's own embedded sender) must agree with that, not with the
+      // driver's unrelated bookkeeping label.
+      this.network.applyEffect(peer.model.peer_id, effect);
     } else {
-      this.network.applyEffect(peer.id, effect);
+      this.network.applyEffect(peer.model.peer_id, effect);
     }
   }
 
@@ -1903,7 +2014,9 @@ class Driver {
     for (let i = 0; i < rounds; i += 1) {
       this.network.pumpOnce();
       for (const peer of this.peers) {
-        for (const event of this.network.drain(peer.id)) {
+        // `peer.model.peer_id` -- see `runEffect`'s own comment; the star
+        // mailbox a message was queued under is keyed the same way.
+        for (const event of this.network.drain(peer.model.peer_id)) {
           this.send(peer, event);
         }
       }
@@ -2784,5 +2897,236 @@ describe("lobby failure paths", () => {
     expect(guestView.phase).toBe("terminal");
     expect(must(guestView.terminal, "no terminal").reason).toBe("manifest_mismatch");
     expect(must(guestView.terminal, "no terminal").detail?.includes("content_id")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "room-code guest slot assignment" (#601)
+// ---------------------------------------------------------------------------
+//
+// Unlike every other describe block in this file, these cases drive the
+// ROOM-CODE path (`roomHost`/`roomGuest`, `Driver`'s own doc) rather than
+// the manual `connect()` handshake -- the whole point is that neither guest
+// is ever handed the right `peer_id` up front (`add()` always was; that is
+// exactly the assumption #601's bug made). `admitGuest`'s own peer-id
+// uniqueness check (this file's `admitGuest`, mirroring the real
+// coordinator's `admit_guest`) is what makes the OLD bug observable here at
+// all: without #601's fix both guests would default to `guest_1`, the
+// second guest's handshake would collide with the first's already-admitted
+// peer id, and it would never be added to the roster -- silently stuck
+// below `roster.length`, not a thrown error, which is why phase and roster
+// size (not a caught exception) are what these cases assert on.
+describe("room-code guest slot assignment (#601)", () => {
+  it("seats two guests who join the same room in quick succession", () => {
+    const modelPorts = ports();
+    const driver = new Driver(modelPorts);
+    const host = driver.roomHost();
+    driver.send(host, { kind: "mode", mode: "2v2" });
+
+    const guestA = driver.roomGuest("guestA");
+    const guestB = driver.roomGuest("guestB");
+    // Both guests are already waiting -- "quick succession" -- before
+    // either is invited. Neither has any way to know the other exists.
+    expect(guestA.model.coordinator).toBeUndefined();
+    expect(guestB.model.coordinator).toBeUndefined();
+    driver.send(host, { kind: "room_guest_joined", guest_id: guestA.id });
+    driver.send(host, { kind: "room_guest_joined", guest_id: guestB.id });
+    driver.pump(16);
+
+    // The property #601 is about: each guest adopted the DISTINCT slot the
+    // host actually opened for it, instead of both defaulting to `guest_1`.
+    expect(guestA.model.peer_id).toBe("guest_1");
+    expect(guestB.model.peer_id).toBe("guest_2");
+    // Host + two guests, both fully admitted (`admitGuest`'s own doc) --
+    // not silently stuck at 2 the way a `guest_1`/`guest_1` collision would
+    // leave it.
+    expect(view(modelPorts, host).connected).toBe(3);
+
+    // 2v2 needs 4 humans (`MATCH_MODES`); only 3 are connected here, so the
+    // fourth is bot-filled -- this case is about slot IDENTITY, not about
+    // seating every human seat.
+    driver.send(host, { kind: "bot_fill" });
+    driver.send(host, { kind: "lock" });
+    driver.pump(16);
+
+    expect(view(modelPorts, host).phase).toBe("assigned");
+    expect(view(modelPorts, guestA).phase).toBe("assigned");
+    expect(view(modelPorts, guestB).phase).toBe("assigned");
+    // Each guest ended up owning ITS OWN slots, the thing a `peer_id`
+    // mix-up would have scrambled even if admission had not caught it.
+    expect(owned(modelPorts, host, "guest_1").length).toBeGreaterThan(0);
+    expect(owned(modelPorts, host, "guest_2").length).toBeGreaterThan(0);
+    expect(owned(modelPorts, guestA, "guest_1").length).toBe(
+      owned(modelPorts, host, "guest_1").length,
+    );
+  });
+
+  it("seats a seven-guest 4v4 lobby", () => {
+    const modelPorts = ports();
+    const driver = new Driver(modelPorts);
+    const host = driver.roomHost();
+    driver.send(host, { kind: "mode", mode: "4v4" });
+
+    const guests = Array.from({ length: 7 }, (_unused, index) => driver.roomGuest(`g${index + 1}`));
+    for (const guest of guests) {
+      driver.send(host, { kind: "room_guest_joined", guest_id: guest.id });
+    }
+    driver.pump(60);
+
+    const seatedIds = new Set(guests.map((guest) => guest.model.peer_id));
+    expect(seatedIds.size).toBe(7); // every guest adopted a DISTINCT slot
+    expect(view(modelPorts, host).connected).toBe(8); // host + 7 guests
+
+    driver.send(host, { kind: "lock" });
+    driver.pump(40);
+
+    expect(view(modelPorts, host).phase).toBe("assigned");
+    for (const guest of guests) {
+      expect(view(modelPorts, guest).phase).toBe("assigned");
+    }
+  });
+
+  // Drives the SAME commands a room-code guest's composer would (`room_pick`
+  // -> typing the code -> `room_submit` -> `room_joined`), so `room_active`
+  // is genuinely `true` the way it is in production by the time
+  // `room_joined` fires -- not skipped straight to `room_joined`, which
+  // would leave `room_active` `false` and understate what this deferred
+  // window actually looks like (the "identity" guard below specifically
+  // depends on it).
+  function freshRoomCodeGuest(modelPorts: LobbyModelPorts): LobbyModel {
+    let model = newLobbyModel(modelPorts);
+    [model] = command(model, modelPorts, { kind: "room_pick", role: "guest" });
+    for (const ch of ROOM_CODE) {
+      [model] = command(model, modelPorts, { kind: "room_key", key: ch });
+    }
+    [model] = command(model, modelPorts, { kind: "room_submit" });
+    [model] = command(model, modelPorts, { kind: "room_joined" });
+    return model;
+  }
+
+  // Narrower, model-only pins of the two mechanisms the cases above
+  // exercise end to end -- no `Driver`/`FakeTransport` needed for either.
+  it("defers coordinator creation until the host's offer names a slot", () => {
+    const modelPorts = ports();
+    let model = freshRoomCodeGuest(modelPorts);
+    expect(model.role).toBe("guest");
+    expect(model.room_active).toBe(true);
+    expect(model.coordinator).toBeUndefined();
+
+    const [nextModel, effects] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      signal: "offer:guest_3",
+      slot: "guest_3",
+    });
+    model = nextModel;
+    expect(model.peer_id).toBe("guest_3");
+    expect(model.coordinator).toBeDefined();
+    expect(effects.some((effect) => effect.kind === "open_star")).toBe(true);
+    expect(effects.some((effect) => effect.kind === "accept_offer")).toBe(true);
+  });
+
+  // Round-2 council review, blocking finding 2: deploy-window skew (an old
+  // host with no #601 fix of its own, or any relay hop that dropped the
+  // slot en route) must not leave a fresh room-code guest stuck -- it
+  // proceeds with whatever `peer_id` it already had, exactly the pre-#601
+  // behavior, so a single-guest room against an old host still works. This
+  // is the model-level counterpart of `room_signaling_port.spec.ts`'s
+  // "falls back to no slot..." case (`@gc/app`) -- that one pins the PORT
+  // correctly reporting an absent `slot`; this one pins that
+  // `roomPeerSignal` still creates a working coordinator when it gets one.
+  it("falls back to the guest's existing default identity when no slot is given", () => {
+    const modelPorts = ports();
+    let model = freshRoomCodeGuest(modelPorts);
+    const defaultPeerId = model.peer_id;
+    expect(model.coordinator).toBeUndefined();
+
+    const [nextModel, effects] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      signal: "offer:legacy",
+      // No `slot` -- an old host, or any parse miss upstream.
+    });
+    model = nextModel;
+    expect(model.peer_id).toBe(defaultPeerId);
+    expect(model.coordinator).toBeDefined();
+    expect(effects.some((effect) => effect.kind === "open_star")).toBe(true);
+    expect(effects.some((effect) => effect.kind === "accept_offer")).toBe(true);
+  });
+
+  // Round-2 council review, cheap hardening: a room-code guest waiting on
+  // its slot has no `coordinator` yet (`roomJoined`'s own doc), and
+  // `step()` already no-ops gracefully without one (`step`'s own "if
+  // (!state) return [model, undefined]") -- pinned here for "ready" and
+  // "tick" so a future change to that guard is caught. "identity" is
+  // NOT a no-op in the sense of doing nothing observable: it refuses,
+  // visibly, rather than silently cycling `peer_id` out from under a slot
+  // the host may name at any moment (this file's own "identity" guard,
+  // mirroring the "role" command's precedent).
+  it("no-ops ready/tick and refuses identity for a guest still waiting on its slot", () => {
+    const modelPorts = ports();
+    let model = freshRoomCodeGuest(modelPorts);
+    const waitingPeerId = model.peer_id;
+    expect(model.role).toBe("guest");
+    expect(model.room_active).toBe(true);
+    expect(model.coordinator).toBeUndefined();
+
+    let effects: readonly LobbyEffect[];
+    [model, effects] = command(model, modelPorts, { kind: "ready", ready: true });
+    expect(model.coordinator).toBeUndefined();
+    expect(model.peer_id).toBe(waitingPeerId);
+    expect(effects).toEqual([]);
+
+    [model, effects] = command(model, modelPorts, { kind: "tick" });
+    expect(model.coordinator).toBeUndefined();
+    expect(effects).toEqual([]);
+
+    [model, effects] = command(model, modelPorts, { kind: "identity" });
+    expect(model.peer_id).toBe(waitingPeerId);
+    expect(model.coordinator).toBeUndefined();
+    expect(model.error).toBe("identity is assigned by the room code, not chosen manually");
+    expect(effects).toEqual([]);
+  });
+
+  it("traces a dropped signal instead of discarding it silently", () => {
+    const modelPorts = ports();
+    let model = newLobbyModel(modelPorts);
+    [model] = command(model, modelPorts, { kind: "room_pick", role: "host" });
+    [model] = command(model, modelPorts, { kind: "room_created", code: ROOM_CODE });
+    [model] = command(model, modelPorts, {
+      kind: "room_guest_joined",
+      guest_id: "the-real-pending-guest",
+    });
+    expect(model.pending_link).toBe("guest_1");
+    expect(model.room_guest_map["guest_1"]).toBe("the-real-pending-guest");
+
+    // A signal from a DIFFERENT guest id than the one mapped to the
+    // pending invitation -- correct to drop (`roomPeerSignal`'s own doc),
+    // but previously silent (#601).
+    [model] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      guest_id: "some-other-guest",
+      signal: "offer:stray",
+    });
+
+    expect(model.error).toBeUndefined();
+    expect(model.room_error).toBeUndefined();
+    expect(model.last_dropped_signal).toEqual({
+      from: "some-other-guest",
+      expected: "the-real-pending-guest",
+      reason: "sender_mismatch",
+    });
+    expect(lobbyModelView(modelPorts, model).last_dropped_signal).toEqual(
+      model.last_dropped_signal,
+    );
+
+    // Round-2 council review, cheap hardening: a signal that routes
+    // correctly right now clears any earlier drop trace -- stale history,
+    // not a live diagnostic to keep showing once the connection recovers.
+    [model] = command(model, modelPorts, {
+      kind: "room_peer_signal",
+      guest_id: "the-real-pending-guest",
+      signal: "answer:recovered",
+    });
+    expect(model.last_dropped_signal).toBeUndefined();
+    expect(lobbyModelView(modelPorts, model).last_dropped_signal).toBeUndefined();
   });
 });
