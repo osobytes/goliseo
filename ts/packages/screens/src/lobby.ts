@@ -40,8 +40,14 @@ import {
 export type { LobbyEffect } from "./lobby_model.ts";
 
 /** The single focusable widget in the room-code composer sub-view -- see
- * `update()`'s own special-casing right below `layout()`. */
-const ROOM_CODE_ENTRY_WIDGET = "room_code_slots";
+ * `update()`'s own special-casing right below `layout()`. Exported so
+ * `online_lobby.ts` can focus it directly when a room-joining intent is
+ * preset from the multiplayer front door (#597): dispatching `room_pick`
+ * through `LobbyScreenEvent`'s `"lobby"` kind leaves `state.focus`
+ * untouched (`dispatchCommand` below), unlike the normal click path that
+ * would have focused this widget by activating "JOIN WITH A ROOM CODE"
+ * itself. */
+export const ROOM_CODE_ENTRY_WIDGET = "room_code_slots";
 
 export interface LobbyScreenContext {
   readonly model?: LobbyModel;

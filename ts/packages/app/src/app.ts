@@ -298,11 +298,13 @@ export class App {
   }
 
   // The online route -- see this file's header for why the lobby screen is
-  // injected rather than imported. `role`/`mode` are the multiplayer front
-  // door's decision, forwarded so the player does not choose Host twice.
+  // injected rather than imported. `intent`/`mode` are the multiplayer
+  // front door's decision (#597: a room-flow intent, not a preset manual
+  // role -- see `multiplayer.ts`'s `MultiplayerAction` doc), forwarded so
+  // the player does not choose Host/Join twice.
   showLobby(options?: {
     readonly modelOptions?: Record<string, unknown>;
-    readonly role?: "host" | "guest";
+    readonly intent?: "host" | "guest";
     readonly mode?: string;
   }): void {
     if (!this.online) {
@@ -312,7 +314,7 @@ export class App {
     const resolved = {
       ...modelOptions,
       template: modelOptions.template ?? this.online.matchManifestTemplate,
-      ...(options?.role !== undefined ? { role: options.role } : {}),
+      ...(options?.intent !== undefined ? { intent: options.intent } : {}),
       ...(options?.mode !== undefined ? { mode: options.mode } : {}),
     };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
@@ -392,7 +394,7 @@ export class App {
       this.showTitle();
     } else if (route === "multiplayer" && action.go === "lobby") {
       this.showLobby({
-        ...(action.role !== undefined ? { role: action.role as "host" | "guest" } : {}),
+        ...(action.intent !== undefined ? { intent: action.intent as "host" | "guest" } : {}),
         ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
       });
     } else if (route === "lobby" && action.go === "online_match") {
