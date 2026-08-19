@@ -116,6 +116,19 @@ describe("room_signaling_port: host", () => {
     expect(socket.sent).toEqual([]);
   });
 
+  // #601: a host's offer carries the invitation slot the guest on the
+  // other end has no other way to learn -- `room_signaling.ts`'s own
+  // `encodeHostSignal`/`room_signaling.spec.ts` cover the envelope shape
+  // itself; this is only about `send()` actually passing `slot` through.
+  it("wraps a slotted offer in the v:1 envelope (#601)", () => {
+    const { socket, handle } = hostHandle();
+    socket.open();
+    handle.send({ to: "g-1", signal: "offer-blob", slot: "guest_2" });
+    expect(socket.sent).toEqual([
+      JSON.stringify({ to: "g-1", body: { v: 1, slot: "guest_2", payload: "offer-blob" } }),
+    ]);
+  });
+
   it("does not send before the socket is open", () => {
     const { socket, handle } = hostHandle();
     handle.send({ to: "g-1", signal: "offer-blob" });
@@ -169,6 +182,56 @@ describe("room_signaling_port: guest", () => {
     socket.open();
     socket.emitMessage(JSON.stringify({ type: "signal", from: "host", body: "offer-blob" }));
     expect(handle.poll()).toEqual([{ kind: "signal", signal: "offer-blob" }]);
+  });
+
+  // #601: the guest side of the same round trip `hostHandle`'s "wraps a
+  // slotted offer" case exercises the sending half of.
+  it("reports a slotted offer's slot alongside the signal (#601)", () => {
+    const { socket, handle } = guestHandle();
+    socket.open();
+    socket.emitMessage(
+      JSON.stringify({
+        type: "signal",
+        from: "host",
+        body: { v: 1, slot: "guest_2", payload: "offer-blob" },
+      }),
+    );
+    expect(handle.poll()).toEqual([{ kind: "signal", signal: "offer-blob", slot: "guest_2" }]);
+  });
+
+  it("falls back to no slot for an old host's plain-string offer, or a slotless envelope (#601)", () => {
+    // Deploy-window skew: an old host never wraps its offer at all -- the
+    // guest still connects, exactly as it did before #601, just without a
+    // slot to adopt (`lobby_model.ts`'s `roomPeerSignal` keeps whatever
+    // identity it already had in that case).
+    const { socket: plainSocket, handle: plainHandle } = guestHandle();
+    plainSocket.open();
+    plainSocket.emitMessage(JSON.stringify({ type: "signal", from: "host", body: "offer-blob" }));
+    expect(plainHandle.poll()).toEqual([{ kind: "signal", signal: "offer-blob" }]);
+
+    const { socket: envelopeSocket, handle: envelopeHandle } = guestHandle();
+    envelopeSocket.open();
+    envelopeSocket.emitMessage(
+      JSON.stringify({ type: "signal", from: "host", body: { v: 1, payload: "offer-blob" } }),
+    );
+    expect(envelopeHandle.poll()).toEqual([{ kind: "signal", signal: "offer-blob" }]);
+  });
+
+  // The reverse compatibility direction: a NEW host's slot envelope
+  // reaching what this port would look like on an OLD, pre-#601 build.
+  // This port itself is never that old build, but its own
+  // `parseServerFrame` call is exactly what an old build's would have
+  // done against this exact wire (`room_signaling.spec.ts`'s own
+  // "rejects a signal frame whose body is an unrecognized object shape"
+  // proves the parser's type-check does not special-case the envelope
+  // shape at all) -- so this pins the end-to-end OUTCOME an old guest
+  // actually saw: a visible failure, socket closed, never a hang.
+  it("fails visibly rather than hanging on a body shape it cannot recognize (#601 compat)", () => {
+    const { socket, handle } = guestHandle();
+    socket.open();
+    socket.emitMessage(JSON.stringify({ type: "signal", from: "host", body: { nested: true } }));
+    expect(handle.poll()).toEqual([{ kind: "failed", reason: "malformed_frame" }]);
+    expect(socket.closeCalled).toBe(1);
   });
 });
 

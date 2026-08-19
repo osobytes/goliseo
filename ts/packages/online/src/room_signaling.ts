@@ -43,6 +43,50 @@
 // the transport treats a signal as an opaque string end to end, the same
 // way `lobby_link.ts`'s `accept_offer`/`accept_answer` effects already
 // do (neither ever parses the blob it carries).
+//
+// ## The slot envelope (#601)
+//
+// A room-code guest has no way to learn which invitation slot (`guest_N`)
+// the host opened for it -- `@gc/screens`'s `lobby_model.ts` (its own
+// header, "A guest learns its own slot from the host") needs that value
+// carried alongside the offer, and this is the one hop of the round trip
+// that is this module's job. The Durable Object's own doc says a host's
+// `body` "may be a string OR any other JSON value" and is forwarded to the
+// guest "NOT re-stringified" -- so a host addressing a specific slot
+// encodes `body` as a small JSON OBJECT instead of a bare string:
+// `{ v: 1, slot, payload }`, where `payload` is exactly the string
+// `encodeHostSignal`'s old two-argument form used to put there. No DO
+// change is needed; the DO never reads `body` at all.
+//
+// `parseServerFrame` accepts BOTH shapes for a "signal" frame's `body`: a
+// plain string (a guest's own signal, always; or a host's, when no slot was
+// given), or a well-formed `v: 1` envelope object, in which case the
+// returned frame's `body` is the envelope's `payload` and `slot` is set
+// alongside it when the envelope carries one. A `v: 1` envelope missing
+// `slot` still parses successfully with `slot` simply absent -- see
+// `roomPeerSignal`'s own doc in `lobby_model.ts` for why that degrades
+// gracefully instead of failing the connection (deploy-window skew: a
+// mixed old-host/new-guest pairing keeps working as a single-guest room,
+// exactly as it did before #601). Anything else shaped as an object -- not
+// a recognized envelope at all -- is still `err("malformed_frame")`, same
+// as any other non-string body always was; this module does not go looking
+// for a signal inside an unrecognized shape. A GUEST never encodes an
+// envelope (guest -> host stays exactly the raw string it always was), so
+// this widened acceptance only ever matters for a host's own outgoing
+// signal.
+//
+// The reverse compatibility direction -- an OLD, already-deployed guest
+// bundle (predating this envelope) receiving a NEW host's enveloped
+// offer -- cannot be patched retroactively, but degrades safely rather than
+// hanging: the old `parseServerFrame`'s own body type-check
+// (`typeof body !== "string"`) rejects ANY object-shaped body outright,
+// envelope or not (this file's own `room_signaling.spec.ts`, "rejects a
+// signal frame whose body is not a string", already pins exactly that
+// check against an unrelated object shape). The old guest's connection
+// therefore ends with a visible `"malformed_frame"` failure -- the room-code
+// screen's existing `ROOM_FAILURE_TEXT` fallback path (`lobby_model.ts`) --
+// not a silent hang. A stale tab from mid-deploy sees a readable error and
+// can retry once it reloads the new bundle.
 
 import { type Result, err, ok } from "@gc/core";
 
@@ -51,6 +95,10 @@ export const ROOM_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /** Fixed length of a room code -- see this file's header. */
 export const ROOM_CODE_LENGTH = 6;
+
+/** The slot envelope's own version tag (#601, this file's header) -- bumped
+ * only if the envelope's shape ever needs to change incompatibly. */
+const SLOT_ENVELOPE_VERSION = 1;
 
 /** Whether `candidate` has the shape of a code the Worker could have issued.
  * A purely local, defensive check -- it says nothing about whether a room
@@ -79,9 +127,12 @@ export function roomSignalJoinPath(code: string): string {
  * validated -- mirrors `infra/src/room_durable_object.ts`'s own module doc
  * exactly (`{type:"created"|"joined", code}`, `{type:"guest_joined"|
  * "guest_left", guestId}`, `{type:"signal", from, body}`, `{type:"error",
- * error}`, `{type:"host_left"}`). `body` is always a `string` here (see
- * this file's header) -- a non-string `body` is treated as a protocol
- * violation, not coerced.
+ * error}`, `{type:"host_left"}`). `body` is always resolved to a `string`
+ * here (see this file's header) regardless of whether the wire carried it
+ * bare or inside a `v: 1` slot envelope (#601) -- a caller never sees the
+ * envelope shape, only `body` and the optional `slot` recovered from it.
+ * Anything that is neither a bare string nor a recognized envelope is a
+ * protocol violation, not coerced.
  *
  * `error` is a `string`, not a closed union, because that DO reports it
  * verbatim -- see this module's doc, "why the client is blind" -- and every
@@ -99,9 +150,45 @@ export type RoomServerFrame =
   | { readonly type: "joined"; readonly code: string }
   | { readonly type: "guest_joined"; readonly guestId: string }
   | { readonly type: "guest_left"; readonly guestId: string }
-  | { readonly type: "signal"; readonly from: string; readonly body: string }
+  // `slot` (#601, this file's header) is present only when the wire's
+  // `body` was a `v: 1` envelope that carried one -- a guest's own signal
+  // (never enveloped) and a host's slotless signal both omit it.
+  | {
+      readonly type: "signal";
+      readonly from: string;
+      readonly body: string;
+      readonly slot?: string;
+    }
   | { readonly type: "error"; readonly error: string }
   | { readonly type: "host_left" };
+
+/** Recovers `{ body, slot }` from a "signal" frame's raw `body` field --
+ * either it is already the signal string (a guest's own, always; or a
+ * host's own, when no slot applies), or it is a `v: 1` slot envelope
+ * (#601, this file's header) and `payload` is the signal string. `slot` is
+ * only ever present in the second case, and only when the envelope itself
+ * carried one -- an envelope missing it still resolves, `slot` absent (see
+ * this file's header on why that degrades gracefully rather than failing
+ * the frame). Anything else -- a non-string, non-envelope value -- is not
+ * this function's problem to guess at; the caller treats `undefined` as
+ * "not a signal body at all". */
+function resolveSignalBody(
+  raw: unknown,
+): { readonly body: string; readonly slot?: string } | undefined {
+  if (typeof raw === "string") {
+    return { body: raw };
+  }
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const envelope = raw as Record<string, unknown>;
+  const payload = envelope["payload"];
+  if (envelope["v"] !== SLOT_ENVELOPE_VERSION || typeof payload !== "string") {
+    return undefined;
+  }
+  const slot = envelope["slot"];
+  return typeof slot === "string" ? { body: payload, slot } : { body: payload };
+}
 
 /** Parses and validates one raw WebSocket text frame from the room-code
  * Worker. Every failure -- invalid JSON, an unrecognized `type`, a missing
@@ -130,11 +217,14 @@ export function parseServerFrame(raw: string): Result<RoomServerFrame, "malforme
   }
   if (type === "signal") {
     const from = value["from"];
-    const body = value["body"];
-    if (typeof from !== "string" || typeof body !== "string") {
+    if (typeof from !== "string") {
       return err("malformed_frame");
     }
-    return ok({ type: "signal", from, body });
+    const resolved = resolveSignalBody(value["body"]);
+    if (resolved === undefined) {
+      return err("malformed_frame");
+    }
+    return ok({ type: "signal", from, ...resolved });
   }
   if (type === "error") {
     const error = value["error"];
@@ -148,9 +238,15 @@ export function parseServerFrame(raw: string): Result<RoomServerFrame, "malforme
 
 /** Encodes a host's outgoing signal for a specific guest connection id, per
  * `infra/src/room_durable_object.ts`'s "Host -> DO" wire shape. There is no
- * guest-side counterpart -- see this file's header. */
-export function encodeHostSignal(toGuestId: string, signal: string): string {
-  return JSON.stringify({ to: toGuestId, body: signal });
+ * guest-side counterpart -- see this file's header. `slot` (#601, this
+ * file's header) wraps `signal` in a `v: 1` envelope when given; omitted,
+ * `body` stays the bare string it always was (a stale host build, or a
+ * caller with no slot to report -- `lobby_model.ts`'s `onSignal` only ever
+ * omits it for a guest's own outgoing answer, never for a host's offer). */
+export function encodeHostSignal(toGuestId: string, signal: string, slot?: string): string {
+  const body: unknown =
+    slot !== undefined ? { v: SLOT_ENVELOPE_VERSION, slot, payload: signal } : signal;
+  return JSON.stringify({ to: toGuestId, body });
 }
 
 /** Why a room-code connection failed or ended, as a typed state rather than

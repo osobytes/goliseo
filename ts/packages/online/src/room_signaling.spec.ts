@@ -144,13 +144,63 @@ describe("room_signaling: parseServerFrame", () => {
     expect(parseServerFrame('{"type":"mystery"}')).toEqual({ ok: false, error: "malformed_frame" });
   });
 
-  it("rejects a signal frame whose body is not a string -- see this file's header", () => {
-    // The Durable Object's own wire contract allows a host to send a
-    // non-string `body`, but this module (and every caller past it) only
-    // ever handles a string signal -- a non-string body is a protocol
-    // violation here, never coerced.
+  it("rejects a signal frame whose body is an unrecognized object shape -- see this file's header", () => {
+    // The Durable Object's own wire contract allows a host to send ANY
+    // JSON value as `body`, and #601's `v: 1` slot envelope is now one
+    // recognized object shape (`resolveSignalBody`'s own doc) -- but an
+    // object that is neither a string nor that envelope is still a
+    // protocol violation, never guessed at. This is also, precisely, what
+    // an OLD (pre-#601) `parseServerFrame` does to ANY object-shaped body,
+    // including a NEW host's `v: 1` envelope: its `typeof body !== "string"`
+    // check does not inspect shape at all, so a stale guest bundle
+    // receiving a slotted offer fails exactly this way -- a visible
+    // `"malformed_frame"` failure, not a hang. See this file's header,
+    // "The slot envelope (#601)", for the full compatibility argument.
     const wire = '{"type":"signal","from":"host","body":{"nested":true}}';
     expect(parseServerFrame(wire)).toEqual({ ok: false, error: "malformed_frame" });
+  });
+
+  it("rejects a slot envelope with no signal payload to recover", () => {
+    // A `v: 1` envelope with a missing/mistyped `payload` has no signal to
+    // deliver at all -- unlike a missing `slot` (below), there is nothing
+    // sensible to degrade to, so this fails the frame.
+    const noPayload = '{"type":"signal","from":"host","body":{"v":1,"slot":"guest_2"}}';
+    expect(parseServerFrame(noPayload)).toEqual({ ok: false, error: "malformed_frame" });
+    const wrongVersion =
+      '{"type":"signal","from":"host","body":{"v":2,"slot":"guest_2","payload":"offer"}}';
+    expect(parseServerFrame(wrongVersion)).toEqual({ ok: false, error: "malformed_frame" });
+  });
+
+  it("parses a host's slotted offer, recovering both the payload and the slot", () => {
+    const wire = JSON.stringify({
+      type: "signal",
+      from: "host",
+      body: { v: 1, slot: "guest_2", payload: "offer-blob-text" },
+    });
+    expect(parseServerFrame(wire)).toEqual({
+      ok: true,
+      value: { type: "signal", from: "host", body: "offer-blob-text", slot: "guest_2" },
+    });
+  });
+
+  it("parses a well-formed envelope missing a slot, falling back gracefully (#601)", () => {
+    // Deploy-window skew: an old host's envelope-less signal already takes
+    // the plain-string path above. This is the OTHER graceful-fallback
+    // shape -- a well-formed `v: 1` envelope that simply has nothing to
+    // report for `slot` (e.g. the manual-flow-style identity path) -- and
+    // it still resolves to a usable signal, just without one. `lobby_model.ts`'s
+    // `roomPeerSignal` is what actually falls back to the guest's existing
+    // default identity when `slot` is absent -- this module's job stops at
+    // "parses cleanly, `slot` omitted".
+    const wire = JSON.stringify({
+      type: "signal",
+      from: "host",
+      body: { v: 1, payload: "offer-blob-text" },
+    });
+    expect(parseServerFrame(wire)).toEqual({
+      ok: true,
+      value: { type: "signal", from: "host", body: "offer-blob-text" },
+    });
   });
 
   it("rejects a frame missing a required field", () => {
@@ -174,6 +224,29 @@ describe("room_signaling: encodeHostSignal", () => {
     const parsed = JSON.parse(wire) as { readonly to: string; readonly body: string };
     expect(parsed.to).toBe("g-2");
     expect(parsed.body).toBe("another blob");
+  });
+
+  it("wraps the signal in a v:1 slot envelope when a slot is given (#601)", () => {
+    const wire = encodeHostSignal("g-2", "offer-blob-text", "guest_2");
+    expect(wire).toBe(
+      JSON.stringify({ to: "g-2", body: { v: 1, slot: "guest_2", payload: "offer-blob-text" } }),
+    );
+  });
+
+  it("round-trips a slotted signal through parseServerFrame end to end", () => {
+    const wire = encodeHostSignal("g-2", "offer-blob-text", "guest_2");
+    // Simulates the Durable Object's own relay: `to` is consumed for
+    // routing, `body` is forwarded exactly as sent (`room_durable_object.ts`'s
+    // own doc) inside a fresh `{type:"signal", from:"host", body}` frame.
+    const forwarded = JSON.stringify({
+      type: "signal",
+      from: "host",
+      body: (JSON.parse(wire) as { readonly body: unknown }).body,
+    });
+    expect(parseServerFrame(forwarded)).toEqual({
+      ok: true,
+      value: { type: "signal", from: "host", body: "offer-blob-text", slot: "guest_2" },
+    });
   });
 });
 
