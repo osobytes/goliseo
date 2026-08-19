@@ -498,10 +498,11 @@ fn the_choke_point_still_clears_the_outgoing_owners_action_slot() {
     let (start, end) = body_span(&masked, CHOKE_POINT_SIGNATURE);
     let body = &masked[start..end];
     assert!(
-        body.contains("action_slot::clear("),
+        body.contains("action_slot::clear_interrupted("),
         "set_owner is the only place the possession invariant is applied, so gutting its \
-         `action_slot::clear` would silently disable #489's clearing everywhere at once. \
-         Body was:\n{}",
+         `action_slot::clear_interrupted` would silently disable #489's clearing everywhere \
+         at once. (`clear_interrupted`, not `clear`: #578 narrowed the invariant so a \
+         `Recovering` penalty survives the possession change.) Body was:\n{}",
         &src[start..end]
     );
 }

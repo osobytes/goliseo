@@ -966,6 +966,82 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-18 — a `Recovering` penalty survives the possession change
+  (#578, decided by the owner).** `baseline_version` **14 → 15**, signature
+  `857c41df296746a8` → `01fd23fdf736b799`; `identity.tuning_hash`,
+  `identity.content_hash`, `identity.fixture_hash`, `identity.config_hash`,
+  `policy_id` and `snapshot_version` all unchanged — no knob default, no
+  content, no AI policy and no schema moved. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  **The mechanism.** #572's entry directly below located its cost at the
+  heavy-touch site clearing a `Recovering` tackle slot: a presser that
+  whiffed a standing poke, touched the loose ball, and lost it had its miss
+  recovery refunded, so it re-pressed sooner. #578 decided that refund was
+  never designed: `Charging`/`Executing` are pending actions that stop
+  meaning anything without the ball and still clear on the possession
+  change; `Recovering` is a penalty already imposed and now survives it
+  (`action_slot::clear_interrupted`, the narrowed invariant at
+  `r#match::set_owner`). The 2026-08-18 playtest felt the refund directly:
+  poke pressure cycling faster than a carrier could charge a pass, and
+  same-tick tackle/release collisions eating charged releases (#586's
+  investigation; the collision's tie-break is #590, a separate decision).
+
+  **The every-phase test moved with the decision, not silently.** #548's
+  `possession_change_clears_a_committed_action_from_every_phase_no_matter_the_verb`
+  now asserts both halves: pending clears, penalty survives.
+
+  | metric | frozen (v14) | re-frozen (v15) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.262481 | 0.340436 | +0.077954 |
+  | `goals_total` | 1.800000 | 1.966667 | +0.166667 |
+  | `goals_home` | 0.666667 | 0.800000 | +0.133333 |
+  | `goals_away` | 1.133333 | 1.166667 | +0.033333 |
+  | `shots` | 32.500000 | 32.333333 | −0.166667 |
+  | `shots_per_goal` | 19.900000 | 18.757099 | −1.142901 |
+  | `save_rate` | 0.908359 | 0.903665 | −0.004694 |
+  | `passes` | 29.766667 | 29.200000 | −0.566667 |
+  | `pass_completion` | 0.504916 | 0.511584 | +0.006668 |
+  | `turnovers_per_min` | 8.970492 | 8.731731 | −0.238761 |
+  | `possession_balance` | 0.528481 | 0.534866 | +0.006386 |
+  | `longest_drought_s` | 11.495556 | 11.326111 | −0.169444 |
+  | `decided_late` | 0.725982 | 0.716925 | −0.009057 |
+  | `lead_changes` | 0.066667 | 0.066667 | +0.000000 |
+  | `margin` | 0.966667 | 1.033333 | +0.066667 |
+  | `duration` | 117.067222 | 116.393611 | −0.673611 |
+  | `ai_dribble_carry_s` | 25.856111 | 25.503889 | −0.352222 |
+  | `ai_dribble_close_share` | 0.816397 | 0.815758 | −0.000640 |
+  | `ai_dribble_sprint_share` | 0.162948 | 0.165800 | +0.002852 |
+  | `ai_dribble_juke_share` | 0.094650 | 0.095915 | +0.001265 |
+  | `ai_dribble_touches_per_min` | 119.458211 | 120.436038 | +0.977827 |
+  | `ai_dribble_heavy_losses_per_min` | 0.407558 | 0.387893 | −0.019664 |
+  | `ai_jukes` | 35.450000 | 35.366667 | −0.083333 |
+
+  `fun` recovers +0.078 of the −0.089 #572's entry recorded on this base —
+  most, not all, of the drop, measured against a v14 that also carries
+  #572's other, affirmed changes (the seven newly-routed clears of PENDING
+  actions stay routed). Turnovers fall and goals rise, which is the shape
+  the refund's removal predicts: pressers poke less often, so possession
+  spells resolve as football rather than as poke cycles.
+
+  Four other frozen artifacts moved for the same reason and were
+  re-recorded in the same commit, each through its own documented recorder:
+  `gc_data::omp1_determinism`'s derived half (`expected_sequence_digest`
+  `fcdaac058c967e68` → `c165170216a8ec28`; `expected_final_hash` did NOT
+  move, for the third time — full time is reached in the same state, the
+  chain arriving there is not); `gc-sim`'s
+  `tests/fixtures/match_step_ai_ai_baseline.txt`;
+  `gc_sim::keeper_shadow_classifier`'s two frozen count blocks (candidates
+  9970 → 9775, agree_true 3307 → 3415, agree_false 6429 → 6066,
+  disagree_deferred 207 → 268, disagree_height 27 → 26, `new_only`
+  unchanged at 0); and the four OMP-1 digest copies outside the JSON
+  (`gc_data::omp1_determinism`'s unit test,
+  `ts/packages/wasm/src/determinism.spec.ts`, `scripts/check.sh`, and
+  `rollback_lab.rs`'s tape digest `1610d58d94835361` →
+  `31f7f079208e2bf9` — an isolated early run of that test binary reported
+  it unmoved because it ran before the OMP-1 derived re-record it folds
+  in, the same only-the-full-suite-counts trap #572's re-freeze hit).
+
 - **2026-08-17 — #489's possession invariant applied at every ownership
   change instead of two of them (PR #572).** `baseline_version` **13 → 14**,
   signature `264989032124a6b1` → `857c41df296746a8`; `identity.tuning_hash`,
