@@ -4,10 +4,12 @@ import {
   MAX_GUESTS,
   ROOM_IDLE_TTL_MS,
   ROOM_MAX_LIFETIME_MS,
+  type RoomState,
   claimHost,
   closeRoom,
   hostDeparted,
   isExpired,
+  isRoomClaimedByHost,
   joinGuest,
   newRoom,
   nextAlarmMs,
@@ -67,6 +69,78 @@ describe("isExpired", () => {
     const keptAlive = touch(room, T0 + ROOM_MAX_LIFETIME_MS - 1);
     expect(isExpired(keptAlive, T0 + ROOM_MAX_LIFETIME_MS - 1)).toBe(false);
     expect(isExpired(keptAlive, T0 + ROOM_MAX_LIFETIME_MS + 1)).toBe(true);
+  });
+});
+
+// Round-2 council review, blocking finding 4: room_durable_object.ts's
+// migration backfills a pre-#599 room row's lastActivityMs from its OWN
+// createdAtMs (not a fixed 0), so a room reconstructed after a deploy ages
+// exactly like a freshly created one -- never MORE stale than its real age.
+// This is the room_state-level half of that fix: it pins the exact shape
+// the migration produces (lastActivityMs === createdAtMs on an aged room,
+// not a fresh one) and proves isExpired treats it identically to newRoom's
+// own invariant, not as already-expired.
+describe("a state loaded with lastActivityMs backfilled to createdAtMs (the migration's shape)", () => {
+  it("behaves exactly like a freshly created room's own aging, not as already-expired", () => {
+    // Constructed directly, not via newRoom/touch -- this reproduces the
+    // migration's own UPDATE (last_activity_ms = created_at_ms), including
+    // for a room "created" a while before "now", which newRoom(code, T0)
+    // alone cannot express.
+    const backfilled: RoomState = {
+      code: "ABC123",
+      createdAtMs: T0,
+      lastActivityMs: T0,
+      phase: "open",
+      hostId: "host-1",
+      guestIds: [],
+    };
+    expect(isExpired(backfilled, T0)).toBe(false);
+    expect(isExpired(backfilled, T0 + ROOM_IDLE_TTL_MS)).toBe(false);
+    expect(isExpired(backfilled, T0 + ROOM_IDLE_TTL_MS + 1)).toBe(true);
+    // The failure mode a fixed default of 0 would have caused: this must
+    // NOT already read as expired the instant it loads, before anything
+    // has had a chance to touch it again.
+    expect(isExpired(backfilled, T0 + 1)).toBe(false);
+  });
+});
+
+describe("isRoomClaimedByHost", () => {
+  it("is true for an open room with a live, unexpired host", () => {
+    const room = openRoom(T0);
+    expect(isRoomClaimedByHost(room, T0)).toBe(true);
+  });
+
+  it("is false for an unclaimed room", () => {
+    const room = newRoom("ABC123", T0);
+    expect(isRoomClaimedByHost(room, T0)).toBe(false);
+  });
+
+  it("is false once the claim has expired", () => {
+    const room = openRoom(T0);
+    expect(isRoomClaimedByHost(room, T0 + ROOM_IDLE_TTL_MS + 1)).toBe(false);
+  });
+
+  it("is false for a closed room", () => {
+    const room = closeRoom(openRoom(T0));
+    expect(isRoomClaimedByHost(room, T0)).toBe(false);
+  });
+
+  // The drift-resistance property blocking finding 1 asked for: this
+  // predicate and claimHost's own "already claimed" rejection must always
+  // agree, since the collision-probe RPC (room_durable_object.ts's
+  // isClaimedByHost) uses this function while a REAL claim attempt goes
+  // through claimHost -- the two must never see the same room differently.
+  it("agrees with claimHost's own host_already_claimed rejection", () => {
+    const claimed = openRoom(T0);
+    expect(isRoomClaimedByHost(claimed, T0)).toBe(true);
+    expect(claimHost(claimed, "host-2", T0)).toEqual({
+      ok: false,
+      error: "host_already_claimed",
+    });
+
+    const unclaimed = newRoom("XYZ999", T0);
+    expect(isRoomClaimedByHost(unclaimed, T0)).toBe(false);
+    expect(claimHost(unclaimed, "host-1", T0).ok).toBe(true);
   });
 });
 

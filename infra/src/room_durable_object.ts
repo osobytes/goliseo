@@ -48,38 +48,72 @@
 //! all (the platform gives a script no access to it -- see `@gc/online`'s
 //! `room_signaling.ts`, `RoomSignalingFailureReason`'s own doc), so a
 //! pre-upgrade HTTP rejection is invisible to a client past "something went
-//! wrong". `fetch`
-//! below completes the WebSocket upgrade EVEN ON an admission failure
-//! (`claimHost`/`joinGuest` rejecting), sends this file's existing in-band
-//! frame shape, `{ "type": "error", "error": "<reason>" }`, then closes with
-//! a reason-mapped code (`ADMISSION_CLOSE_CODE`) and never accepts the
-//! socket into hibernation (`rejectInBand`'s own comment). The reasons
-//! `claimHost`/`joinGuest` (`room_state.ts`) can produce, every one of them
-//! now reaching a client this way: `room_not_found` (a guest addressed a
-//! code no host has ever claimed -- indistinguishable, at this layer, from a
-//! code that was never issued at all), `room_full`, `room_expired`,
-//! `room_closed`, `host_already_claimed`, `already_joined`. Two requests
-//! stay pre-upgrade HTTP rejections BY DESIGN, both worker-level and both
-//! cheap to reject before a Durable Object is even addressed: the per-IP
-//! rate limit and a malformed room-code shape (`index.ts`'s
-//! `handleHostSignal`/`handleJoinSignal`). `room_not_open` -- returned by
-//! `routeSignal`, not `claimHost`/`joinGuest` -- is a DIFFERENT, already
-//! in-band case: a signal arriving on an already-admitted socket for a room
-//! that is no longer open (`webSocketMessage` below), not an admission
-//! failure at all.
+//! wrong". `fetch` below completes the WebSocket upgrade EVEN ON an
+//! admission failure (`claimHost`/`joinGuest` rejecting), sends this file's
+//! existing in-band frame shape, `{ "type": "error", "error": "<reason>" }`,
+//! then closes with a reason-mapped code (`ADMISSION_CLOSE_CODE`) and never
+//! accepts the socket into hibernation (`rejectInBand`'s own comment). The
+//! reasons `claimHost`/`joinGuest` (`room_state.ts`) can produce, every one
+//! of them now reaching a client this way: `room_not_found` (a guest
+//! addressed a code no host has ever claimed -- indistinguishable, at this
+//! layer, from a code that was never issued at all), `room_full`,
+//! `room_expired`, `room_closed`, `host_already_claimed`, `already_joined`.
+//! `room_not_open` -- returned by `routeSignal`, not `claimHost`/
+//! `joinGuest` -- is a DIFFERENT, already in-band case: a signal arriving on
+//! an already-admitted socket for a room that is no longer open
+//! (`webSocketMessage` below), not an admission failure at all.
 //!
-//! ## Collision probe (`fetch`'s non-upgrade branch)
+//! Exactly FOUR requests stay pre-upgrade HTTP rejections, and this list is
+//! exhaustive -- a fifth here without updating it is a bug:
+//! 1. **Missing/invalid `Upgrade: websocket`.** Rejected in `index.ts`'s
+//!    `handleHostSignal`/`handleJoinSignal`, BEFORE either even calls
+//!    `env.ROOM.getByName` -- this DO is never addressed at all for a
+//!    non-upgrade request. Round-2 council review, blocking finding 1: a
+//!    non-upgrade branch used to live in THIS file's own `fetch` (the
+//!    collision probe -- see below) and answered "is this code claimed" to
+//!    any caller for the mere cost of a per-IP rate-limit token, with no
+//!    `Upgrade` header required at all -- an unauthenticated,
+//!    internet-reachable room-existence oracle that also bypassed
+//!    `JOIN_RATE_LIMIT` below entirely (a non-upgrade request never reaches
+//!    the code that consumes it). The fix moved the collision probe off the
+//!    public `fetch` surface (see below) and put the `Upgrade` check in
+//!    front of `env.ROOM.getByName` itself, so nothing non-upgrade can
+//!    reach this DO by any path.
+//! 2. **The per-IP `SIGNAL_RATE_LIMITER`.** Also `index.ts`, also before
+//!    `env.ROOM.getByName` -- guards against minting/addressing Durable
+//!    Objects in a loop (`index.ts`'s own doc).
+//! 3. **A malformed room-code shape**, `handleJoinSignal` only (`index.ts`).
+//! 4. **`JOIN_RATE_LIMIT`, `fetch` below.** UNLIKE the two above, this one
+//!    runs INSIDE this DO, after the `Upgrade`/`Room-Role` checks have
+//!    already passed (so only a genuine, already-validated upgrade attempt
+//!    can ever reach it) but before `claimHost`/`joinGuest` -- it is a
+//!    per-ROOM abuse guard (repeated attempts against ONE already-known
+//!    code) distinct in purpose from `SIGNAL_RATE_LIMITER`'s per-CLIENT,
+//!    any-code guard, and it stays a plain HTTP 429 rather than becoming
+//!    in-band: unlike `claimHost`/`joinGuest`'s reasons, this one is not
+//!    part of the room's own admission logic, so treating it identically to
+//!    the two worker-level cheap paths above is consistent, not a special
+//!    case.
 //!
-//! Every admission failure completing the upgrade (above) removes the ONE
+//! ## Collision probe (RPC, not `fetch`)
+//!
+//! Every admission failure completing the upgrade (above) removed the ONE
 //! signal `index.ts`'s `handleHostSignal` used to read to know a freshly
 //! generated room code collided with an existing live room and it should
-//! retry with a different one (an HTTP 409, pre-upgrade). A non-websocket
-//! request to this same DO -- `fetch`'s `Upgrade` header check failing --
-//! is now that signal instead: a cheap, side-effect-free, HTTP 409-if-
-//! claimed/200-otherwise check `handleHostSignal` makes BEFORE attempting
-//! the real upgrade for each candidate code, so a collision (astronomically
-//! unlikely -- `room_code.ts`'s own doc) is caught without ever opening,
-//! and immediately tearing down, a real WebSocket for the losing code.
+//! retry with a different one (an HTTP 409, pre-upgrade). `isClaimedByHost`
+//! below is the replacement: an RPC method (this class extends
+//! `DurableObject`, so `env.ROOM.getByName(code).isClaimedByHost()` calls it
+//! directly, no HTTP request at all) `handleHostSignal` calls BEFORE
+//! attempting the real upgrade for each candidate code, so a collision
+//! (astronomically unlikely -- `room_code.ts`'s own doc) is caught without
+//! ever opening, and immediately tearing down, a real WebSocket for the
+//! losing code. Deliberately NOT a `fetch` branch (round-2 council review,
+//! blocking finding 1, above): an RPC method is reachable ONLY from code
+//! holding the actual DO stub (`env.ROOM.getByName`), never from an HTTP
+//! request to `/signal/*` by any header combination, which is what makes it
+//! safe to answer "is this code claimed" at all. `isRoomClaimedByHost`
+//! (`room_state.ts`) is the pure predicate both this method and `claimHost`
+//! itself derive their answer from, so the two cannot drift apart.
 //!
 //! ## Sliding TTL
 //!
@@ -113,7 +147,7 @@ import {
   claimHost,
   closeRoom,
   hostDeparted,
-  isExpired,
+  isRoomClaimedByHost,
   joinGuest,
   newRoom,
   nextAlarmMs,
@@ -206,18 +240,36 @@ export class RoomDurableObject extends DurableObject<Env> {
     // `CREATE TABLE IF NOT EXISTS` above is a no-op against a room row that
     // was already created before the sliding-TTL revision added this
     // column, so a leftover pre-migration room needs it added explicitly.
-    // Backfilling with 0 makes `isExpired` see it as maximally stale --
-    // exactly right: a room this old should already be gone, and the next
-    // thing that reads it (a request, or this instance's own next alarm)
-    // closes it out promptly instead of erroring on a missing column.
+    // Backfilled from `created_at_ms`, NOT a fixed default of 0 (round-2
+    // council review, blocking finding 4): `isExpired` treats an unknown
+    // `lastActivityMs` of 0 as maximally stale, which is wrong for a room
+    // this instance reconstructs mid-lifetime after a routine hibernate/
+    // wake or a deploy -- a legitimately live, recently-active
+    // pre-migration room would reject its very next joiner with
+    // `room_expired` until some OTHER activity happened to touch it first.
+    // `created_at_ms` is the safe assumption instead: it makes a
+    // reconstructed pre-migration room age exactly like a brand-new one
+    // (`newRoom`'s own invariant, `lastActivityMs === createdAtMs`), never
+    // MORE stale than its real age -- confirmed by
+    // `room_state.spec.ts`'s own test for this exact shape.
     try {
+      this.ctx.storage.sql.exec("ALTER TABLE room ADD COLUMN last_activity_ms INTEGER");
       this.ctx.storage.sql.exec(
-        "ALTER TABLE room ADD COLUMN last_activity_ms INTEGER NOT NULL DEFAULT 0",
+        "UPDATE room SET last_activity_ms = created_at_ms WHERE last_activity_ms IS NULL",
       );
-    } catch {
-      // Column already exists -- the common case, for every room created
-      // under this schema version, including every brand-new one (the
-      // CREATE TABLE above already added it).
+    } catch (error) {
+      // Narrowed to the one error this is meant to swallow: the column
+      // already exists -- the common case, for every room created under
+      // this schema version, including every brand-new one (the CREATE
+      // TABLE above already added it, so the ALTER here throws immediately
+      // and the UPDATE never runs -- correct, since a freshly created
+      // room's own later `saveState` INSERT will supply a real value
+      // anyway). Anything else is a genuine failure and must not be
+      // silently discarded -- AGENTS.md §7: fail loud.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("duplicate column name")) {
+        throw error;
+      }
     }
   }
 
@@ -287,12 +339,32 @@ export class RoomDurableObject extends DurableObject<Env> {
     );
   }
 
+  /**
+   * RPC-only collision probe for `handleHostSignal`'s retry loop
+   * (`index.ts`) -- see this module's doc, "Collision probe (RPC, not
+   * `fetch`)". Called directly on the stub
+   * (`env.ROOM.getByName(code).isClaimedByHost()`), NEVER through `fetch`,
+   * so it is unreachable from any HTTP request to `/signal/*` regardless of
+   * headers. Reads state, saves nothing, never touches a WebSocket.
+   */
+  public isClaimedByHost(): boolean {
+    const nowMs = Date.now();
+    const state = this.loadState(nowMs);
+    return isRoomClaimedByHost(state, nowMs);
+  }
+
   public override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
-      // Not a WebSocket upgrade at all: `handleHostSignal`'s own collision
-      // probe (index.ts) -- see this module's doc, "Collision probe". The
-      // only other caller of a non-upgrade request against this DO.
-      return this.probeHostClaim();
+      // `index.ts`'s `handleHostSignal`/`handleJoinSignal` already reject a
+      // non-upgrade request before EVER addressing this DO (this module's
+      // doc, "Admission failures are in-band" -- the exhaustive pre-upgrade
+      // list) -- this is a second, independent gate in case anything else
+      // ever calls `fetch` directly. Never a probe response (409/200) here
+      // any more: that used to live in this branch and was an
+      // unauthenticated room-existence oracle (round-2 council review,
+      // blocking finding 1) -- the collision probe is `isClaimedByHost`
+      // above now, reachable only via RPC.
+      return new Response("expected a WebSocket upgrade", { status: 426 });
     }
     const role = request.headers.get("Room-Role");
     if (role !== "host" && role !== "guest") {
@@ -350,15 +422,6 @@ export class RoomDurableObject extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Non-upgrade probe -- see this module's doc, "Collision probe". Reads
-   * state, saves nothing, never touches a WebSocket. */
-  private probeHostClaim(): Response {
-    const nowMs = Date.now();
-    const state = this.loadState(nowMs);
-    const claimed = state.phase !== "closed" && !isExpired(state, nowMs) && state.hostId !== null;
-    return new Response(null, { status: claimed ? 409 : 200 });
-  }
-
   /** Completes the WebSocket upgrade for an admission failure instead of
    * rejecting the HTTP request -- see this module's doc, "Admission
    * failures". `server.accept()` (not `ctx.acceptWebSocket`) is deliberate:
@@ -395,7 +458,15 @@ export class RoomDurableObject extends DurableObject<Env> {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment: unknown = socket.deserializeAttachment();
       if (isSocketAttachment(attachment) && attachment.role === "guest") {
-        socket.send(message);
+        try {
+          socket.send(message);
+        } catch {
+          // One already-closing guest socket must not abort the fan-out to
+          // the rest, nor -- since this runs from inside `disconnect`,
+          // before it schedules the grace-period alarm -- skip that
+          // scheduling entirely (round-2 council review, non-blocking
+          // finding).
+        }
       }
     }
   }

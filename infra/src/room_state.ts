@@ -109,6 +109,19 @@ export function nextAlarmMs(state: RoomState): number {
   );
 }
 
+/**
+ * Whether this room currently has a live, unexpired host claim. Exactly the
+ * condition `claimHost` below fails on with `host_already_claimed` once its
+ * own `closed`/`expired` checks have already passed -- exported as its own
+ * function so the Durable Object's collision-probe RPC
+ * (`room_durable_object.ts`'s `isClaimedByHost`) derives the same answer
+ * `claimHost` does from one place, rather than an inline re-derivation
+ * drifting out of sync with it (round-2 council review, blocking finding 1).
+ */
+export function isRoomClaimedByHost(state: RoomState, nowMs: number): boolean {
+  return state.phase !== "closed" && !isExpired(state, nowMs) && state.hostId !== null;
+}
+
 /** A host connection claims this room. Fails if already claimed, closed, or expired. */
 export function claimHost(
   state: RoomState,
@@ -121,7 +134,11 @@ export function claimHost(
   if (isExpired(state, nowMs)) {
     return err("room_expired");
   }
-  if (state.hostId !== null) {
+  // Equivalent to `isRoomClaimedByHost(state, nowMs)` at this point --
+  // `closed`/`expired` are already ruled out above, so it reduces to
+  // exactly `state.hostId !== null` -- written via the shared predicate
+  // rather than repeating the bare check, so the two never drift apart.
+  if (isRoomClaimedByHost(state, nowMs)) {
     return err("host_already_claimed");
   }
   return ok(touch({ ...state, phase: "open", hostId: connectionId }, nowMs));
