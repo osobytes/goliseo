@@ -270,14 +270,43 @@ pub fn copy_state(state: &ActionSlot) -> ActionSlot {
     *state
 }
 
-/// The possession invariant, in one place: unconditionally clear a
-/// committed action, from any phase, for any verb. Called on the OUTGOING
-/// owner at the single ownership choke point
-/// (`crate::r#match`'s `set_owner`), never per verb.
+/// Unconditionally reset a slot to idle, from any phase, for any verb. This
+/// is the LIFECYCLE reset (kickoff placement, a charge whose target
+/// evaporated), not the possession invariant — that is
+/// [`clear_interrupted`], which deliberately does less.
 #[must_use]
 pub fn clear(state: &ActionSlot) -> ActionSlot {
     let _ = copy_state(state);
     new_state()
+}
+
+/// The possession invariant, in one place: clear a PENDING action —
+/// `Charging` or `Executing` — and preserve `Recovering`. Called on the
+/// OUTGOING owner at the single ownership choke point (`crate::r#match`'s
+/// `set_owner`), never per verb.
+///
+/// ## Why `Recovering` survives (#578, decided 2026-08-18)
+///
+/// `Charging` and `Executing` are pending rewards that stop meaning
+/// anything without the ball; clearing them on a possession change is a
+/// legitimate interruption. `Recovering` is a penalty already imposed — the
+/// miss-recovery window that #489 names as the whole felt cost of a whiffed
+/// tackle — and it has nothing to do with future ball state. Clearing it
+/// was a refund nobody designed: a defender could whiff, touch the loose
+/// ball, dump it, and skip the punishment — which is the cancel-tech shape
+/// #489 explicitly designs against, and which the 2026-08-18 playtest felt
+/// directly as poke pressure cycling faster than a carrier could charge a
+/// pass. The every-phase semantics #548 originally tested was narrowed here
+/// deliberately, on #578's decision; `tests/action_slot_integration.rs`'s
+/// possession-change test asserts BOTH halves (pending clears, penalty
+/// survives).
+#[must_use]
+pub fn clear_interrupted(state: &ActionSlot) -> ActionSlot {
+    let s = copy_state(state);
+    match s.phase {
+        ActionPhase::None | ActionPhase::Recovering => s,
+        ActionPhase::Charging | ActionPhase::Executing => new_state(),
+    }
 }
 
 /// Begin charging `verb`. May only be called from an idle slot -- the
@@ -616,6 +645,23 @@ mod tests {
 
         // Idempotent: clearing an already-idle slot is still idle.
         assert_eq!(clear(&new_state()), new_state());
+    }
+
+    #[test]
+    fn clear_interrupted_clears_pending_and_preserves_recovering() {
+        let charging = commit_charge(&new_state(), tackle(), Some(3), 0.0);
+        assert_eq!(clear_interrupted(&charging), new_state());
+
+        let executing = release(&charging, 0.2, 0.5, 0.3);
+        assert_eq!(clear_interrupted(&executing), new_state());
+
+        // The #578 half: an earned penalty is NOT refunded by a possession
+        // change -- the recovering slot comes back untouched.
+        let recovering = resolve_miss(&executing, 0.4);
+        assert_eq!(clear_interrupted(&recovering), recovering);
+
+        // Idempotent on idle.
+        assert_eq!(clear_interrupted(&new_state()), new_state());
     }
 
     #[test]

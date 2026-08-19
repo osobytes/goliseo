@@ -2113,9 +2113,13 @@ fn keeper_hold_pos(s: &MatchState, keeper_idx: i64) -> Vec2 {
 }
 
 /// The single choke point for changing ball ownership (#489). Applies the
-/// possession invariant here, once: the OUTGOING owner's committed action
-/// (whichever verb, whichever phase) clears unconditionally, because
-/// `action_slot::clear` does not ask which verb it is clearing.
+/// possession invariant here, once: the OUTGOING owner's PENDING action —
+/// `Charging` or `Executing`, whichever verb — clears, and a `Recovering`
+/// slot survives. `Recovering` is an earned penalty, not a pending action,
+/// and clearing it here was a refund: a whiffing presser who touched the
+/// loose ball and lost it skipped its miss recovery (#578, decided
+/// 2026-08-18 — see `action_slot::clear_interrupted`'s doc for the full
+/// argument).
 ///
 /// Every change to a `MatchState::owner` field anywhere in this crate goes
 /// through this function instead of touching the field directly —
@@ -2155,7 +2159,7 @@ pub(crate) fn set_owner(s: &mut MatchState, new_owner: Option<i64>) {
         && let Some(outgoing) = s.owner
     {
         let p = &mut s.players[(outgoing - 1) as usize];
-        p.action = action_slot::clear(&p.action);
+        p.action = action_slot::clear_interrupted(&p.action);
     }
     s.owner = new_owner;
 }

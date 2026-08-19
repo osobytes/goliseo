@@ -244,11 +244,25 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // the signature this file's module doc gives for a timing shift rather
     // than a volume one. `new_only` stays structurally 0, which is the
     // assertion that would have been a finding rather than a re-pin.
-    assert_eq!(total.candidates, 9970);
-    assert_eq!(total.agree_true, 3307);
-    assert_eq!(total.agree_false, 6429);
-    assert_eq!(total.disagree_deferred, 207);
-    assert_eq!(total.disagree_height, 27);
+    // candidates 9970 -> 9775: #578 narrowed the possession invariant so a
+    // `Recovering` slot survives the ownership change -- a presser that
+    // whiffs a standing poke now serves its full miss recovery even when it
+    // touches and loses the loose ball, so it re-presses later and slightly
+    // fewer possessions reach a save candidate at all. The split moves back
+    // toward the pre-#572 shape and past it on this base (agree_true 3307 ->
+    // 3415, agree_false 6429 -> 6066, disagree_deferred 207 -> 268,
+    // disagree_height 27 -> 26): a later-served recovery is the same
+    // one-tick-earlier-or-later RNG-stream shift this file's module doc
+    // names as `disagree_deferred`'s signature, now pointing the other way.
+    // `new_only` stays structurally 0, which is the assertion that would
+    // have been a finding rather than a re-pin. Re-pinned in the SAME commit
+    // as `gc_data::outfield_ai_baseline`'s v14 -> v15 re-freeze, per this
+    // file's own coupling rule.
+    assert_eq!(total.candidates, 9775);
+    assert_eq!(total.agree_true, 3415);
+    assert_eq!(total.agree_false, 6066);
+    assert_eq!(total.disagree_deferred, 268);
+    assert_eq!(total.disagree_height, 26);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -344,7 +358,14 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // earlier-cleared miss recovery is exactly the one-tick-earlier-or-later
     // RNG-stream shift this file's module doc names as `disagree_deferred`'s
     // signature. No historical byte-divergent split to compare against.
-    assert_eq!(matches_with_disagree, 14);
-    assert_eq!(matches_with_deferred, 28);
-    assert_eq!(matches_with_either, 34);
+    // Re-pinned by #578 alongside the counts above: `disagree_height` alone
+    // touches 15/60 matches (25%), and folding in `disagree_deferred`
+    // reaches 38/60 (63%). Deferred episodes remain the dominant bucket, by
+    // a wider margin than #572's re-pin recorded -- consistent with
+    // `disagree_deferred` rising above as the served recovery shifts when
+    // presses happen rather than how often shots reach the keeper. No
+    // historical byte-divergent split to compare against.
+    assert_eq!(matches_with_disagree, 15);
+    assert_eq!(matches_with_deferred, 33);
+    assert_eq!(matches_with_either, 38);
 }

@@ -230,14 +230,17 @@ fn ten_players(owner_pos: Vec2, others_far_away: bool) -> Vec<MatchPlayer> {
 
 /// #489's own acceptance criterion: "Possession-change clearing implemented
 /// once at the possession-change site; a test proves no verb-level bypass
-/// exists."
+/// exists." -- as narrowed by #578 (decided 2026-08-18): a PENDING action
+/// (`Charging`/`Executing`) clears on the possession change; a `Recovering`
+/// penalty SURVIVES it, because clearing it was a refund of an
+/// already-imposed cost (see `action_slot::clear_interrupted`'s doc).
 ///
 /// This constructs a player mid-`Charging`/`Executing`/`Recovering` for
 /// EVERY phase the action slot has, drives one real possession change
 /// through `sim_match::step` (a keeper smother -- `attempt_steals`'s own
 /// unconditional-clear path, unrelated to the tackle verb under test), and
-/// asserts the committed action clears every time. Proving this against the
-/// GENERIC mechanism (`action_slot::clear`, exercised through
+/// asserts each phase's decided outcome. Proving this against the
+/// GENERIC mechanism (`action_slot::clear_interrupted`, exercised through
 /// `r#match::set_owner`, the single ownership choke point every
 /// `s.owner` assignment in this crate goes through) is what makes it a
 /// structural guarantee rather than a per-call-site spot check: a future
@@ -312,12 +315,22 @@ fn possession_change_clears_a_committed_action_from_every_phase_no_matter_the_ve
             "the home keeper (index 1) must have smothered the ball this tick -- if this \
              fails, the fixture stopped proving a real possession change happened"
         );
+        let expected = match phase {
+            // Pending actions clear: they stop meaning anything without
+            // the ball, and a verb-level bypass would leave them non-idle.
+            ActionPhase::Charging | ActionPhase::Executing => ActionPhase::None,
+            // An earned penalty survives: clearing it on the possession
+            // change was the #578 refund. If this arm ever reads `None`,
+            // the choke point went back to the unconditional clear.
+            ActionPhase::Recovering => ActionPhase::Recovering,
+            ActionPhase::None => unreachable!("None is not exercised by this loop"),
+        };
         assert_eq!(
             state.players[carrier_idx - 1].action.phase,
-            ActionPhase::None,
-            "phase {phase:?}: the dispossessed player's committed action must clear \
-             unconditionally on the possession change, through the single set_owner \
-             choke point -- a verb-level bypass would leave this non-idle"
+            expected,
+            "phase {phase:?}: the possession change must clear a pending action and \
+             preserve a recovering penalty (#578), through the single set_owner choke \
+             point"
         );
     }
 }

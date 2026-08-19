@@ -531,7 +531,15 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // derived half and nothing else. Note the contrast with
     // `expected_final_hash`, which did NOT move in that same re-record: this
     // digest folds in every boundary, that one only the last.
-    assert_eq!(rollback_lab::tape_digest(&tape), "1610d58d94835361");
+    //
+    // And again for #578 (a `Recovering` penalty survives the possession
+    // change), the same shape as #572: derived `boundary_hashes` alone,
+    // snapshot_version untouched, `expected_final_hash` unmoved. A first
+    // isolated `--test rollback_lab` run during that re-freeze passed
+    // because it ran BEFORE the OMP-1 derived re-record this digest folds
+    // in -- the same only-the-full-suite-counts trap #572's own re-freeze
+    // hit when cargo stopped at an earlier failing binary.
+    assert_eq!(rollback_lab::tape_digest(&tape), "31f7f079208e2bf9");
 }
 
 #[test]
