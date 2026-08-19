@@ -129,9 +129,23 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
    * room-hosting attempt that fails or is cancelled falls back to the
    * manual role screen, and a manual host pick from there must apply this
    * mode too, or it silently reverts to `DEFAULT_MODE`. See
-   * `applyPendingModeIfHostJustResolved()`'s own doc below.
+   * `applyPendingHostOptionsIfJustResolved()`'s own doc below.
    */
   readonly mode?: SessionMatchMode;
+  /**
+   * Host-side only, the same reasoning and the same deferred-application
+   * mechanism as `mode`: the persisted "last bot fill choice" (`app.ts`'s
+   * `team_settings.ts`), applied as a `bot_fill` toggle the moment this
+   * peer first becomes the host of a real coordinator, never synchronously
+   * at construction -- `lobby_model.ts`'s `bot_fill` command requires
+   * `model.role === "host"` already, which is exactly the state a
+   * `roomIntent: "host"` construction has NOT yet reached (`chooseRole`
+   * only runs once `room_created` confirms the room, or a manual role pick
+   * resolves it). See `applyPendingHostOptionsIfJustResolved()`'s own doc.
+   * `false`/`undefined` dispatches nothing, since the model default
+   * (`bot_fill: false`) already matches.
+   */
+  readonly botFill?: boolean;
 }
 
 export type OnlineLobbyAction = { readonly go: string; readonly [key: string]: unknown };
@@ -187,10 +201,15 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
   /**
    * The front door's chosen match size, held until this peer first becomes
    * the host of a real coordinator -- see `OnlineLobbyOptions.mode`'s own
-   * doc and `applyPendingModeIfHostJustResolved()` below, the only place
+   * doc and `applyPendingHostOptionsIfJustResolved()` below, the only place
    * this is read.
    */
   private pendingMode: SessionMatchMode | undefined;
+  /**
+   * The persisted "last bot fill choice", held the same way and applied by
+   * the same hook -- see `OnlineLobbyOptions.botFill`'s own doc.
+   */
+  private pendingBotFill: boolean | undefined;
 
   constructor(
     viewport: { readonly w: number; readonly h: number },
@@ -206,6 +225,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     this.newLink = options.newLink;
     this.roomSignaling = options.roomSignaling;
     this.pendingMode = options.roomIntent === "host" ? options.mode : undefined;
+    this.pendingBotFill = options.roomIntent === "host" ? options.botFill : undefined;
     // Last, and only once every field above is set: `dispatch` runs effects,
     // and `run()` reads `starFactory`/`newLink`/`roomSignaling`.
     if (options.roomIntent !== undefined) {
@@ -221,6 +241,13 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
         // extra input to reach it.
         this.state = { ...this.state, focus: ROOM_CODE_ENTRY_WIDGET };
       }
+      // No synchronous `bot_fill` dispatch here (there used to be one,
+      // gated on a `role` option #603 removed): `room_pick`'s host path
+      // does not run `chooseRole` immediately, so `model.role` is not yet
+      // "host" at this point and `lobby_model.ts`'s `bot_fill` command
+      // would simply be refused. `pendingBotFill` above and
+      // `applyPendingHostOptionsIfJustResolved()` below cover it instead,
+      // the same way `pendingMode` already had to.
     }
   }
 
@@ -232,31 +259,42 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     if (action && this.onAction) {
       this.onAction(action);
     }
-    this.applyPendingModeIfHostJustResolved(hadHostRole);
+    this.applyPendingHostOptionsIfJustResolved(hadHostRole);
   }
 
   /**
-   * The front door's chosen mode reaches the manifest the host proposes the
-   * moment this peer FIRST becomes the host of a real coordinator -- not
-   * only via `room_created` (the room-code path this option exists for),
-   * but also via a manual "role" pick made after a preset room-hosting
-   * attempt fails or is cancelled (round-2 council review, blocking
-   * finding 1: `pendingMode` used to be read only in `dispatch()`'s
-   * `room_created` branch, so that second path silently reverted to
-   * `DEFAULT_MODE`). Both routes run `lobby_model.ts`'s `chooseRole`,
-   * which is what actually creates the coordinator `setMode` requires --
-   * so "role just became host" is the one condition that has to be
-   * checked, regardless of which command produced it. `dispatch()` covers
-   * `room_created`; `event()` covers a manual "role" click, which goes
-   * through `lobby.ts`'s general click path, never `dispatch()`.
+   * The front door's chosen mode, and the persisted bot-fill choice, reach
+   * the model the moment this peer FIRST becomes the host of a real
+   * coordinator -- not only via `room_created` (the room-code path both
+   * options exist for), but also via a manual "role" pick made after a
+   * preset room-hosting attempt fails or is cancelled (round-2 council
+   * review, blocking finding 1: `pendingMode` used to be read only in
+   * `dispatch()`'s `room_created` branch, so that second path silently
+   * reverted to `DEFAULT_MODE`; #600 extends the same fix to
+   * `pendingBotFill`, for the identical reason -- see its own doc). Both
+   * routes run `lobby_model.ts`'s `chooseRole`, which is what actually
+   * creates the coordinator `setMode`/`bot_fill` require -- so "role just
+   * became host" is the one condition that has to be checked, regardless
+   * of which command produced it. `dispatch()` covers `room_created`;
+   * `event()` covers a manual "role" click, which goes through
+   * `lobby.ts`'s general click path, never `dispatch()`.
    */
-  private applyPendingModeIfHostJustResolved(hadHostRole: boolean): void {
-    if (hadHostRole || this.state.model.role !== "host" || this.pendingMode === undefined) {
+  private applyPendingHostOptionsIfJustResolved(hadHostRole: boolean): void {
+    if (hadHostRole || this.state.model.role !== "host") {
       return;
     }
-    const mode = this.pendingMode;
-    this.pendingMode = undefined;
-    this.dispatch({ kind: "mode", mode });
+    if (this.pendingMode !== undefined) {
+      const mode = this.pendingMode;
+      this.pendingMode = undefined;
+      // Recurses into `dispatch()` -> this method again with `hadHostRole`
+      // now true (role already resolved above), so it returns immediately
+      // on the guard above rather than re-entering either branch here.
+      this.dispatch({ kind: "mode", mode });
+    }
+    if (this.pendingBotFill === true) {
+      this.pendingBotFill = undefined;
+      this.dispatch({ kind: "bot_fill" });
+    }
   }
 
   private run(effects: readonly LobbyEffect[]): void {
@@ -335,7 +373,7 @@ export class OnlineLobby<TStar, TEvent extends LobbyCommand> {
     if (action && this.onAction) {
       this.onAction(action);
     }
-    this.applyPendingModeIfHostJustResolved(hadHostRole);
+    this.applyPendingHostOptionsIfJustResolved(hadHostRole);
   }
 
   draw(backend: GraphicsBackend): void {

@@ -63,8 +63,37 @@ export interface TeamSheetScreenState {
   readonly message: string;
 }
 
+/** The sheet's current draft -- the same four decisions whether the visit
+ * ends in a committed kickoff or a plain BACK. BACK used to carry nothing
+ * (`{ go: "title" }`), which meant a standalone visit from the main menu
+ * (title.ts's TEAM entry) that changed something and then backed out lost
+ * the edit even within the same running session -- `app.ts`'s `team_sheet`
+ * route had nothing to commit. Both actions carry it now so the caller
+ * (`app.ts`) can commit and persist either way. */
+export interface TeamSheetDraft {
+  readonly starterIds: readonly string[];
+  readonly formationId: string;
+  readonly tacticId: string;
+  readonly combatEnabled: boolean;
+}
+
+// Each variant is spelled out flat rather than as `{ go: "..." } &
+// TeamSheetDraft`: an intersection type here is NOT structurally assignable
+// to `@gc/app`'s `AppAction` (`{ go: string } & Record<string, unknown>`) --
+// TypeScript does not synthesize an implicit index signature across an
+// intersection the way it does for a single flat object type, so `app.ts`'s
+// `new Menu(teamSheet, ...)` fails to typecheck against a `ScreenDef`
+// expecting `AppAction`. `draft()` below still returns one `TeamSheetDraft`
+// and both action builders spread it into a fresh literal, so the fields
+// stay declared once.
 export type TeamSheetAction =
-  | { readonly go: "title" }
+  | {
+      readonly go: "title";
+      readonly starterIds: readonly string[];
+      readonly formationId: string;
+      readonly tacticId: string;
+      readonly combatEnabled: boolean;
+    }
   | {
       readonly go: "match";
       readonly starterIds: readonly string[];
@@ -385,14 +414,23 @@ function togglePlayer(state: TeamSheetScreenState, playerId: string): TeamSheetS
   return { ...state, message: `Drop someone before adding ${player.name}.` };
 }
 
-function kickOff(state: TeamSheetScreenState): TeamSheetAction {
+function draft(state: TeamSheetScreenState): TeamSheetDraft {
   return {
-    go: "match",
     starterIds: [...state.selectedIds],
     formationId: state.formationId,
     tacticId: state.tacticId,
     combatEnabled: state.combatEnabled,
   };
+}
+
+function kickOff(state: TeamSheetScreenState): TeamSheetAction {
+  return { go: "match", ...draft(state) };
+}
+
+/** Leaving without kicking off -- see `TeamSheetDraft`'s own doc for why
+ * this carries the draft rather than nothing. */
+function backToTitle(state: TeamSheetScreenState): TeamSheetAction {
+  return { go: "title", ...draft(state) };
 }
 
 function update(
@@ -406,7 +444,7 @@ function update(
     focus: focus.navigate(currentLayout, state.focus, event) ?? state.focus,
   };
   if (event.kind === "action" && event.action === "back") {
-    return [next, { go: "title" }];
+    return [next, backToTitle(next)];
   }
 
   const id = focus.activated(currentLayout, next.focus, event);
@@ -416,7 +454,7 @@ function update(
   next = { ...next, focus: id };
 
   if (id === "back") {
-    return [next, { go: "title" }];
+    return [next, backToTitle(next)];
   }
   if (id === "kickoff") {
     // `focus.clickable` already refuses the disabled button, so this guard is
