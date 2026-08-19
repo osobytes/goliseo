@@ -465,10 +465,11 @@ export class App {
     } else if (route === "title" && action.go === "team") {
       // Reached from the menu directly, rather than through Play -- see
       // `title.ts`'s header. Same destination either way: `team_sheet`'s
-      // own `back` always emits `{go: "title"}` regardless of how it was
-      // entered, so "visit, edit, leave" and "on the way to a match" share
-      // one route and one commit point (`route === "team_sheet" && action.go
-      // === "match"` below).
+      // `back` now carries the same draft `match` does (`TeamSheetDraft`),
+      // so BOTH the `title` branch below and the `match` branch commit and
+      // persist it -- "visit, edit, leave" saves exactly like "on the way
+      // to a match" does, instead of a standalone visit silently discarding
+      // an edit on BACK.
       this.showTeamSheet();
     } else if (route === "title" && action.go === "multiplayer") {
       this.showMultiplayer();
@@ -543,6 +544,18 @@ export class App {
       }
       this.popRoute();
     } else if (route === "team_sheet" && action.go === "title") {
+      // BACK carries the same draft `match` does (`TeamSheetDraft`) -- an
+      // incomplete or currently-illegal five is fine here (unlike the
+      // `match` branch below, nothing is about to kick off with it), and
+      // gets caught again on the next boot regardless
+      // (`team_settings.ts`'s `validateAgainstContent`), so this commits
+      // unconditionally via the unchecked `setDraftStarters` rather than
+      // the strict, `Result`-returning `setStarters`.
+      session.setDraftStarters(this.session, action.starterIds as readonly string[]);
+      session.setFormation(this.session, action.formationId as string);
+      session.setTactic(this.session, action.tacticId as string);
+      session.setCombatEnabled(this.session, action.combatEnabled === true);
+      this.saveTeamPreferences();
       this.showTitle();
     } else if (route === "team_sheet" && action.go === "match") {
       // One commit, three decisions. Starters are validated first: an invalid

@@ -24,6 +24,7 @@ export { teamSheet, STARTER_COUNT } from "./team_sheet.ts";
 export type {
   TeamSheetAction,
   TeamSheetContentData,
+  TeamSheetDraft,
   TeamSheetScreenContext,
   TeamSheetScreenState,
 } from "./team_sheet.ts";

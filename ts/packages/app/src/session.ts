@@ -61,6 +61,21 @@ function setStarters(
   return validated;
 }
 
+/**
+ * Applies the team sheet's current draft without requiring it be a
+ * complete, legal five -- unlike `setStarters`, which stays the strict,
+ * `Result`-returning gate a real match needs. This is the counterpart for a
+ * visit that ends in BACK rather than a committed kickoff
+ * (`app.ts`'s `route === "team_sheet" && action.go === "title"` branch):
+ * an in-progress edit (three players chosen, say) still deserves to be
+ * saved rather than discarded, and an incomplete/illegal five is caught
+ * again on the next boot regardless (`team_settings.ts`'s
+ * `validateAgainstContent`), so there is nothing to guard here.
+ */
+function setDraftStarters(state: GameSession, ids: readonly string[]): void {
+  state.starterIds = [...ids];
+}
+
 function setFormation(state: GameSession, formationId: string): void {
   state.formationId = formationId;
 }
@@ -109,6 +124,7 @@ function routeForResult(action: ResultAction): "match" | "team_sheet" | "title" 
 export const session = {
   new: newState,
   setStarters,
+  setDraftStarters,
   setFormation,
   setTactic,
   setCombatEnabled,

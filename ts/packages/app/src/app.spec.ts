@@ -152,7 +152,7 @@ describe("product application flow", () => {
     expect(app.currentRoute()).toBe("title");
   });
 
-  it("carries every committed choice back into the team sheet it was made on", () => {
+  it("carries every choice back into the team sheet it was made on, and BACK commits it too", () => {
     const app = newApp();
     clickWidget(app, "play");
     clickWidget(app, "formation_1-1-2");
@@ -160,12 +160,19 @@ describe("product application flow", () => {
     clickWidget(app, "back");
     expect(app.currentRoute()).toBe("title");
 
-    // The session only learns the choices at kick off, so a Back that never
-    // committed leaves it untouched.
+    // BACK commits the draft too now (#600's team-persistence fix), not
+    // only a kickoff -- a standalone visit that ends in BACK still sticks.
+    expect(app.session.formationId).toBe("1-1-2");
+    expect(app.session.tacticId).toBe("counter");
+
     clickWidget(app, "play");
     expect(app.currentRoute()).toBe("team_sheet");
-    clickWidget(app, "formation_1-1-2");
-    clickWidget(app, "tactic_counter");
+    const reopened = menuLayout(app.stack.current());
+    const reopenedShape = reopened ? hit.find(reopened, "formation_1-1-2") : null;
+    expect((reopenedShape as { readonly selected?: boolean } | null)?.selected).toBe(true);
+    const reopenedTactic = reopened ? hit.find(reopened, "tactic_counter") : null;
+    expect((reopenedTactic as { readonly selected?: boolean } | null)?.selected).toBe(true);
+
     clickWidget(app, "kickoff");
     expect(app.session.formationId).toBe("1-1-2");
     expect(app.session.tacticId).toBe("counter");
@@ -350,6 +357,44 @@ describe("team persistence (#600)", () => {
 
     clickWidget(app, "back");
     expect(app.currentRoute()).toBe("title");
+  });
+
+  it("keeps an edit made on a standalone TEAM visit after BACK, and shows it on the next visit", () => {
+    const app = newApp();
+    clickWidget(app, "team");
+    expect(app.currentRoute()).toBe("team_sheet");
+    clickWidget(app, "formation_1-1-2");
+    clickWidget(app, "tactic_press_high");
+    clickWidget(app, "back");
+    expect(app.currentRoute()).toBe("title");
+
+    // BACK committed the edit -- it was never near "kickoff".
+    expect(app.session.formationId).toBe("1-1-2");
+    expect(app.session.tacticId).toBe("press_high");
+
+    clickWidget(app, "team");
+    expect(app.currentRoute()).toBe("team_sheet");
+    const layout = menuLayout(app.stack.current());
+    const formation = layout ? hit.find(layout, "formation_1-1-2") : null;
+    expect((formation as { readonly selected?: boolean } | null)?.selected).toBe(true);
+    const tactic = layout ? hit.find(layout, "tactic_press_high") : null;
+    expect((tactic as { readonly selected?: boolean } | null)?.selected).toBe(true);
+  });
+
+  it("persists a standalone TEAM edit to storage on BACK, not only on kickoff", () => {
+    const storage = memoryStorage();
+    const app = newApp({ teamSettingsStorage: storage });
+    clickWidget(app, "team");
+    clickWidget(app, "formation_1-2-1");
+    clickWidget(app, "tactic_counter");
+    clickWidget(app, "combat");
+    clickWidget(app, "back");
+    expect(app.currentRoute()).toBe("title");
+
+    const saved = teamSettings.load(storage);
+    expect(saved.formationId).toBe("1-2-1");
+    expect(saved.tacticId).toBe("counter");
+    expect(saved.combatEnabled).toBe(false);
   });
 
   it("boots the session seeded from persisted, content-valid team preferences", () => {
