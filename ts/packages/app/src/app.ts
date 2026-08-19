@@ -141,6 +141,16 @@ export interface AppOptions {
   /** Playtest convenience: boot straight into a match. */
   readonly quickMatch?: boolean;
   readonly online?: OnlinePorts;
+  /**
+   * A one-click join link's room code (#598), already parsed and validated
+   * at boot (`browser_main.ts`'s `roomCodeFromSearch`, against the SAME
+   * alphabet/length `@gc/online`'s `room_signaling.ts` exports -- never
+   * re-derived). When present, boot routes directly into the lobby as a
+   * guest with this code pre-filled and auto-submitted
+   * (`showLobby`'s own `presetRoomCode`), instead of the title screen --
+   * see the constructor below for the one place this is read.
+   */
+  readonly presetRoomCode?: string;
 }
 
 function asMenu<State extends { readonly viewport: Viewport }, Action>(
@@ -210,6 +220,14 @@ export class App {
 
     if (opts.quickMatch) {
       this.startMatch();
+    } else if (opts.presetRoomCode !== undefined && this.online) {
+      // #598: a join link lands here with a room code already validated at
+      // the boot boundary -- straight into the lobby as a guest, code
+      // pre-filled and auto-submitted, never the title screen. `this.online`
+      // is checked defensively (`showLobby` throws without it) rather than
+      // asserted: a preset code with no online ports injected falls back to
+      // the title screen instead of crashing boot.
+      this.showLobby({ intent: "guest", presetRoomCode: opts.presetRoomCode });
     } else {
       this.showTitle();
     }
@@ -379,6 +397,10 @@ export class App {
     readonly modelOptions?: Record<string, unknown>;
     readonly intent?: "host" | "guest";
     readonly mode?: string;
+    /** #598: a join link's room code, pre-filled and auto-submitted the
+     * moment a `"guest"` intent's composer is revealed. See
+     * `AppOptions.presetRoomCode`'s own doc for where this originates. */
+    readonly presetRoomCode?: string;
   }): void {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
@@ -395,6 +417,7 @@ export class App {
       // value is simply never dispatched, and only applied once this peer
       // actually resolves to host -- `pendingBotFill`, not synchronously).
       ...(options?.intent === "host" ? { botFill: this.lastBotFill } : {}),
+      ...(options?.presetRoomCode !== undefined ? { presetRoomCode: options.presetRoomCode } : {}),
     };
     const screen = this.online.newLobbyScreen(this.onAction(), resolved);
     this.pushRoute("lobby", screen);

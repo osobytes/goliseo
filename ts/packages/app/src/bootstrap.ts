@@ -15,6 +15,9 @@ export interface BootstrapOptions {
   /** playtest: boot straight into a match. */
   readonly quickMatch?: boolean;
   readonly online?: OnlinePorts;
+  /** A join link's room code (#598) -- see `AppOptions.presetRoomCode`'s
+   * own doc. */
+  readonly presetRoomCode?: string;
 }
 
 function newApp(
@@ -36,6 +39,7 @@ function newApp(
       : {}),
     ...(opts.quickMatch !== undefined ? { quickMatch: opts.quickMatch } : {}),
     ...(opts.online !== undefined ? { online: opts.online } : {}),
+    ...(opts.presetRoomCode !== undefined ? { presetRoomCode: opts.presetRoomCode } : {}),
   });
 }
 
