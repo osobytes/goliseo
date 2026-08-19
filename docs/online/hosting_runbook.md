@@ -31,9 +31,11 @@ issue and in `docs/online/relay_topology_decision.md`.
   and guest(s) -- it never parses SDP/ICE content, only the small routing
   envelope a host uses to address a specific guest, and the exact wire
   shape (including a documented body-encoding asymmetry between the two
-  directions) is in `room_durable_object.ts`'s module doc. Rooms expire
-  (`ROOM_TTL_MS` in `room_state.ts`) and cap at one host plus
-  `MAX_GUESTS` (7) guests.
+  directions, and the in-band admission-failure/`host_left` frames #599
+  added) is in `room_durable_object.ts`'s module doc. Rooms expire on a
+  sliding idle window re-armed by live activity (`ROOM_IDLE_TTL_MS` in
+  `room_state.ts`), capped at `ROOM_MAX_LIFETIME_MS` (2h) regardless of
+  activity, and cap at one host plus `MAX_GUESTS` (7) guests.
 - **TURN credentials.** `GET /api/turn-credentials` calls Cloudflare
   Realtime's `generate-ice-servers` API using the `TURN_KEY_ID` /
   `TURN_API_TOKEN` Worker secrets and returns short-TTL

@@ -8,13 +8,15 @@
   "main": "src/index.ts",
 
   // Set to today at authoring time; see docs/online/hosting_runbook.md for
-  // when to bump this. RoomDurableObject is invoked through its fetch()
-  // handler (the WebSocket upgrade path) -- it has no RPC methods -- and
-  // relies on the WebSocket Hibernation API (ctx.acceptWebSocket,
-  // ctx.getWebSockets, (de)serializeAttachment), which has been part of
-  // the standard runtime for a long time; there is no specific minimum
-  // compatibility_date it needs. Kept recent regardless, for the newer
-  // flags this config uses elsewhere (the Rate Limiting bindings below).
+  // when to bump this. RoomDurableObject is invoked mainly through its
+  // fetch() handler (the WebSocket upgrade path), which relies on the
+  // WebSocket Hibernation API (ctx.acceptWebSocket, ctx.getWebSockets,
+  // (de)serializeAttachment) -- part of the standard runtime for a long
+  // time, no specific minimum compatibility_date needed for it. #599 (round
+  // 2) added its one RPC method, isClaimedByHost() -- deliberately NOT a
+  // fetch() branch, since a raw HTTP request can reach fetch() but not an
+  // RPC method (room_durable_object.ts's own doc, "Collision probe"); this
+  // compatibility_date is recent enough to support that RPC call shape.
   "compatibility_date": "2026-08-15",
 
   // Serves the built game (ts/dist-app/ -- see

@@ -41,6 +41,102 @@
 //! Binary (`ArrayBuffer`) frames are rejected outright, from either role
 //! -- see `webSocketMessage`'s own comment for why forwarding one would be
 //! silent data loss rather than a relay.
+//!
+//! ## Admission failures are in-band
+//!
+//! A browser `WebSocket` cannot read the HTTP status of a failed upgrade at
+//! all (the platform gives a script no access to it -- see `@gc/online`'s
+//! `room_signaling.ts`, `RoomSignalingFailureReason`'s own doc), so a
+//! pre-upgrade HTTP rejection is invisible to a client past "something went
+//! wrong". `fetch` below completes the WebSocket upgrade EVEN ON an
+//! admission failure (`claimHost`/`joinGuest` rejecting), sends this file's
+//! existing in-band frame shape, `{ "type": "error", "error": "<reason>" }`,
+//! then closes with a reason-mapped code (`ADMISSION_CLOSE_CODE`) and never
+//! accepts the socket into hibernation (`rejectInBand`'s own comment). The
+//! reasons `claimHost`/`joinGuest` (`room_state.ts`) can produce, every one
+//! of them now reaching a client this way: `room_not_found` (a guest
+//! addressed a code no host has ever claimed -- indistinguishable, at this
+//! layer, from a code that was never issued at all), `room_full`,
+//! `room_expired`, `room_closed`, `host_already_claimed`, `already_joined`.
+//! `room_not_open` -- returned by `routeSignal`, not `claimHost`/
+//! `joinGuest` -- is a DIFFERENT, already in-band case: a signal arriving on
+//! an already-admitted socket for a room that is no longer open
+//! (`webSocketMessage` below), not an admission failure at all.
+//!
+//! Exactly FOUR requests stay pre-upgrade HTTP rejections, and this list is
+//! exhaustive -- a fifth here without updating it is a bug:
+//! 1. **Missing/invalid `Upgrade: websocket`.** Rejected in `index.ts`'s
+//!    `handleHostSignal`/`handleJoinSignal`, BEFORE either even calls
+//!    `env.ROOM.getByName` -- this DO is never addressed at all for a
+//!    non-upgrade request. Round-2 council review, blocking finding 1: a
+//!    non-upgrade branch used to live in THIS file's own `fetch` (the
+//!    collision probe -- see below) and answered "is this code claimed" to
+//!    any caller for the mere cost of a per-IP rate-limit token, with no
+//!    `Upgrade` header required at all -- an unauthenticated,
+//!    internet-reachable room-existence oracle that also bypassed
+//!    `JOIN_RATE_LIMIT` below entirely (a non-upgrade request never reaches
+//!    the code that consumes it). The fix moved the collision probe off the
+//!    public `fetch` surface (see below) and put the `Upgrade` check in
+//!    front of `env.ROOM.getByName` itself, so nothing non-upgrade can
+//!    reach this DO by any path.
+//! 2. **The per-IP `SIGNAL_RATE_LIMITER`.** Also `index.ts`, also before
+//!    `env.ROOM.getByName` -- guards against minting/addressing Durable
+//!    Objects in a loop (`index.ts`'s own doc).
+//! 3. **A malformed room-code shape**, `handleJoinSignal` only (`index.ts`).
+//! 4. **`JOIN_RATE_LIMIT`, `fetch` below.** UNLIKE the two above, this one
+//!    runs INSIDE this DO, after the `Upgrade`/`Room-Role` checks have
+//!    already passed (so only a genuine, already-validated upgrade attempt
+//!    can ever reach it) but before `claimHost`/`joinGuest` -- it is a
+//!    per-ROOM abuse guard (repeated attempts against ONE already-known
+//!    code) distinct in purpose from `SIGNAL_RATE_LIMITER`'s per-CLIENT,
+//!    any-code guard, and it stays a plain HTTP 429 rather than becoming
+//!    in-band: unlike `claimHost`/`joinGuest`'s reasons, this one is not
+//!    part of the room's own admission logic, so treating it identically to
+//!    the two worker-level cheap paths above is consistent, not a special
+//!    case.
+//!
+//! ## Collision probe (RPC, not `fetch`)
+//!
+//! Every admission failure completing the upgrade (above) removed the ONE
+//! signal `index.ts`'s `handleHostSignal` used to read to know a freshly
+//! generated room code collided with an existing live room and it should
+//! retry with a different one (an HTTP 409, pre-upgrade). `isClaimedByHost`
+//! below is the replacement: an RPC method (this class extends
+//! `DurableObject`, so `env.ROOM.getByName(code).isClaimedByHost()` calls it
+//! directly, no HTTP request at all) `handleHostSignal` calls BEFORE
+//! attempting the real upgrade for each candidate code, so a collision
+//! (astronomically unlikely -- `room_code.ts`'s own doc) is caught without
+//! ever opening, and immediately tearing down, a real WebSocket for the
+//! losing code. Deliberately NOT a `fetch` branch (round-2 council review,
+//! blocking finding 1, above): an RPC method is reachable ONLY from code
+//! holding the actual DO stub (`env.ROOM.getByName`), never from an HTTP
+//! request to `/signal/*` by any header combination, which is what makes it
+//! safe to answer "is this code claimed" at all. `isRoomClaimedByHost`
+//! (`room_state.ts`) is the pure predicate both this method and `claimHost`
+//! itself derive their answer from, so the two cannot drift apart.
+//!
+//! ## Sliding TTL
+//!
+//! `room_state.ts`'s `ROOM_IDLE_TTL_MS`/`ROOM_MAX_LIFETIME_MS`/`touch`/
+//! `nextAlarmMs` are the pure half of this; this file's only job is calling
+//! `nextAlarmMs` and `ctx.storage.setAlarm` after anything that counts as
+//! activity (a claim or join succeeding, in `fetch`; a relayed signal, in
+//! `webSocketMessage`) so the cleanup alarm always reflects the room's
+//! current idle deadline rather than the one that was true when it was
+//! first scheduled. A FAILED admission attempt does not touch the room
+//! (`touch`'s own doc) but still re-arms the alarm from the room's
+//! unchanged state, so a code nobody ever successfully claims still cleans
+//! up on schedule.
+//!
+//! ## Host departure is an event
+//!
+//! When the host's socket disconnects and that closes the room
+//! (`hostDeparted`, `room_state.ts`), every currently connected guest
+//! receives `{ "type": "host_left" }` -- see `disconnect` below -- BEFORE
+//! the grace-period alarm (`CLOSE_GRACE_MS`) closes their sockets. This is
+//! a `send`, not a `close`, from inside another socket's own
+//! `webSocketClose` handler, so the hibernation-timing hazard `disconnect`'s
+//! own comment documents for `close()` does not apply to it.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -48,14 +144,16 @@ import { type FixedWindowState, tryConsume } from "./rate_limiter.ts";
 import {
   type ConnectionId,
   type RoomState,
-  ROOM_TTL_MS,
   claimHost,
   closeRoom,
-  isExpired,
+  hostDeparted,
+  isRoomClaimedByHost,
   joinGuest,
   newRoom,
+  nextAlarmMs,
   removeConnection,
   routeSignal,
+  touch,
 } from "./room_state.ts";
 
 /** At most this many join *attempts* (successful or not) per room per window -- abuse guard. */
@@ -63,6 +161,35 @@ const JOIN_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
 
 /** How long a just-closed room's storage lingers before cleanup, to let in-flight sends land. */
 const CLOSE_GRACE_MS = 5_000;
+
+/**
+ * WebSocket close codes for each admission-failure reason this DO reports
+ * in-band (this module's doc, "Admission failures"), in the 4000-4999
+ * "private use" range -- RFC 6455 §7.4.2 reserves 3000-3999 for
+ * IANA-registered libraries/frameworks. Distinct per reason so anything
+ * inspecting the close event alone (not just the `{"type":"error"}` frame
+ * that always arrives first) can still tell causes apart. Every reason
+ * `claimHost`/`joinGuest` (`room_state.ts`) can actually produce is listed;
+ * `DEFAULT_ADMISSION_CLOSE_CODE` is a defensive fallback for anything else.
+ */
+const ADMISSION_CLOSE_CODE: Readonly<Record<string, number>> = {
+  room_not_found: 4404,
+  room_full: 4408,
+  room_expired: 4409,
+  room_closed: 4410,
+  host_already_claimed: 4411,
+  already_joined: 4412,
+};
+
+/** Fallback for `ADMISSION_CLOSE_CODE` -- see its own doc. */
+const DEFAULT_ADMISSION_CLOSE_CODE = 4400;
+
+/** Exported for room_durable_object.spec.ts -- AGENTS.md §4: everything a
+ * test touches is reachable. The rest of this class's behavior needs a real
+ * Workers runtime (`vitest.config.ts`'s own doc); this mapping does not. */
+export function closeCodeForAdmissionFailure(reason: string): number {
+  return ADMISSION_CLOSE_CODE[reason] ?? DEFAULT_ADMISSION_CLOSE_CODE;
+}
 
 type Role = "host" | "guest";
 
@@ -82,6 +209,7 @@ function isSocketAttachment(value: unknown): value is SocketAttachment {
 interface RoomRow extends Record<string, SqlStorageValue> {
   readonly code: string;
   readonly created_at_ms: number;
+  readonly last_activity_ms: number;
   readonly phase: string;
   readonly host_id: string | null;
   readonly guest_ids: string;
@@ -101,6 +229,7 @@ export class RoomDurableObject extends DurableObject<Env> {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         code TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL,
+        last_activity_ms INTEGER NOT NULL,
         phase TEXT NOT NULL,
         host_id TEXT,
         guest_ids TEXT NOT NULL,
@@ -108,6 +237,40 @@ export class RoomDurableObject extends DurableObject<Env> {
         join_window_count INTEGER
       )
     `);
+    // `CREATE TABLE IF NOT EXISTS` above is a no-op against a room row that
+    // was already created before the sliding-TTL revision added this
+    // column, so a leftover pre-migration room needs it added explicitly.
+    // Backfilled from `created_at_ms`, NOT a fixed default of 0 (round-2
+    // council review, blocking finding 4): `isExpired` treats an unknown
+    // `lastActivityMs` of 0 as maximally stale, which is wrong for a room
+    // this instance reconstructs mid-lifetime after a routine hibernate/
+    // wake or a deploy -- a legitimately live, recently-active
+    // pre-migration room would reject its very next joiner with
+    // `room_expired` until some OTHER activity happened to touch it first.
+    // `created_at_ms` is the safe assumption instead: it makes a
+    // reconstructed pre-migration room age exactly like a brand-new one
+    // (`newRoom`'s own invariant, `lastActivityMs === createdAtMs`), never
+    // MORE stale than its real age -- confirmed by
+    // `room_state.spec.ts`'s own test for this exact shape.
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE room ADD COLUMN last_activity_ms INTEGER");
+      this.ctx.storage.sql.exec(
+        "UPDATE room SET last_activity_ms = created_at_ms WHERE last_activity_ms IS NULL",
+      );
+    } catch (error) {
+      // Narrowed to the one error this is meant to swallow: the column
+      // already exists -- the common case, for every room created under
+      // this schema version, including every brand-new one (the CREATE
+      // TABLE above already added it, so the ALTER here throws immediately
+      // and the UPDATE never runs -- correct, since a freshly created
+      // room's own later `saveState` INSERT will supply a real value
+      // anyway). Anything else is a genuine failure and must not be
+      // silently discarded -- AGENTS.md §7: fail loud.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("duplicate column name")) {
+        throw error;
+      }
+    }
   }
 
   private codeFromId(): string {
@@ -124,7 +287,7 @@ export class RoomDurableObject extends DurableObject<Env> {
   private loadState(nowMs: number): RoomState {
     const row = this.ctx.storage.sql
       .exec<RoomRow>(
-        "SELECT code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
+        "SELECT code, created_at_ms, last_activity_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
       )
       .toArray()[0];
     if (row === undefined) {
@@ -133,6 +296,7 @@ export class RoomDurableObject extends DurableObject<Env> {
     return {
       code: row.code,
       createdAtMs: row.created_at_ms,
+      lastActivityMs: row.last_activity_ms,
       phase: row.phase as RoomState["phase"],
       hostId: row.host_id,
       guestIds: JSON.parse(row.guest_ids) as ConnectionId[],
@@ -142,7 +306,7 @@ export class RoomDurableObject extends DurableObject<Env> {
   private loadJoinWindow(): FixedWindowState | null {
     const row = this.ctx.storage.sql
       .exec<RoomRow>(
-        "SELECT code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
+        "SELECT code, created_at_ms, last_activity_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count FROM room WHERE id = 1",
       )
       .toArray()[0];
     if (row === undefined || row.join_window_start_ms === null || row.join_window_count === null) {
@@ -153,11 +317,12 @@ export class RoomDurableObject extends DurableObject<Env> {
 
   private saveState(state: RoomState, joinWindow?: FixedWindowState): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO room (id, code, created_at_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count)
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO room (id, code, created_at_ms, last_activity_ms, phase, host_id, guest_ids, join_window_start_ms, join_window_count)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE SET
          code = excluded.code,
          created_at_ms = excluded.created_at_ms,
+         last_activity_ms = excluded.last_activity_ms,
          phase = excluded.phase,
          host_id = excluded.host_id,
          guest_ids = excluded.guest_ids,
@@ -165,6 +330,7 @@ export class RoomDurableObject extends DurableObject<Env> {
          join_window_count = COALESCE(excluded.join_window_count, room.join_window_count)`,
       state.code,
       state.createdAtMs,
+      state.lastActivityMs,
       state.phase,
       state.hostId,
       JSON.stringify(state.guestIds),
@@ -173,8 +339,31 @@ export class RoomDurableObject extends DurableObject<Env> {
     );
   }
 
+  /**
+   * RPC-only collision probe for `handleHostSignal`'s retry loop
+   * (`index.ts`) -- see this module's doc, "Collision probe (RPC, not
+   * `fetch`)". Called directly on the stub
+   * (`env.ROOM.getByName(code).isClaimedByHost()`), NEVER through `fetch`,
+   * so it is unreachable from any HTTP request to `/signal/*` regardless of
+   * headers. Reads state, saves nothing, never touches a WebSocket.
+   */
+  public isClaimedByHost(): boolean {
+    const nowMs = Date.now();
+    const state = this.loadState(nowMs);
+    return isRoomClaimedByHost(state, nowMs);
+  }
+
   public override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
+      // `index.ts`'s `handleHostSignal`/`handleJoinSignal` already reject a
+      // non-upgrade request before EVER addressing this DO (this module's
+      // doc, "Admission failures are in-band" -- the exhaustive pre-upgrade
+      // list) -- this is a second, independent gate in case anything else
+      // ever calls `fetch` directly. Never a probe response (409/200) here
+      // any more: that used to live in this branch and was an
+      // unauthenticated room-existence oracle (round-2 council review,
+      // blocking finding 1) -- the collision probe is `isClaimedByHost`
+      // above now, reachable only via RPC.
       return new Response("expected a WebSocket upgrade", { status: 426 });
     }
     const role = request.headers.get("Room-Role");
@@ -184,20 +373,7 @@ export class RoomDurableObject extends DurableObject<Env> {
     }
 
     const nowMs = Date.now();
-    let state = this.loadState(nowMs);
-
-    // First request this instance has ever served for this code: arm the
-    // TTL cleanup alarm. Harmless to (re-)arm on a request that goes on to
-    // fail its claim below -- disconnect()/alarm() below treat an
-    // unpersisted synthetic room as already closed.
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(state.createdAtMs + ROOM_TTL_MS);
-    }
-
-    if (state.phase !== "closed" && isExpired(state, nowMs)) {
-      state = closeRoom(state);
-      this.saveState(state);
-    }
+    const state = this.loadState(nowMs);
 
     const windowResult = tryConsume(this.loadJoinWindow(), nowMs, JOIN_RATE_LIMIT);
     if (!windowResult.ok) {
@@ -210,17 +386,25 @@ export class RoomDurableObject extends DurableObject<Env> {
         ? claimHost(state, connectionId, nowMs)
         : joinGuest(state, connectionId, nowMs);
     if (!claimResult.ok) {
+      // Admission failure: complete the upgrade and refuse IN-BAND instead
+      // of rejecting the HTTP request -- see this module's doc, "Admission
+      // failures". `state` (not touched -- see `touch`'s own doc) is what
+      // gets persisted and what the alarm re-arms from, so a code nobody
+      // ever successfully claims still cleans up on schedule.
       this.saveState(state, windowResult.value);
-      return new Response(claimResult.error, { status: 409 });
+      await this.ctx.storage.setAlarm(nextAlarmMs(state));
+      return this.rejectInBand(claimResult.error);
     }
 
+    const nextState = claimResult.value;
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     const attachment: SocketAttachment = { connectionId, role };
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
-    this.saveState(claimResult.value, windowResult.value);
+    this.saveState(nextState, windowResult.value);
+    await this.ctx.storage.setAlarm(nextAlarmMs(nextState));
 
     server.send(
       JSON.stringify(
@@ -238,6 +422,23 @@ export class RoomDurableObject extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /** Completes the WebSocket upgrade for an admission failure instead of
+   * rejecting the HTTP request -- see this module's doc, "Admission
+   * failures". `server.accept()` (not `ctx.acceptWebSocket`) is deliberate:
+   * this socket sends exactly one frame and closes immediately, so it never
+   * needs hibernation, and skipping `ctx.acceptWebSocket` keeps it out of
+   * `ctx.getWebSockets()` entirely -- nothing here should ever try to relay
+   * through, or broadcast to, a socket that was never admitted. */
+  private rejectInBand(reason: string): Response {
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    server.accept();
+    server.send(JSON.stringify({ type: "error", error: reason }));
+    server.close(closeCodeForAdmissionFailure(reason), reason);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   /** Send `body` to the room's host socket, if one is currently connected. */
   private sendToHost(body: unknown): void {
     const message = JSON.stringify(body);
@@ -249,7 +450,31 @@ export class RoomDurableObject extends DurableObject<Env> {
     }
   }
 
-  public override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  /** Send `body` to every connected guest socket -- the opposite direction
+   * from `sendToHost`, used only for `host_left` (this module's doc, "Host
+   * departure"). */
+  private sendToGuests(body: unknown): void {
+    const message = JSON.stringify(body);
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment: unknown = socket.deserializeAttachment();
+      if (isSocketAttachment(attachment) && attachment.role === "guest") {
+        try {
+          socket.send(message);
+        } catch {
+          // One already-closing guest socket must not abort the fan-out to
+          // the rest, nor -- since this runs from inside `disconnect`,
+          // before it schedules the grace-period alarm -- skip that
+          // scheduling entirely (round-2 council review, non-blocking
+          // finding).
+        }
+      }
+    }
+  }
+
+  public override async webSocketMessage(
+    ws: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
     const attachment: unknown = ws.deserializeAttachment();
     if (!isSocketAttachment(attachment)) {
       ws.close(1011, "unrecognized connection");
@@ -304,6 +529,12 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    // A relayed signal is live activity -- re-arm the sliding idle window
+    // (this module's doc, "Sliding TTL").
+    const touched = touch(state, nowMs);
+    this.saveState(touched);
+    await this.ctx.storage.setAlarm(nextAlarmMs(touched));
+
     const outgoing = JSON.stringify(
       attachment.role === "host"
         ? { type: "signal", from: "host", body: outgoingBody }
@@ -336,6 +567,14 @@ export class RoomDurableObject extends DurableObject<Env> {
     this.saveState(nextState);
 
     if (nextState.phase === "closed") {
+      if (hostDeparted(state, nextState)) {
+        // Tell every connected guest BEFORE the grace-period alarm closes
+        // their sockets (this module's doc, "Host departure"). A `send()`
+        // to OTHER sockets from inside this socket's own webSocketClose
+        // handler is fine -- the hibernation-timing hazard documented right
+        // below is specific to `close()`, not `send()`.
+        this.sendToGuests({ type: "host_left" });
+      }
       // Close the OTHER live sockets from the alarm handler, not here.
       // A hibernatable socket's close() called synchronously from inside a
       // DIFFERENT socket's own webSocketClose handler does not reliably

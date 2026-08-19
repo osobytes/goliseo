@@ -56,7 +56,14 @@ export interface LobbyLinkInstance<TStar, TEvent extends LobbyCommand> {
  * other fields are populated according to which. */
 export interface RoomSignalingEvent {
   readonly kind:
-    "created" | "joined" | "guest_joined" | "guest_left" | "signal" | "failed" | "dropped";
+    | "created"
+    | "joined"
+    | "guest_joined"
+    | "guest_left"
+    | "signal"
+    | "failed"
+    | "dropped"
+    | "host_left";
   readonly code?: string;
   readonly guest_id?: string;
   readonly signal?: string;
@@ -156,6 +163,13 @@ function roomCommandFor(event: RoomSignalingEvent): LobbyCommand {
       return { kind: "room_failed", reason: event.reason ?? "unknown" };
     case "dropped":
       return { kind: "room_dropped" };
+    case "host_left":
+      // Reuses the existing `room_failed` machinery rather than a new
+      // command -- a host departure IS a room-code connection ending, with
+      // its own distinct player-facing copy (`lobby_model.ts`'s
+      // `ROOM_FAILURE_TEXT["host_left"]`), the same as every other reason
+      // that pipeline already handles.
+      return { kind: "room_failed", reason: "host_left" };
   }
 }
 

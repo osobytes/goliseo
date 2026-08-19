@@ -1382,6 +1382,58 @@ describe("room-code entry (#552)", () => {
     expect(view(raced).room_active).toBe(true);
   });
 
+  // #599: admission failures the room-code Worker used to reject before the
+  // WebSocket upgrade completed now arrive in-band, distinct by reason
+  // (`infra/src/room_durable_object.ts`'s own doc, "Admission failures").
+  // Each one must reach the player as its OWN sentence, not the single
+  // generic "could not reach the room service" every rejection used to
+  // collapse into.
+  it("surfaces each in-band admission-failure reason as its own distinct, readable copy", () => {
+    const reasons = [
+      "room_not_found",
+      "room_full",
+      "room_expired",
+      "room_closed",
+      "host_already_claimed",
+      "already_joined",
+    ] as const;
+    const texts = reasons.map((reason) => {
+      let state = joining();
+      for (const ch of "A3F9K2") {
+        state = dispatch(state, { kind: "key", key: ch, pressed: true });
+      }
+      state = click(state, "room_code_slots");
+      state = dispatch(state, { kind: "lobby", command: { kind: "room_failed", reason } });
+      const text = view(state).error;
+      expect(text).toBe(ROOM_FAILURE_TEXT[reason]);
+      expect(text).toBeDefined();
+      return text;
+    });
+    // Pairwise distinct: a shared fallback string across reasons would pass
+    // each assertion above individually while still failing the actual
+    // acceptance criterion ("five different failures... one dead-end
+    // message").
+    expect(new Set(texts).size).toBe(reasons.length);
+  });
+
+  // The host leaving is a different KIND of event from an admission
+  // failure (nobody was ever rejected -- the connection was live and then
+  // the host's own socket dropped), but it reaches the player through the
+  // same `room_failed` pipeline (`online_lobby.ts`'s `roomCommandFor`) with
+  // its own distinct copy, and it must not be confused with a generic
+  // dropped-connection message.
+  it("surfaces a host departure as its own distinct copy, not a generic dropped-connection message", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    state = dispatch(state, {
+      kind: "lobby",
+      command: { kind: "room_failed", reason: "host_left" },
+    });
+    expect(view(state).error).toBe(ROOM_FAILURE_TEXT["host_left"]);
+    expect(view(state).error).not.toBe(ROOM_FAILURE_TEXT["connection_lost"]);
+    expect(view(state).room_active).toBe(false);
+  });
+
   // Round-2 council review, blocking finding 2 (PR #603): the composer had
   // no cancel control at all -- not a click target, and Escape/back (the
   // universal handler `hosting()`'s "leave" case above exercises) dispatched
