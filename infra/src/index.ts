@@ -49,13 +49,21 @@ export async function handleHostSignal(request: Request, env: Env): Promise<Resp
     const randomBytes = crypto.getRandomValues(new Uint8Array(6));
     const code = generateRoomCode(randomBytes);
     const stub = env.ROOM.getByName(code);
-    const response = await stub.fetch(new Request(request.url, { headers: forwarded }));
-    if (response.status !== 409) {
-      return response;
+    // room_durable_object.ts's admission failures now complete the
+    // WebSocket upgrade instead of returning an HTTP status this loop can
+    // read (its own module doc, "Admission failures") -- so a collision
+    // with an existing live room is no longer visible from the real
+    // upgrade attempt's response. This non-upgrade probe (that module doc,
+    // "Collision probe") is the replacement signal: cheap, and it never
+    // opens (and immediately tears down) a real WebSocket for the losing
+    // code.
+    const probe = await stub.fetch(new Request(request.url));
+    if (probe.status === 409) {
+      continue; // This freshly generated code already names a live room --
+      // astronomically unlikely (see room_code.ts's doc) but cheap to
+      // retry rather than assume can't happen.
     }
-    // 409 here means this freshly generated code already names a live
-    // room -- astronomically unlikely (see room_code.ts's doc) but cheap
-    // to retry rather than assume can't happen.
+    return stub.fetch(new Request(request.url, { headers: forwarded }));
   }
   return new Response("could not allocate a room code, try again", { status: 503 });
 }
