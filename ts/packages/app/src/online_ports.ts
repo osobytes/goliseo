@@ -1144,13 +1144,15 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
 
     newLobbyScreen(onAction: (action: AppAction) => void, options: unknown): OnlineLobbyScreen {
       deps.onLobbyEntry?.();
-      // `role`/`mode` are the multiplayer front door's decision, not model
-      // options -- `OnlineLobby` applies them as its opening commands. They are
-      // split out here rather than spread into `modelOptions`, where they would
-      // be silently ignored and the player would pick Host twice.
-      const { role, mode, ...modelOptions } = options as {
+      // `intent`/`mode` are the multiplayer front door's decision, not
+      // model options -- `OnlineLobby` applies `intent` as its opening
+      // `room_pick` command (#597) and `mode` once that room-hosting
+      // attempt's coordinator exists. They are split out here rather than
+      // spread into `modelOptions`, where they would be silently ignored
+      // and the player would pick Host/Join twice.
+      const { intent, mode, ...modelOptions } = options as {
         readonly template?: (mode: SessionMatchMode) => SessionManifest;
-        readonly role?: LobbyRole;
+        readonly intent?: LobbyRole;
         readonly mode?: SessionMatchMode;
       };
       const screen = new OnlineLobby({ w: 960, h: 540 }, onAction, {
@@ -1158,7 +1160,7 @@ export function createOnlinePorts(deps: OnlinePortsDeps): OnlinePorts {
         newLink: (star: StarTransportAdapter) => realLobbyLink(star),
         ...(deps.clipboard !== undefined ? { clipboard: deps.clipboard } : {}),
         ...(deps.roomSignaling !== undefined ? { roomSignaling: deps.roomSignaling } : {}),
-        ...(role !== undefined ? { role } : {}),
+        ...(intent !== undefined ? { roomIntent: intent } : {}),
         ...(mode !== undefined ? { mode } : {}),
         modelPorts,
         modelOptions: { seed: Math.floor(Date.now() % 1_000_000), ...modelOptions },
