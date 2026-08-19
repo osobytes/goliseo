@@ -27,6 +27,7 @@
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
 import { fakeStar, fakeStarRendezvous, type StarTransportAdapter } from "@gc/transport";
+import { encodeHostSignal, parseServerFrame } from "@gc/online";
 import {
   LOBBY_ROOM_FAILURE_TEXT,
   type LobbyScreenState,
@@ -106,6 +107,19 @@ type TestStar = StarTransportAdapter & Pumpable;
 // learns of each guest that "joins" it (`guestId`s in join order); a
 // guest's `send` is always addressed to the host (single recipient) and a
 // host's `send` must name which guest.
+//
+// #601, round-2 council review: `send` on both sides routes through the
+// REAL `@gc/online` `room_signaling.ts` wire functions
+// (`encodeHostSignal`/`parseServerFrame`), not a hand-rolled
+// `RoomSignalingEvent` passthrough -- a fake that only ever forwarded
+// `effect.signal` directly could never have exercised the `v:1` slot
+// envelope at all, which is exactly what let an earlier claim that this
+// file proved the slot pipeline end to end go unnoticed. What this DOES
+// NOT reproduce is `room_signaling_port.ts`'s own WebSocket glue (message
+// listeners, `readyState`, `close()` semantics) -- that stays
+// `room_signaling_port.spec.ts`'s job, against a `FakeSocket`. What this
+// file proves is the two things together: the real encode/parse functions
+// AND the real `wasm` coordinator's admission, in the same session.
 // ---------------------------------------------------------------------------
 
 interface FakeRoom {
@@ -148,7 +162,25 @@ function fakeRoomRendezvous(): FakeRoomRendezvous {
         if (closed || effect.to === undefined) {
           return;
         }
-        room.guestQueues.get(effect.to)?.push({ kind: "signal", signal: effect.signal });
+        // Host -> DO -> guest, through the real wire functions (this
+        // block's own doc). `encodeHostSignal` wraps `effect.slot` in the
+        // `v:1` envelope when the host provided one; the DO forwards
+        // `body` exactly as sent (`room_durable_object.ts`'s own doc,
+        // "NOT re-stringified") into a fresh `{type:"signal", from:"host",
+        // body}` frame, which `parseServerFrame` -- the guest's own parser
+        // -- decodes back into the signal and, when present, the slot.
+        const hostToDo = JSON.parse(encodeHostSignal(effect.to, effect.signal, effect.slot)) as {
+          readonly body: unknown;
+        };
+        const doToGuest = JSON.stringify({ type: "signal", from: "host", body: hostToDo.body });
+        const parsed = parseServerFrame(doToGuest);
+        if (parsed.ok && parsed.value.type === "signal") {
+          room.guestQueues.get(effect.to)?.push({
+            kind: "signal",
+            signal: parsed.value.body,
+            ...(parsed.value.slot !== undefined ? { slot: parsed.value.slot } : {}),
+          });
+        }
       },
       close: () => {
         if (!closed) {
@@ -193,7 +225,16 @@ function fakeRoomRendezvous(): FakeRoomRendezvous {
         if (closed) {
           return;
         }
-        room.hostQueue.push({ kind: "signal", signal: effect.signal, guest_id: guestId });
+        // A guest's own signal is never enveloped (`room_signaling.ts`'s
+        // own header, "guest -> host stays raw") -- the DO forwards it as
+        // the raw text it received, `body` a plain string, still through
+        // the real parser for consistency with the host->guest direction
+        // above.
+        const doToHost = JSON.stringify({ type: "signal", from: guestId, body: effect.signal });
+        const parsed = parseServerFrame(doToHost);
+        if (parsed.ok && parsed.value.type === "signal") {
+          room.hostQueue.push({ kind: "signal", signal: parsed.value.body, guest_id: guestId });
+        }
       },
       close: () => {
         closed = true;
@@ -265,6 +306,68 @@ function runRoomCodeHandshake(): RoomCodeHandshake {
   return { host, guest, stars, code };
 }
 
+interface RoomCodeTwoGuestHandshake {
+  readonly host: DispatchableLobby;
+  readonly guests: readonly DispatchableLobby[];
+  readonly stars: readonly TestStar[];
+}
+
+/** #601, round-2 council review: two independently-constructed guests
+ * submit the SAME code before either is invited ("quick succession" --
+ * neither has any way to know the other exists), driven through the real
+ * `wasm` coordinator and the real `room_signaling.ts` wire functions
+ * (`fakeRoomRendezvous`'s own doc). 2v2 with bot-fill, not 1v1: a 1v1 room
+ * caps at one guest (`invite()`'s own capacity guard), and even if it
+ * didn't, a single guest can never distinguish an adopted slot from the
+ * `guest_1` default it would have guessed anyway -- proving anything about
+ * #601 needs a SECOND guest with a DIFFERENT expected identity. */
+function runRoomCodeTwoGuestHandshake(): RoomCodeTwoGuestHandshake {
+  const starRendezvous = fakeStarRendezvous();
+  const stars: TestStar[] = [];
+  const starFactory: OnlinePortsDeps["starFactory"] = (role, peerId) => {
+    const star = fakeStar({ role, rendezvous: starRendezvous, peer_id: peerId });
+    if (!star.initialize().ok) {
+      return undefined;
+    }
+    stars.push(star);
+    return star;
+  };
+  const roomRendezvous = fakeRoomRendezvous();
+  const hostPorts = newTestOnlinePorts(starFactory, roomRendezvous);
+  const host = newDispatchableLobby(hostPorts, () => {});
+
+  host.dispatch({ kind: "room_pick", role: "host" });
+  pump([host], stars);
+  const code = host.state.model.room_code;
+  if (code === undefined) {
+    throw new Error("the host must have a room code after room_pick(host) + a pump cycle");
+  }
+  host.dispatch({ kind: "mode", mode: "2v2" });
+  // 2v2 needs 4 humans; only 3 are connected (host + 2 guests) -- this
+  // case is about slot IDENTITY, not about seating every human seat.
+  host.dispatch({ kind: "bot_fill" });
+
+  const guests = ["A", "B"].map(() => {
+    const guestPorts = newTestOnlinePorts(starFactory, roomRendezvous);
+    const guest = newDispatchableLobby(guestPorts, () => {});
+    guest.dispatch({ kind: "room_pick", role: "guest" });
+    typeCode(guest, code);
+    guest.dispatch({ kind: "room_submit" });
+    return guest;
+  });
+
+  // Generous margin: the host admits its guests one at a time
+  // (`invite()`'s own "finish the pending invitation first" guard), so the
+  // second guest's full offer/answer/admission cycle only starts once the
+  // first's completes.
+  pump([host, ...guests], stars, 120);
+
+  host.dispatch({ kind: "lock" });
+  pump([host, ...guests], stars, 60);
+
+  return { host, guests, stars };
+}
+
 describe("room_code_lobby: the room-code path (#552), through production OnlinePorts wiring", () => {
   it("connects a real host and guest to a ready 1v1 session with no copy/paste command", () => {
     const { host, guest, code } = runRoomCodeHandshake();
@@ -292,6 +395,38 @@ describe("room_code_lobby: the room-code path (#552), through production OnlineP
     pump([host, guest], stars, 250);
     expect(host.state.model.started).toBe(true);
     expect(guest.state.model.started).toBe(true);
+  });
+
+  // #601, round-2 council review, blocking finding 1: proves the slot
+  // pipeline for real -- the real `wasm` coordinator's own admission
+  // (`peer_id` must be unique on the roster) AND the real
+  // `encodeHostSignal`/`parseServerFrame` wire functions
+  // (`fakeRoomRendezvous`'s own doc), not a model-level fake of either.
+  // Without #601's fix both guests would adopt nothing and stay on
+  // whatever `model.peer_id` defaulted to (`guest_1`), and the second
+  // would collide with the first at admission -- exactly the bug this
+  // whole PR exists to fix.
+  it("seats two guests who join the same room in quick succession, each over the real relay wire", () => {
+    const { host, guests } = runRoomCodeTwoGuestHandshake();
+    const [guestA, guestB] = guests;
+    if (guestA === undefined || guestB === undefined) {
+      throw new Error("expected two guests");
+    }
+
+    expect(host.state.model.role).toBe("host");
+    expect(guestA.state.model.role).toBe("guest");
+    expect(guestB.state.model.role).toBe("guest");
+    // The property #601 is about: each guest adopted a DISTINCT identity
+    // instead of both defaulting to `guest_1`.
+    expect(new Set([guestA.state.model.peer_id, guestB.state.model.peer_id]).size).toBe(2);
+
+    // Host + two guests, all admitted for real by the real coordinator --
+    // not silently stuck below 3 the way a `guest_1`/`guest_1` collision
+    // would leave it.
+    expect(host.state.model.coordinator?.peers.length).toBe(3);
+    expect(host.state.model.coordinator?.phase).toBe("assigned");
+    expect(guestA.state.model.coordinator?.phase).toBe("assigned");
+    expect(guestB.state.model.coordinator?.phase).toBe("assigned");
   });
 });
 
