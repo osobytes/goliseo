@@ -40,6 +40,7 @@ import { Vec2 } from "@gc/core";
 import {
   cameraFollow,
   correctionSmoothing,
+  dispossessionFlinch,
   player3dPrewarmCharacters,
   player3dResetAnimation,
   releaseFollow,
@@ -1562,6 +1563,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    dispossessionFlinch.reset();
     player3dResetAnimation();
     this.ports.replay?.reset?.();
     this.latches.shootHeldPrev = false;
@@ -1633,6 +1635,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    dispossessionFlinch.reset();
     player3dResetAnimation();
     if (source === undefined) {
       return;
@@ -1825,7 +1828,8 @@ export class MatchScreen {
   // sequence.
   private finishBaseUpdate(dt: number, scoreBefore: number): void {
     const host = this.host!;
-    const hud = host.frame().hud;
+    const frame = host.frame();
+    const hud = frame.hud;
     const scoreAfter = hud.home_score + hud.away_score;
     // `release_follow.update(events, dt)` -- the renderer-owned kick
     // follow-through window, aged by this render call's dt and then latched
@@ -1840,6 +1844,18 @@ export class MatchScreen {
     // reset (a goal, full time) still gets the last word and clears a window
     // that must not survive the timeline that produced it.
     releaseFollow.update(this.observedFrameEvents, dt);
+    // `dispossession_flinch.update(events, dt, ownerId)` (#591) -- the
+    // renderer-owned victim reaction window for a standing-poke tackle, same
+    // shape and same call-site rationale as `releaseFollow.update` above.
+    // `ownerId` is THIS call's own carrier, read the same way
+    // `matchObservationState`/`onlineState` already do (`frame.possession.owner`,
+    // a one-based roster slot, resolved against `host.roster().ids`) --
+    // `dispossession_flinch.ts`'s header explains why handing it the CURRENT
+    // owner is what lets it resolve next call's tackle against THIS call's
+    // owner ("the owner just before this batch").
+    const ownerSlot = frame.possession.owner;
+    const ownerId = ownerSlot !== undefined ? host.roster().ids?.[ownerSlot - 1] : undefined;
+    dispossessionFlinch.update(this.observedFrameEvents, dt, ownerId);
     this.updateBaseRenderSmoothing(dt, scoreAfter !== scoreBefore || hud.finished);
     if (scoreAfter > this.lastScore && !hud.finished) {
       const scoringTeam: "home" | "away" = hud.home_score > this.lastHome ? "home" : "away";
@@ -1849,6 +1865,7 @@ export class MatchScreen {
         viewState.reset();
         cameraFollow.reset();
         releaseFollow.reset();
+        dispossessionFlinch.reset();
         player3dResetAnimation();
         this.replayState = undefined;
       }
@@ -1872,6 +1889,7 @@ export class MatchScreen {
       viewState.reset();
       cameraFollow.reset();
       releaseFollow.reset();
+      dispossessionFlinch.reset();
       player3dResetAnimation();
     } else {
       this.renderSmoothing =
@@ -1978,6 +1996,7 @@ export class MatchScreen {
     viewState.reset();
     cameraFollow.reset();
     releaseFollow.reset();
+    dispossessionFlinch.reset();
     player3dResetAnimation();
     const source = this.correctionSource();
     if (source === undefined) {
@@ -2127,6 +2146,7 @@ export class MatchScreen {
         viewState.reset();
         cameraFollow.reset();
         releaseFollow.reset();
+        dispossessionFlinch.reset();
         player3dResetAnimation();
       }
     } else {

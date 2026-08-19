@@ -957,6 +957,10 @@ impl MatchDriverBridge {
     /// [`crate::session::kick_follow_ids`] for why the window crosses as
     /// slots rather than as ids. Pass `0` when no window is open.
     ///
+    /// `dispossessed_slots`: the renderer's dispossession flinch window
+    /// (#591), the same roster-slot-bitmask shape — see
+    /// [`crate::session::dispossessed_ids`]. Pass `0` when no window is open.
+    ///
     /// `combat` comes off the driver's OWN rollback session
     /// (`gc_sim::rollback_session::RollbackSession::combat_state`), not off
     /// the [`Session`] this bridge was constructed from: the rollback
@@ -970,8 +974,8 @@ impl MatchDriverBridge {
     /// placeholder for an unbuilt path. Without it all seven combat poses
     /// are structurally unreachable (#441).
     #[wasm_bindgen(js_name = renderFrameBuild)]
-    pub fn render_frame_build(&mut self, kick_follow_slots: u32) -> u32 {
-        let options = self.frame_options(kick_follow_slots);
+    pub fn render_frame_build(&mut self, kick_follow_slots: u32, dispossessed_slots: u32) -> u32 {
+        let options = self.frame_options(kick_follow_slots, dispossessed_slots);
         let built = render_frame::build(&self.driver.session.state, &options);
         crate::render_export::build_driver_frame(&built);
         1
@@ -983,10 +987,11 @@ impl MatchDriverBridge {
     /// which poses are reachable at all, and a field left at `Default` there
     /// is invisible from the encoded frame block a JS caller reads back.
     /// This crate's native tests assert on it directly.
-    fn frame_options(&self, kick_follow_slots: u32) -> RenderFrameOptions {
+    fn frame_options(&self, kick_follow_slots: u32, dispossessed_slots: u32) -> RenderFrameOptions {
         RenderFrameOptions {
             roster: Some(self.roster.clone()),
             kick_follow: crate::session::kick_follow_ids(&self.roster, kick_follow_slots),
+            dispossessed: crate::session::dispossessed_ids(&self.roster, dispossessed_slots),
             combat: self
                 .driver
                 .session
@@ -1774,7 +1779,7 @@ mod tests {
         let mut bridge = new_host_bridge();
         bridge.advance(None).unwrap();
 
-        let ok = bridge.render_frame_build(0);
+        let ok = bridge.render_frame_build(0, 0);
         assert_eq!(ok, 1);
         let ptr = crate::render_export::driver_render_frame_ptr();
         let len = crate::render_export::driver_render_frame_len();
@@ -1788,7 +1793,7 @@ mod tests {
             "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
         )
         .expect("the fixture team ids always construct a valid session");
-        let session_ok = crate::render_export::render_frame_build(session.handle(), 0);
+        let session_ok = crate::render_export::render_frame_build(session.handle(), 0, 0);
         assert_eq!(session_ok, 1);
         assert_eq!(crate::render_export::driver_render_frame_ptr(), ptr);
         assert_eq!(crate::render_export::driver_render_frame_len(), len);
@@ -1827,7 +1832,7 @@ mod tests {
     fn a_non_combat_driver_carries_no_combat_model() {
         let bridge = new_host_bridge();
         assert!(bridge.driver.session.combat_state.is_none());
-        assert!(bridge.frame_options(0).combat.is_none());
+        assert!(bridge.frame_options(0, 0).combat.is_none());
     }
 
     /// ...and a driver whose initial snapshot DID carry a combat companion
@@ -1850,7 +1855,7 @@ mod tests {
         combat.players[2].forced_state = Some(CombatForcedState::Stagger);
         combat.players[2].forced_ticks = 4;
 
-        let options = bridge.frame_options(0);
+        let options = bridge.frame_options(0, 0);
         assert!(options.combat.is_some());
         let built = render_frame::build(&bridge.driver.session.state, &options);
         assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatGuard);

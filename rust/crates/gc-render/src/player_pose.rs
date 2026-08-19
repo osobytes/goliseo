@@ -73,7 +73,9 @@ pub enum PlayerPoseId {
     Slide,
     /// An active standing tackle.
     Tackle,
-    /// Knocked off balance.
+    /// Knocked off balance — a slide tackle's knockdown (`stun_timer`) or a
+    /// standing-poke tackle's presentation-only flinch window
+    /// ([`OutfieldPoseContext::dispossessed`]); see that field's doc.
     Stumble,
     /// Follow-through after releasing a kick.
     KickFollow,
@@ -230,6 +232,17 @@ pub struct OutfieldPoseContext {
     pub containing: bool,
     /// A confirmed release is still following through.
     pub kick_follow: bool,
+    /// A renderer-owned dispossession flinch window is open for this player:
+    /// a standing-poke tackle took the ball off them recently and the
+    /// presentation side wants a beat of reaction shown for it. This is the
+    /// SECOND producer of [`PlayerPoseId::Stumble`] — the simulation's own
+    /// `MatchPlayer::stun_timer` (a slide tackle's knockdown) is the first —
+    /// deliberately kept out of `gc-sim`: a standing poke never sets
+    /// `stun_timer` (it does not slow the victim or knock them down, only
+    /// the slide does), so with no producer here the victim of a poke showed
+    /// no reaction at all (#591). `stun_timer` and this flag share one pose
+    /// so the two triggers draw identically; only the trigger differs.
+    pub dispossessed: bool,
 }
 
 /// The slice of `@gc/presentation`'s `CombatPlayerPresentation` (TS-owned)
@@ -545,7 +558,7 @@ pub fn select(
                 PlayerPoseSource::Soccer,
             );
         }
-        if player.stun_timer > 0.0 {
+        if player.stun_timer > 0.0 || outfield_context.is_some_and(|c| c.dispossessed) {
             add(
                 &mut candidates,
                 PlayerPoseId::Stumble,

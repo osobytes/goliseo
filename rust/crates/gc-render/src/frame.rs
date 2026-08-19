@@ -17,12 +17,13 @@
 //!    encode as 0/1 there, not here.
 //!
 //! 3. PRESENTATION-DERIVED STATE STAYS ON THE RENDERER SIDE. Gait, lean, the
-//!    smoothed on-screen speed, the correction smoothing state machine and the
-//!    release follow-through window are NOT simulation and are not derived
-//!    here. They feed in as explicit inputs ([`RenderFrameOptions::render_pose`],
-//!    [`RenderFrameOptions::kick_follow`]) because the frame must report the
-//!    positions and poses actually shown; their state machines stay where
-//!    they are (`@gc/render`, TypeScript).
+//!    smoothed on-screen speed, the correction smoothing state machine, the
+//!    release follow-through window and the dispossession flinch window are
+//!    NOT simulation and are not derived here. They feed in as explicit
+//!    inputs ([`RenderFrameOptions::render_pose`],
+//!    [`RenderFrameOptions::kick_follow`], [`RenderFrameOptions::dispossessed`])
+//!    because the frame must report the positions and poses actually shown;
+//!    their state machines stay where they are (`@gc/render`, TypeScript).
 //!
 //! The frame splits into a static half and a per-frame half. [`RenderFrameRoster`]
 //! is match-constant (ids, teams, species shape and palette) and crosses
@@ -567,6 +568,13 @@ pub struct RenderFrameOptions {
     /// following through. A `Vec` rather than a map for the same reason as
     /// [`RenderPose::players`].
     pub kick_follow: Option<Vec<String>>,
+    /// Renderer-owned dispossession flinch window: the ids of players a
+    /// standing-poke tackle recently took the ball from, still inside their
+    /// presentation-only reaction beat. Feeds
+    /// [`crate::player_pose::OutfieldPoseContext::dispossessed`] the same
+    /// way `kick_follow` feeds `.kick_follow` — see that field's doc for why
+    /// this lives here rather than in `gc-sim` (#591).
+    pub dispossessed: Option<Vec<String>>,
     /// Combat telegraph model for this frame — [`combat_model`] over the
     /// match's live `CombatMatchState`, or `None` for a match that does not
     /// run combat. `None` is what every combat pose's reachability hinges
@@ -1024,6 +1032,7 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
     };
     let render_pose = opts.render_pose.as_ref();
     let kick_follow = opts.kick_follow.as_ref();
+    let dispossessed = opts.dispossessed.as_ref();
     let events_owned;
     let events: &[MatchEvent] = match &opts.events {
         Some(e) => e,
@@ -1118,6 +1127,7 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
                     && press.presser_index == Some(index as u32)
                     && !counterpressing.get(player.team),
                 kick_follow: kick_follow.is_some_and(|ids| ids.contains(&player.id)),
+                dispossessed: dispossessed.is_some_and(|ids| ids.contains(&player.id)),
             }
         });
 

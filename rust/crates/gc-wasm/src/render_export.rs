@@ -13,15 +13,18 @@
 //!
 //! ## The three-call contract
 //!
-//! 1. `render_frame_build(handle, kick_follow_slots)` — builds this tick's
-//!    [`RenderFrame`] for the session named by `handle` (see
-//!    [`crate::registry`]) and encodes it into a reused, thread-local
+//! 1. `render_frame_build(handle, kick_follow_slots, dispossessed_slots)` —
+//!    builds this tick's [`RenderFrame`] for the session named by `handle`
+//!    (see [`crate::registry`]) and encodes it into a reused, thread-local
 //!    buffer. Returns `1` on success, `0` if `handle` names no live session.
 //!    `kick_follow_slots` is the renderer's own release follow-through
 //!    window, as a roster-slot bitmask (`0` for "nothing is following
-//!    through"). A plain scalar, which is exactly why it may ride this path
-//!    at all — see [`crate::session::kick_follow_ids`] for why the ids
-//!    themselves do not cross.
+//!    through"). `dispossessed_slots` is the renderer's own dispossession
+//!    flinch window (#591), the same roster-slot-bitmask shape (`0` for
+//!    "nothing is flinching"). Both are plain scalars, which is exactly why
+//!    they may ride this path at all — see [`crate::session::kick_follow_ids`]
+//!    and [`crate::session::dispossessed_ids`] for why the ids themselves do
+//!    not cross.
 //! 2. `render_frame_ptr()` — byte offset into this module's exported
 //!    `memory` where the block built by the last `render_frame_build` call
 //!    starts.
@@ -96,10 +99,18 @@ thread_local! {
 /// `kick_follow_slots`: the renderer's release follow-through window as a
 /// roster-slot bitmask — see the module doc's three-call contract and
 /// [`crate::session::kick_follow_ids`]. Pass `0` when no window is open.
+///
+/// `dispossessed_slots`: the renderer's dispossession flinch window (#591),
+/// the same roster-slot-bitmask shape — see
+/// [`crate::session::dispossessed_ids`]. Pass `0` when no window is open.
 #[unsafe(no_mangle)]
-pub extern "C" fn render_frame_build(handle: u32, kick_follow_slots: u32) -> u32 {
+pub extern "C" fn render_frame_build(
+    handle: u32,
+    kick_follow_slots: u32,
+    dispossessed_slots: u32,
+) -> u32 {
     let built = registry::with_entry(handle, |entry| {
-        let options = frame_options(entry, kick_follow_slots);
+        let options = frame_options(entry, kick_follow_slots, dispossessed_slots);
         let render_frame = frame::build(&entry.state, &options);
         FRAME_BUFFER.with(|buf| {
             let mut buf = buf.borrow_mut();

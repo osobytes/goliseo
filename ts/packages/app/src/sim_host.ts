@@ -56,7 +56,7 @@ import { loadSimHost } from "@gc/wasm";
 import type { FixedClock, SimHost, SimSession } from "@gc/wasm";
 import { inputSample } from "@gc/input";
 import type { inputSampleTypes } from "@gc/input";
-import { frameBuffer, releaseFollow } from "@gc/render";
+import { dispossessionFlinch, frameBuffer, releaseFollow } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 /** Re-exported so callers of this module need not also import `@gc/input`. */
@@ -240,7 +240,12 @@ class WasmSimHost implements SimHostPort {
   private disposed = false;
   private rosterCache: RenderFrameRoster | undefined;
   private frameCache:
-    | { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame }
+    | {
+        readonly tick: number;
+        readonly kickFollowSlots: number;
+        readonly dispossessedSlots: number;
+        readonly frame: RenderFrame;
+      }
     | undefined;
 
   constructor(
@@ -312,17 +317,26 @@ class WasmSimHost implements SimHostPort {
     // tick, so it is part of the cache key -- keying on `tick` alone would
     // serve a stale pose for as long as the sim stood still.
     const kickFollowSlots = releaseFollow.slotMask(this.roster().ids);
+    // The renderer's own dispossession flinch window (#591), the same
+    // roster-slot bitmask shape and the same read-here rationale as
+    // `kickFollowSlots` above -- see `dispossession_flinch.ts`'s header.
+    const dispossessedSlots = dispossessionFlinch.slotMask(this.roster().ids);
     if (
       this.frameCache !== undefined &&
       this.frameCache.tick === tick &&
-      this.frameCache.kickFollowSlots === kickFollowSlots
+      this.frameCache.kickFollowSlots === kickFollowSlots &&
+      this.frameCache.dispossessedSlots === dispossessedSlots
     ) {
       return this.frameCache.frame;
     }
     // Fresh every call, never cached across ticks -- see this file's header
     // on memory-view invalidation. `buildRenderFrame` itself re-derives its
     // `Float64Array` from the module's current `memory.buffer` every call.
-    const words = this.host.buildRenderFrame(this.session.handle, kickFollowSlots);
+    const words = this.host.buildRenderFrame(
+      this.session.handle,
+      kickFollowSlots,
+      dispossessedSlots,
+    );
     if (words === null) {
       throw new Error("sim_host: no live session for this handle (already disposed?)");
     }
@@ -331,7 +345,7 @@ class WasmSimHost implements SimHostPort {
     // with no copy -- see this file's header.
     const decoded = frameBuffer.decode(words);
     const frame = frameBuffer.toRenderFrame(decoded, this.roster());
-    this.frameCache = { tick, kickFollowSlots, frame };
+    this.frameCache = { tick, kickFollowSlots, dispossessedSlots, frame };
     return frame;
   }
 

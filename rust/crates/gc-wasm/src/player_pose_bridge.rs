@@ -284,6 +284,7 @@ fn outfield_pose_context_from_json(json: &Json) -> OutfieldPoseContext {
         now: json.field("now").and_then(Json::as_f64),
         containing: json.field_bool("containing").unwrap_or(false),
         kick_follow: json.field_bool("kick_follow").unwrap_or(false),
+        dispossessed: json.field_bool("dispossessed").unwrap_or(false),
     }
 }
 
@@ -307,7 +308,7 @@ fn pose_source_wire(source: PlayerPoseSource) -> &'static str {
 ///   // `Option` parameters -- omit exactly when the caller has none.
 ///   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6, "phase_fraction": 0.25 },
 ///   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
-///   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
+///   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true, "dispossessed": false }
 /// }
 /// ```
 ///
@@ -488,6 +489,31 @@ mod tests {
         .to_json_string();
         let result = Json::parse(&player_pose_select(&input).unwrap()).unwrap();
         assert_eq!(result.field_str("id"), Some("contain"));
+    }
+
+    /// #591: a presentation-owned dispossession flinch window selects
+    /// `stumble` exactly the way the simulation's own `stun_timer` does,
+    /// with no sim-owned timer set at all — proves the standing-poke
+    /// tackle's victim reaction is reachable purely through
+    /// `outfield_context`.
+    #[test]
+    fn outfield_context_dispossessed_selects_stumble() {
+        let input = Json::obj(vec![
+            ("player", player_json_for(false, vec![])),
+            (
+                "outfield_context",
+                Json::obj(vec![
+                    ("now", Json::Number(12.5)),
+                    ("containing", Json::bool(false)),
+                    ("kick_follow", Json::bool(false)),
+                    ("dispossessed", Json::bool(true)),
+                ]),
+            ),
+        ])
+        .to_json_string();
+        let result = Json::parse(&player_pose_select(&input).unwrap()).unwrap();
+        assert_eq!(result.field_str("id"), Some("stumble"));
+        assert_eq!(result.field_str("source"), Some("soccer"));
     }
 
     // `player_pose_select`'s error paths (missing `"player"`, malformed JSON,

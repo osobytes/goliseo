@@ -40,7 +40,7 @@
 
 import { inputSample } from "@gc/input";
 import type { inputSampleTypes } from "@gc/input";
-import { frameBuffer, releaseFollow } from "@gc/render";
+import { dispossessionFlinch, frameBuffer, releaseFollow } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 import type { RenderFrame, RenderFrameRoster, SimHostPort } from "@gc/screens";
 import init, * as gcWasmWeb from "@gc/wasm/web";
@@ -117,7 +117,12 @@ class BrowserWasmSimHost implements SimHostPort {
   private disposed = false;
   private rosterCache: frameBufferTypes.DecodedRenderFrameRoster | undefined;
   private frameCache:
-    | { readonly tick: number; readonly kickFollowSlots: number; readonly frame: RenderFrame }
+    | {
+        readonly tick: number;
+        readonly kickFollowSlots: number;
+        readonly dispossessedSlots: number;
+        readonly frame: RenderFrame;
+      }
     | undefined;
 
   constructor(
@@ -180,15 +185,20 @@ class BrowserWasmSimHost implements SimHostPort {
     // without changing the tick -- see `sim_host.ts`'s `frame()`, which this
     // mirrors exactly.
     const kickFollowSlots = releaseFollow.slotMask(this.rosterInternal().ids);
+    // The renderer's own dispossession flinch window (#591) as a
+    // roster-slot bitmask, the same cache-key rationale as `kickFollowSlots`
+    // above -- see `sim_host.ts`'s `frame()`, which this mirrors exactly.
+    const dispossessedSlots = dispossessionFlinch.slotMask(this.rosterInternal().ids);
     if (
       this.frameCache !== undefined &&
       this.frameCache.tick === tick &&
-      this.frameCache.kickFollowSlots === kickFollowSlots
+      this.frameCache.kickFollowSlots === kickFollowSlots &&
+      this.frameCache.dispossessedSlots === dispossessedSlots
     ) {
       return this.frameCache.frame;
     }
     const raw = gcWasmWeb.__getRawExports();
-    const ok = raw.render_frame_build(this.session.handle, kickFollowSlots);
+    const ok = raw.render_frame_build(this.session.handle, kickFollowSlots, dispossessedSlots);
     if (ok === 0) {
       throw new Error("browser_sim_host: no live session for this handle (already disposed?)");
     }
@@ -200,7 +210,7 @@ class BrowserWasmSimHost implements SimHostPort {
     const words = new Float64Array(raw.memory.buffer, ptr, len);
     const decoded = frameBuffer.decode(words);
     const frame = frameBuffer.toRenderFrame(decoded, this.rosterInternal());
-    this.frameCache = { tick, kickFollowSlots, frame };
+    this.frameCache = { tick, kickFollowSlots, dispossessedSlots, frame };
     return frame;
   }
 
