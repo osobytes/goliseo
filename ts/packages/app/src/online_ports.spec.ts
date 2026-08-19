@@ -154,6 +154,17 @@ describe("online_ports: production App wiring", () => {
     expect(lobby.state.model.room_active).toBe(true);
     expect(lobby.state.model.room_status).toBe("connecting");
 
+    // Escape while the room-hosting request is still connecting (no role
+    // resolved yet) cancels THAT attempt first, landing back on the lobby's
+    // own role screen rather than ejecting the whole lobby (round-2 council
+    // review, blocking finding 2 -- PR #603; `multiplayer_room_flow.spec.ts`
+    // and `lobby.spec.ts` cover this directly, at lower fakery levels).
+    app.event({ kind: "key", key: "escape" });
+    expect(app.currentRoute()).toBe("lobby");
+    expect(lobby.state.model.room_active).toBe(false);
+
+    // A second Escape, now that no room attempt is in flight, leaves the
+    // lobby exactly as before.
     app.event({ kind: "key", key: "escape" });
     expect(app.currentRoute()).toBe("title");
   });

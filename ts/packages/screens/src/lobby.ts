@@ -262,6 +262,14 @@ export function layout(state: LobbyScreenState): Layout {
       { x: 230, y: 272, w: 500, h: 44 },
       { kind: "label", tone: "muted", focusable: false, align: "center" },
     );
+    // A visible way out of the composer that is not Escape: the composer
+    // is now the mandatory first screen a room-joining intent reaches
+    // (#597), not merely a screen the old role-picker could optionally lead
+    // to (#566's own "room_cancel is unreachable" finding), so a click/tap
+    // player needs an on-screen affordance too, not just a keyboard
+    // shortcut. Small and undecorated on purpose -- #566 owns the
+    // composer's visual redesign, not this fix.
+    control("room_cancel", "CANCEL", { x: 430, y: 330, w: 100, h: 36 }, { align: "center" });
   } else if (!view.role) {
     // --- role: the one state with no seating to show -------------------------
     //
@@ -701,6 +709,8 @@ function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
       return { kind: "room_pick", role: "guest" };
     case ROOM_CODE_ENTRY_WIDGET:
       return { kind: "room_submit" };
+    case "room_cancel":
+      return { kind: "room_cancel" };
     default:
       break;
   }
@@ -789,8 +799,37 @@ export function update(
   const currentLayout = layout(state);
   const nextFocus = focus.navigate(currentLayout, state.focus, event) ?? state.focus;
   if (event.kind === "action" && event.action === "back") {
-    const [model, effects] = lobbyCommand(state.model, state.ports, { kind: "leave" });
-    return [advance(state, model, nextFocus, effects), actionFor(effects)];
+    // A room-code attempt with no role yet occupies the role screen's own
+    // slot -- the guest composer (`room_entry`) or a host's still-connecting
+    // request (`room_active`, `role` not resolved). Back/Escape used to
+    // always dispatch "leave" here, ejecting the WHOLE lobby to the title;
+    // for the composer -- now the mandatory first screen a room-joining
+    // intent reaches (#597) -- that left no way back to the manual role
+    // screen without abandoning the lobby entirely (#566's own "room_cancel
+    // is unreachable" finding, promoted from a redesign nicety to a genuine
+    // trap once #597 made the composer unavoidable -- round-2 council
+    // review, blocking finding 2). `room_cancel` already exists and already
+    // lands safely back on the role screen (`roomCancel`, lobby_model.ts);
+    // this is the one call site that was never wired to it. Once a role IS
+    // resolved, this condition is false and back/Escape leaves exactly as
+    // it always did.
+    const roomAttemptPending =
+      state.model.role === undefined &&
+      (state.model.room_entry !== undefined || state.model.room_active);
+    const [model, effects] = lobbyCommand(
+      state.model,
+      state.ports,
+      roomAttemptPending ? { kind: "room_cancel" } : { kind: "leave" },
+    );
+    let nextState = advance(state, model, nextFocus, effects);
+    // A cancelled room attempt keeps the lobby mounted (unlike "leave",
+    // which exits it and makes focus moot) -- land focus on something the
+    // role screen it falls back to actually offers, mirroring the general
+    // click path's own `focus.ensure` below.
+    if (roomAttemptPending) {
+      nextState = { ...nextState, focus: focus.ensure(layout(nextState), nextFocus) ?? nextFocus };
+    }
+    return [nextState, actionFor(effects)];
   }
   const id = focus.activated(currentLayout, nextFocus, event);
   if (id === null) {

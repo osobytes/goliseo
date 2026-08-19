@@ -74,18 +74,37 @@ function clickWidget(app: App, id: string): void {
 }
 
 /** The real `OnlineLobby`'s own read/drive surface, once mounted --
- * `dispatch`/`update`/`state` are all public on the class itself
+ * `dispatch`/`event`/`update`/`state` are all public on the class itself
  * (`online_lobby.ts`); `app.ts`'s narrower `OnlineLobbyScreen` just does not
  * declare them. Mirrors `room_code_lobby.spec.ts`'s identically-shaped
- * `DispatchableLobby`. */
+ * `DispatchableLobby`, plus `event` -- needed below to drive a REAL click
+ * on the lobby's own role screen, since `OnlineLobby` is not `Menu`-wrapped
+ * and so cannot be reached by `clickWidget`'s `menuLayout` helper. */
 interface DispatchableLobby {
   dispatch(command: { readonly kind: string; readonly [key: string]: unknown }): void;
+  event(evt: { readonly kind: string; readonly [key: string]: unknown }): void;
   update(dt: number): void;
   readonly state: LobbyScreenState;
 }
 
 function currentLobby(app: App): DispatchableLobby {
   return app.stack.current() as unknown as DispatchableLobby;
+}
+
+/** A real click on one of the mounted `OnlineLobby`'s own widgets --
+ * `clickWidget`'s counterpart for a screen `menuLayout` cannot see. */
+function clickLobbyWidget(lobby: DispatchableLobby, id: string): void {
+  const layout = lobbyScreenLayout(lobby.state);
+  const widget = hit.find(layout, id);
+  if (!widget?.rect) {
+    throw new Error(`missing lobby widget ${id}`);
+  }
+  lobby.event({
+    kind: "click",
+    x: widget.rect.x + widget.rect.w / 2,
+    y: widget.rect.y + widget.rect.h / 2,
+    button: 1,
+  });
 }
 
 interface Pumpable {
@@ -122,6 +141,32 @@ function fakeHostOnlyRoomSignaling(code: string): {
   return {
     openHost(): RoomSignalingHandle {
       let queue: RoomSignalingEvent[] = [{ kind: "created", code }];
+      return {
+        poll: () => {
+          const drained = queue;
+          queue = [];
+          return drained;
+        },
+        send: () => {},
+        close: () => {},
+      };
+    },
+    openGuest(): RoomSignalingHandle {
+      throw new Error("not exercised by this file -- see room_code_lobby.spec.ts");
+    },
+  };
+}
+
+/** A relay that fails the host's request outright, instead of confirming a
+ * code -- for the case where "OPEN A LOBBY" reaches `room_pick`'s host
+ * path, but that attempt never resolves to a role at all. */
+function fakeFailingHostRoomSignaling(reason: string): {
+  openHost(): RoomSignalingHandle;
+  openGuest(roomCode: string): RoomSignalingHandle;
+} {
+  return {
+    openHost(): RoomSignalingHandle {
+      let queue: RoomSignalingEvent[] = [{ kind: "failed", reason }];
       return {
         poll: () => {
           const drained = queue;
@@ -218,6 +263,52 @@ describe("multiplayer front door -> a real online lobby (#597)", () => {
     // `setMode` legally accepted it (a coordinator must already exist),
     // not silently dropped the way a naive "apply it up front" attempt
     // would be (`setMode` throws before `chooseRole` has ever run).
+    lobby.dispatch({ kind: "bot_fill" });
+    lobby.dispatch({ kind: "lock" });
+    expect(lobby.state.model.coordinator?.manifest?.match_mode).toBe("2v2");
+  });
+
+  // Round-2 council review, blocking finding 1 (PR #603): `OnlineLobby`
+  // used to apply the front door's chosen mode ONLY inside its
+  // `room_created` handling -- so a room-hosting attempt that never reaches
+  // `room_created` (a relay failure, here) silently dropped it. The player
+  // still has a way to become host: cancel back to the role screen (fixed
+  // above) and pick "HOST A SESSION" manually. That manual pick resolves
+  // `role === "host"` through a completely different code path
+  // (`OnlineLobby.event`, a real click, never `dispatch`) -- proving the
+  // fix has to live wherever host role resolution happens, not just in the
+  // one command that used to be the only way there.
+  it("a failed room-hosting attempt still applies the front door's mode once the host picks the manual role", () => {
+    const { app, stars } = newApp(fakeFailingHostRoomSignaling("handshake_failed"));
+
+    clickWidget(app, "multiplayer");
+    clickWidget(app, "mode_2v2");
+    clickWidget(app, "host");
+    expect(app.currentRoute()).toBe("lobby");
+
+    const lobby = currentLobby(app);
+    expect(lobby.state.model.room_active).toBe(true);
+
+    // The fake relay reports failure -- the room-hosting attempt ends with
+    // no role ever resolved, and the role screen (with its manual
+    // fallback) becomes reachable again.
+    pump([lobby], stars);
+    expect(lobby.state.model.role).toBeUndefined();
+    expect(lobby.state.model.room_active).toBe(false);
+    const roleScreen = lobbyScreenLayout(lobby.state);
+    const roleHost = hit.find(roleScreen, "role_host");
+    expect(roleHost, "the manual role screen must be reachable after a failure").not.toBeNull();
+    expect(roleHost?.data?.disabled).toBe(false);
+
+    // The player picks "HOST A SESSION" manually -- a real click, exactly
+    // what a player does, going through `OnlineLobby.event`, not
+    // `dispatch`.
+    clickLobbyWidget(lobby, "role_host");
+    expect(lobby.state.model.role).toBe("host");
+
+    // The front door's chosen size (2v2, picked before "OPEN A LOBBY" was
+    // ever clicked) must still reach the manifest this host proposes.
+    expect(lobby.state.model.mode).toBe("2v2");
     lobby.dispatch({ kind: "bot_fill" });
     lobby.dispatch({ kind: "lock" });
     expect(lobby.state.model.coordinator?.manifest?.match_mode).toBe("2v2");
