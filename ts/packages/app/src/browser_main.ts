@@ -54,8 +54,12 @@ import { APP_CONTENT } from "./browser_content.ts";
 import { buildInfo } from "./build_info.ts";
 
 // `buildInfo.identity` ("goliseo") namespaces every key this shell persists
-// in `localStorage` -- see build_info.ts's header for why.
+// in `localStorage` -- see build_info.ts's header for why. `team_settings.ts`
+// gets its own key, a separate namespace from `settings.ts`'s (audio/video
+// prefs vs. the team sheet + lobby prefs) rather than a shared blob, so
+// either can be read/cleared independently.
 const SETTINGS_STORAGE_KEY = `${buildInfo.identity}:settings`;
+const TEAM_SETTINGS_STORAGE_KEY = `${buildInfo.identity}:team`;
 const MAX_FRAME_DT_SECONDS = 0.25; // clamp after a tab switch/stall, mirrors love's own dt clamp intent
 
 // `gc-sim`'s `match::new`'s own defaults (`duration` defaults to 120,
@@ -79,21 +83,21 @@ function required<T>(value: T | null, message: string): T {
   return value;
 }
 
-function localStorageSettings(): SettingsStorage {
+function localStorageSettings(key: string): SettingsStorage {
   return {
     read(): string | undefined {
       try {
-        return window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? undefined;
+        return window.localStorage.getItem(key) ?? undefined;
       } catch {
         return undefined;
       }
     },
     write(contents: string): Result<true, string> {
       try {
-        window.localStorage.setItem(SETTINGS_STORAGE_KEY, contents);
+        window.localStorage.setItem(key, contents);
         return ok(true);
       } catch (cause) {
-        return err(`localStorage settings write failed: ${String(cause)}`);
+        return err(`localStorage write failed for ${key}: ${String(cause)}`);
       }
     },
   };
@@ -336,7 +340,8 @@ async function main(): Promise<void> {
   });
 
   const app = bootstrap.new(APP_CONTENT, realMatchFactory, initialViewport.w, initialViewport.h, {
-    settingsStorage: localStorageSettings(),
+    settingsStorage: localStorageSettings(SETTINGS_STORAGE_KEY),
+    teamSettingsStorage: localStorageSettings(TEAM_SETTINGS_STORAGE_KEY),
     online: onlinePorts,
     requestQuit: () => {
       // A browser tab cannot reliably self-close outside a script-opened

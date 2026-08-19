@@ -22,6 +22,7 @@ import { bootstrap } from "./bootstrap.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
 import { matchContract } from "./match_contract.ts";
 import { createSimHost } from "./sim_host.ts";
+import { teamSettings } from "./team_settings.ts";
 import {
   APP_CONTENT,
   MATCH_CONTRACT_CONTENT,
@@ -46,6 +47,27 @@ describe("bootstrap", () => {
     );
     expect(app.adapter.kind).toBe("real");
     expect(app.currentRoute()).toBe("title");
+  });
+
+  it("threads an injected team-settings storage port into the App it builds (#600)", () => {
+    const stored = teamSettings.serialize({
+      ...teamSettings.defaults(),
+      formationId: "1-1-2",
+      tacticId: "press_high",
+      combatEnabled: false,
+    });
+    const app = bootstrap.new(
+      APP_CONTENT,
+      () => {
+        throw new Error("not invoked by this test");
+      },
+      960,
+      540,
+      { teamSettingsStorage: { read: () => stored, write: () => ({ ok: true, value: true }) } },
+    );
+    expect(app.session.formationId).toBe("1-1-2");
+    expect(app.session.tacticId).toBe("press_high");
+    expect(app.session.combatEnabled).toBe(false);
   });
 });
 

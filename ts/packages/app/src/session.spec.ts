@@ -32,6 +32,35 @@ describe("game session", () => {
     expect(afterFirstMatch.ok && afterFirstMatch.value.show_onboarding).toBe(false);
   });
 
+  it("seeds a fresh session from a persisted seed (team_settings.ts's own contract)", () => {
+    const seeded = session.new(NEBULA, {
+      starterIds: ["ozzo", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"],
+      formationId: "1-1-2",
+      tacticId: "press_high",
+      combatEnabled: false,
+    });
+    expect(seeded.starterIds).toEqual(["ozzo", "veil_nyx", "rok_tann", "mika_olu", "sela_dwin"]);
+    expect(seeded.formationId).toBe("1-1-2");
+    expect(seeded.tacticId).toBe("press_high");
+    expect(seeded.combatEnabled).toBe(false);
+  });
+
+  it("falls back to the home team's own defaults when no seed is given", () => {
+    const fresh = session.new(NEBULA);
+    expect(fresh.starterIds).toEqual([...NEBULA.roster]);
+    expect(fresh.formationId).toBe(NEBULA.formation);
+    expect(fresh.tacticId).toBe("balanced");
+    expect(fresh.combatEnabled).toBe(true);
+  });
+
+  it("falls back per field when the seed only partially specifies itself", () => {
+    const partial = session.new(NEBULA, { tacticId: "counter" });
+    expect(partial.starterIds).toEqual([...NEBULA.roster]);
+    expect(partial.formationId).toBe(NEBULA.formation);
+    expect(partial.tacticId).toBe("counter");
+    expect(partial.combatEnabled).toBe(true);
+  });
+
   it("maps result actions without mutating setup", () => {
     const state = session.new(NEBULA);
     const original = state.starterIds[0];

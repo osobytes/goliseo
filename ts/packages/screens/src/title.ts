@@ -1,7 +1,7 @@
 // The main title/menu screen. See AGENTS.md §9 for the pure/impure seam;
 // this screen needs no injected content.
 //
-// Four entries, down from seven. What went, and why:
+// Five entries, down from seven. What went, and why:
 //
 //   - COMBAT PROTOTYPE was a duplicate of PLAY distinguished only by
 //     `session.setCombatEnabled`. Combat is a match option, not a second Play
@@ -13,6 +13,11 @@
 //   - CREDITS folded into Settings -> About, where build info belongs.
 //   - ONLINE LOBBY (DEV) became MULTIPLAYER: a real front door, instead of a
 //     button that threw because no `OnlinePorts` is ever injected.
+//
+// TEAM is new: the team sheet used to be reachable only through PLAY, which
+// meant "look at my team" and "start a match" were the same click. It is a
+// destination now — `app.ts`'s `team_settings.ts` persists whatever is set
+// here, so a visit that ends in BACK still sticks for the next PLAY.
 
 import { focus, type Layout } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -55,6 +60,7 @@ function layout(state: TitleScreenState): Layout {
 
   const labels: readonly [string, string][] = [
     ["play", "PLAY"],
+    ["team", "TEAM"],
     ["multiplayer", "MULTIPLAYER"],
     ["help", "HOW TO PLAY"],
     ["settings", "SETTINGS"],
@@ -65,7 +71,7 @@ function layout(state: TitleScreenState): Layout {
       kind: "button",
       text,
       focused: state.focus === id,
-      rect: { x: 330, y: 232 + i * 48, w: 300, h: 42 },
+      rect: { x: 330, y: 224 + i * 44, w: 300, h: 42 },
     });
   });
 
