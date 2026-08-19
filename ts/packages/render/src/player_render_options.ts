@@ -62,6 +62,15 @@ export interface PlayerRenderOptions {
   readonly aerial_style?: AerialStyle;
   readonly aerial_outcome?: AerialOutcome;
   readonly aerial_jump?: number;
+  /**
+   * Elapsed progress through this player's current timed combat phase, in
+   * [0, 1) (#576) — the wire's per-player `phase_fraction` column,
+   * normalised on the Rust side against `gc_data::action_families`' phase
+   * lengths. Drives `rig3d/animator.ts`'s sweep of the swing clip through
+   * its strike key; absent means "no progress signal", which the animator
+   * answers by holding the current phase's arrival key.
+   */
+  readonly phase_fraction?: number;
   readonly species_shape?: SpeciesShape;
   readonly species_color?: RGB;
   readonly team?: "home" | "away";

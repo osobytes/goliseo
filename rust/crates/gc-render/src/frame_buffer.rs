@@ -85,7 +85,10 @@ use crate::player_pose::{PlayerPoseId, PlayerPoseSource};
 
 /// Shape of this block. Bump on any change to field order, header size or
 /// the enum numberings below — all of them are read positionally.
-pub const LAYOUT_VERSION: u32 = 1;
+/// 1 → 2: the per-player `phase_fraction` column, appended as player field
+/// index 21 (#576) — bumped together with [`frame::VERSION`], because a new
+/// field changes the payload's meaning AND this block's shape.
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// Ordinary sentinel for a frame block, chosen so a misaligned or
 /// wrong-buffer read fails on the first word instead of decoding garbage.
@@ -105,8 +108,11 @@ pub const HEADER_WORDS: usize = 12;
 pub const SCALAR_FIELD_COUNT: usize = 44;
 
 /// Per-player field count. Field-major: all of `x`, then all of `y`, and so
-/// on — the structure-of-arrays promise made concrete.
-pub const PLAYER_FIELD_COUNT: usize = 21;
+/// on — the structure-of-arrays promise made concrete. Field 21 is
+/// `phase_fraction`, APPENDED in the #576 layout bump so fields 0..=20 keep
+/// the positions the previous layout gave them (AGENTS.md §6: indices in a
+/// serialized payload keep their defined values).
+pub const PLAYER_FIELD_COUNT: usize = 22;
 
 /// Per-event field count, field-major. `player` (a roster id string) is
 /// deliberately absent: `slot` indexes the roster, which already crossed.
@@ -555,6 +561,7 @@ fn write_players(players: &RenderFramePlayers, out: &mut [f64], count: usize) {
         out[soa_at(18, i, count)] = players.aerial_jump[i];
         out[soa_at(19, i, count)] = opt_code(players.aerial_style[i], aerial_style_code);
         out[soa_at(20, i, count)] = opt_code(players.aerial_outcome[i], aerial_outcome_code);
+        out[soa_at(21, i, count)] = players.phase_fraction[i];
     }
 }
 
@@ -792,6 +799,9 @@ pub struct DecodedPlayers {
     pub aerial_style: Vec<f64>,
     /// Aerial outcome wire code, 0 = absent.
     pub aerial_outcome: Vec<f64>,
+    /// Elapsed progress through the current timed combat phase, `[0, 1)`;
+    /// 0.0 without combat (#576). Dense — see the source field's doc.
+    pub phase_fraction: Vec<f64>,
 }
 
 /// A decoded frame's per-event structure-of-arrays. Field values are the
@@ -858,6 +868,7 @@ fn decode_players(words: &[f64], at: usize, count: usize) -> DecodedPlayers {
         aerial_jump: column(words, at, 18, count),
         aerial_style: column(words, at, 19, count),
         aerial_outcome: column(words, at, 20, count),
+        phase_fraction: column(words, at, 21, count),
     }
 }
 

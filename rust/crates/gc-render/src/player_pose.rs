@@ -233,14 +233,13 @@ pub struct OutfieldPoseContext {
 }
 
 /// The slice of `@gc/presentation`'s `CombatPlayerPresentation` (TS-owned)
-/// that pose selection reads, plus one field it does not.
+/// that pose selection reads, plus two fields it does not.
 /// Declared locally rather than imported, because presentation crosses the
 /// language boundary into TypeScript and this module only ever reads three
 /// of its fields: `phase`, `forced_state` and `forced_ticks` decide which
-/// pose wins in [`select`]. `immunity_fraction` is the fourth and is
-/// carried through for a renderer to draw a post-hit cue with — `select`
-/// itself never reads it, so a change to it can never change which pose is
-/// chosen.
+/// pose wins in [`select`]. `immunity_fraction` and `phase_fraction` are
+/// carried through for a renderer — `select` itself never reads either, so a
+/// change to them can never change which pose is chosen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CombatPoseSample {
     /// The player's current combat action phase.
@@ -257,6 +256,18 @@ pub struct CombatPoseSample {
     /// own copy of the immunity window's length to read it — see
     /// [`crate::frame::combat_model`] for where the division happens.
     pub immunity_fraction: f64,
+    /// Elapsed progress through the current TIMED combat phase, in `[0, 1)`:
+    /// `0.0` on the phase's first tick, rising by `1/total` per tick (#576).
+    /// The timed phases are windup, active and recovery — the ones
+    /// `gc_data::action_families` gives a fixed tick length. The HELD phases
+    /// (ready, guard, aim) have no length to be a fraction of, so this is
+    /// `0.0` there, and for a player with no action family at all.
+    ///
+    /// Normalised for the same reason `immunity_fraction` is: a renderer
+    /// sweeping the swing clip through its strike key must not need its own
+    /// copy of each family's phase lengths. See [`crate::frame::combat_model`]
+    /// for the division.
+    pub phase_fraction: f64,
 }
 
 fn add(candidates: &mut Vec<PlayerPoseSelection>, id: PlayerPoseId, source: PlayerPoseSource) {

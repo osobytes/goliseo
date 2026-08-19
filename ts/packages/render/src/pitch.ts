@@ -359,6 +359,15 @@ export interface RenderFramePlayers {
   readonly pose_id: readonly (string | undefined)[];
   readonly pose_priority: readonly (number | undefined)[];
   readonly pose_source: readonly (string | undefined)[];
+  /**
+   * Elapsed progress through each slot's current timed combat phase, [0, 1)
+   * (#576). Optional in this DRAWING slice — `pitch.draw` never reads it,
+   * and hand-built frames (specs, replay fixtures) predating the column stay
+   * valid — but the decoded wire always carries it (`frame_buffer.ts`'s
+   * `DecodedRenderFramePlayers` declares it required), and `playerOptions`
+   * forwards it to the animator, which is the one consumer.
+   */
+  readonly phase_fraction?: readonly number[];
 }
 
 export interface RenderFrameBall {
@@ -605,6 +614,7 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
   const facingY = players.facing_y[index] ?? 0;
   const diveDirX = players.dive_dir_x[index];
   const diveDirY = players.dive_dir_y[index];
+  const phaseFraction = players.phase_fraction?.[index];
   const combatModel = frame.combat;
   return {
     facing: new Vec2(facingX, facingY),
@@ -629,6 +639,10 @@ function playerOptions(frame: RenderFrame, index: number): PlayerRenderOptions {
     ...(players.aerial_jump[index] !== undefined
       ? { aerial_jump: players.aerial_jump[index] }
       : {}),
+    // #576: the combat phase progress the animator sweeps the swing clip
+    // with. Absent on frames built before the column existed; the animator
+    // treats absence as "hold the phase's arrival key".
+    ...(phaseFraction !== undefined ? { phase_fraction: phaseFraction } : {}),
     ...(roster.species_shape[index] !== undefined
       ? { species_shape: roster.species_shape[index] }
       : {}),

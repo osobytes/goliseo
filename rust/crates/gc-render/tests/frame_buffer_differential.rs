@@ -115,10 +115,75 @@ const FRAME_ROWS: &[&str] = &[
 // arithmetic below detect it instead of silently following it.
 const HEADER: usize = 12;
 const SCALARS: usize = 44;
-const PLAYER_FIELDS: usize = 21;
+const PLAYER_FIELDS: usize = 22;
 const EVENT_FIELDS: usize = 15;
 const ROSTER_HEADER: usize = 7;
 const ROSTER_FIELDS: usize = 7;
+
+// The layout the FROZEN REFERENCE was captured under. #576 appended one
+// per-player field (`phase_fraction`, field index 21) and bumped
+// `LAYOUT_VERSION`/`frame::VERSION` 1 → 2; the reference predates the port
+// and cannot be regenerated, so its rows stay layout-1 forever and are read
+// with these offsets. `migrate_frame_row`/`migrate_roster_row` below are the
+// documented bridge from the frozen shape to the current one.
+const V1_LAYOUT_VERSION: f64 = 1.0;
+const V1_RENDER_FRAME_VERSION: f64 = 1.0;
+const V1_PLAYER_FIELDS: usize = 21;
+
+/// Mechanically lift a frozen layout-1 FRAME row to the current layout-2
+/// shape, so the bit-for-bit comparisons below keep pinning every captured
+/// word (#576).
+///
+/// This is NOT a fixture refresh, and it deliberately is not free-form: the
+/// only permitted differences between the frozen row and its migrated form
+/// are (a) the three header words the bump restamps (`layout_version`,
+/// `render_frame_version`, `player_field_count`, plus the `total_words` that
+/// follows arithmetically) and (b) one appended all-zeros player column —
+/// zeros because the capture harness passed no `CombatMatchState`
+/// (`rebuild_frame` asserts `combat_present == 0` on every row), and a frame
+/// without combat encodes `phase_fraction` as a dense zero column by
+/// construction. Every other word crosses unchanged, at an offset derived
+/// from the same arithmetic the reader uses, so a captured word that moved
+/// anywhere else still fails the comparison.
+fn migrate_frame_row(label: &str, words: &[f64]) -> Vec<f64> {
+    assert_eq!(words[1], V1_LAYOUT_VERSION, "{label}: frozen layout");
+    assert_eq!(words[2], V1_RENDER_FRAME_VERSION, "{label}: frozen version");
+    assert_eq!(
+        words[7], V1_PLAYER_FIELDS as f64,
+        "{label}: frozen player fields"
+    );
+    let count = words[6] as usize;
+    let event_count = words[8] as usize;
+    let players_at = HEADER + SCALARS;
+    let events_at_v1 = players_at + V1_PLAYER_FIELDS * count;
+    assert_eq!(
+        words.len(),
+        events_at_v1 + EVENT_FIELDS * event_count,
+        "{label}: frozen row length"
+    );
+
+    let mut out = Vec::with_capacity(words.len() + count);
+    out.extend_from_slice(&words[..events_at_v1]);
+    out.extend(std::iter::repeat_n(0.0, count)); // phase_fraction, field 21
+    out.extend_from_slice(&words[events_at_v1..]);
+    out[1] = f64::from(frame_buffer::LAYOUT_VERSION);
+    out[2] = f64::from(frame::VERSION);
+    out[3] = out.len() as f64;
+    out[7] = PLAYER_FIELDS as f64;
+    out
+}
+
+/// The roster block's #576 migration is restamping alone: no roster field
+/// was added, so only the two version words move and every payload word is
+/// pinned exactly where the capture put it.
+fn migrate_roster_row(words: &[f64]) -> Vec<f64> {
+    assert_eq!(words[1], V1_LAYOUT_VERSION, "roster: frozen layout");
+    assert_eq!(words[2], V1_RENDER_FRAME_VERSION, "roster: frozen version");
+    let mut out = words.to_vec();
+    out[1] = f64::from(frame_buffer::LAYOUT_VERSION);
+    out[2] = f64::from(frame::VERSION);
+    out
+}
 
 /// Parse the captured `%.17g` words back into `f64`. The format round-trips
 /// binary64 exactly, so this recovers the identical values the reference
@@ -304,8 +369,9 @@ fn placeholder_roster() -> RenderFrameRoster {
 }
 
 /// Recover the `RenderFrame` a reference row was encoded from, reading the
-/// frozen words with this file's own offsets rather than the module's
-/// decoder.
+/// frozen words with this file's own LAYOUT-1 offsets (the shape the
+/// reference was captured under — see `migrate_frame_row`) rather than the
+/// module's decoder.
 fn rebuild_frame(label: &str, words: &[f64]) -> RenderFrame {
     let count = words[6] as usize;
     let event_count = words[8] as usize;
@@ -316,7 +382,7 @@ fn rebuild_frame(label: &str, words: &[f64]) -> RenderFrame {
 
     let s = |index: usize| words[HEADER + index];
     let players_at = HEADER + SCALARS;
-    let events_at = players_at + PLAYER_FIELDS * count;
+    let events_at = players_at + V1_PLAYER_FIELDS * count;
 
     let field = RenderFrameField {
         w: s(0),
@@ -403,6 +469,10 @@ fn rebuild_frame(label: &str, words: &[f64]) -> RenderFrame {
         aerial_jump: (0..count).map(|i| p(18, i)).collect(),
         aerial_style: (0..count).map(|i| aerial_style_from(p(19, i))).collect(),
         aerial_outcome: (0..count).map(|i| aerial_outcome_from(p(20, i))).collect(),
+        // Not in the frozen capture: the reference predates #576's column,
+        // and its rows carried no combat model (asserted above), so the
+        // state it was encoded from can only have held zeros here.
+        phase_fraction: vec![0.0; count],
     };
 
     let e = |field: usize, slot: usize| soa(words, events_at, field, slot, event_count);
@@ -488,8 +558,10 @@ fn rebuild_roster(words: &[f64]) -> RenderFrameRoster {
 fn layout_constants_match_their_documented_shape() {
     assert_eq!(frame_buffer::MAGIC, 0x474f_4c46);
     assert_eq!(frame_buffer::ROSTER_MAGIC, 0x474f_4c52);
-    assert_eq!(frame_buffer::LAYOUT_VERSION, 1);
-    assert_eq!(frame::VERSION, 1);
+    // #576: layout and protocol both moved 1 → 2 for the appended
+    // `phase_fraction` player column.
+    assert_eq!(frame_buffer::LAYOUT_VERSION, 2);
+    assert_eq!(frame::VERSION, 2);
     assert_eq!(frame_buffer::HEADER_WORDS, HEADER);
     assert_eq!(frame_buffer::SCALAR_FIELD_COUNT, SCALARS);
     assert_eq!(frame_buffer::PLAYER_FIELD_COUNT, PLAYER_FIELDS);
@@ -498,29 +570,41 @@ fn layout_constants_match_their_documented_shape() {
     assert_eq!(frame_buffer::ROSTER_FIELD_COUNT, ROSTER_FIELDS);
     assert_eq!(frame_buffer::ROSTER_STRING_FIELD_COUNT, 4);
 
-    // The reference stamps the same shape into every row it holds, so the
-    // constants above are what the other language was compiled against too.
+    // The reference stamps the shape it was CAPTURED under into every row it
+    // holds — layout 1, the pre-#576 21-field player section. That is what
+    // the other language was compiled against at capture time, and it is
+    // what `migrate_frame_row` requires before lifting a row.
     let roster = reference_row("roster");
     assert_eq!(roster[0], f64::from(0x474f_4c52_u32), "roster row magic");
-    assert_eq!(roster[1], 1.0, "roster row layout version");
-    assert_eq!(roster[2], 1.0, "roster row render frame version");
+    assert_eq!(roster[1], V1_LAYOUT_VERSION, "roster row layout version");
+    assert_eq!(
+        roster[2], V1_RENDER_FRAME_VERSION,
+        "roster row render frame version"
+    );
     assert_eq!(roster[4], ROSTER_HEADER as f64);
     assert_eq!(roster[6], ROSTER_FIELDS as f64);
     for label in FRAME_ROWS {
         let words = reference_row(label);
         assert_eq!(words[0], f64::from(0x474f_4c46_u32), "{label} magic");
-        assert_eq!(words[1], 1.0, "{label} layout version");
-        assert_eq!(words[2], 1.0, "{label} render frame version");
+        assert_eq!(words[1], V1_LAYOUT_VERSION, "{label} layout version");
+        assert_eq!(
+            words[2], V1_RENDER_FRAME_VERSION,
+            "{label} render frame version"
+        );
         assert_eq!(words[4], HEADER as f64, "{label} header words");
         assert_eq!(words[5], SCALARS as f64, "{label} scalar words");
-        assert_eq!(words[7], PLAYER_FIELDS as f64, "{label} player fields");
+        assert_eq!(words[7], V1_PLAYER_FIELDS as f64, "{label} player fields");
         assert_eq!(words[9], EVENT_FIELDS as f64, "{label} event fields");
     }
 }
 
 /// The encoder against the frozen wire, word for word: every reference row
 /// is read back into the state it was encoded from and re-encoded, and the
-/// result must be bit-identical to the row.
+/// result must be bit-identical to the row's MIGRATED form — the frozen
+/// layout-1 words lifted through `migrate_frame_row`'s restamp-and-append
+/// bridge, which is itself constrained to touch nothing but the #576 header
+/// words and the appended zero column. Every captured payload word is still
+/// compared bit for bit.
 #[test]
 fn re_encodes_every_frozen_reference_row_bit_for_bit() {
     // "Every" is a claim about the fixture, not about `FRAME_ROWS`: a row
@@ -540,7 +624,11 @@ fn re_encodes_every_frozen_reference_row_bit_for_bit() {
 
     let roster_words = reference_row("roster");
     let (encoded_roster, _blob) = frame_buffer::encode_roster(&rebuild_roster(&roster_words));
-    assert_words_identical("roster", &encoded_roster, &roster_words);
+    assert_words_identical(
+        "roster",
+        &encoded_roster,
+        &migrate_roster_row(&roster_words),
+    );
 
     let mut events_seen = 0usize;
     for label in FRAME_ROWS {
@@ -549,7 +637,7 @@ fn re_encodes_every_frozen_reference_row_bit_for_bit() {
         events_seen += frame.events.count;
         let mut encoded = Vec::new();
         frame_buffer::encode(&frame, &mut encoded);
-        assert_words_identical(label, &encoded, &words);
+        assert_words_identical(label, &encoded, &migrate_frame_row(label, &words));
     }
 
     // NON-VACUOUS. The event section is the half of this layout that the
@@ -569,7 +657,7 @@ fn re_encodes_every_frozen_reference_row_bit_for_bit() {
 /// which the re-encode above would let cancel out, fails here.
 #[test]
 fn decode_reads_the_frozen_wire_with_the_documented_field_order() {
-    let roster_words = reference_row("roster");
+    let roster_words = migrate_roster_row(&reference_row("roster"));
     let count = roster_words[5] as usize;
     let blob: Vec<String> = (0..count)
         .flat_map(|i| {
@@ -586,8 +674,8 @@ fn decode_reads_the_frozen_wire_with_the_documented_field_order() {
         })
         .collect();
     let decoded_roster = frame_buffer::decode_roster(&roster_words, &blob.join("\n"));
-    assert_eq!(decoded_roster.layout_version, 1);
-    assert_eq!(decoded_roster.render_frame_version, 1);
+    assert_eq!(decoded_roster.layout_version, 2);
+    assert_eq!(decoded_roster.render_frame_version, 2);
     assert_eq!(decoded_roster.count, count);
     let r = |field: usize| -> Vec<f64> {
         (0..count)
@@ -608,14 +696,14 @@ fn decode_reads_the_frozen_wire_with_the_documented_field_order() {
     assert_eq!(fields.species_color_b, r(6), "roster field 6 is color b");
 
     for label in FRAME_ROWS {
-        let words = reference_row(label);
+        let words = migrate_frame_row(label, &reference_row(label));
         let decoded = frame_buffer::decode(&words);
         let count = words[6] as usize;
         let event_count = words[8] as usize;
 
-        assert_eq!(decoded.layout_version, 1, "{label} layout version");
+        assert_eq!(decoded.layout_version, 2, "{label} layout version");
         assert_eq!(
-            decoded.render_frame_version, 1,
+            decoded.render_frame_version, 2,
             "{label} render frame version"
         );
         assert!(!decoded.combat_present, "{label} combat_present");
@@ -654,6 +742,7 @@ fn decode_reads_the_frozen_wire_with_the_documented_field_order() {
             ("aerial_jump", &p.aerial_jump, 18),
             ("aerial_style", &p.aerial_style, 19),
             ("aerial_outcome", &p.aerial_outcome, 20),
+            ("phase_fraction", &p.phase_fraction, 21),
         ];
         for (name, actual, field) in player_columns {
             assert_eq!(

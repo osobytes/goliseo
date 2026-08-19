@@ -87,15 +87,22 @@ import type { AerialOutcome, AerialStyle, SpeciesShape } from "./player_render_o
 // bump alongside `LAYOUT_VERSION` there.
 // ---------------------------------------------------------------------------
 
-/** Shape of this block: field order, header size, enum numberings. */
-export const LAYOUT_VERSION = 1;
+/**
+ * Shape of this block: field order, header size, enum numberings.
+ * 1 -> 2: the per-player `phase_fraction` column, appended as player field
+ * index 21 (#576).
+ */
+export const LAYOUT_VERSION = 2;
 
 /**
  * The `RenderFrame` protocol version this decoder understands
  * (`crate::frame::VERSION` on the Rust side). See this module's header for
  * why it cannot be imported instead of duplicated.
+ * 1 -> 2: `phase_fraction` (#576) — a field added to `RenderFrame` bumps
+ * the protocol version alongside the layout version, per the Rust module's
+ * own VERSIONING note.
  */
-export const RENDER_FRAME_VERSION = 1;
+export const RENDER_FRAME_VERSION = 2;
 
 /** "GOLF" as big-endian ASCII: a frame block's sentinel first word. */
 export const MAGIC = 0x474f4c46;
@@ -109,8 +116,12 @@ export const HEADER_WORDS = 12;
 /** The once-per-frame scalar word count: field geometry, ball, possession, control, HUD. */
 export const SCALAR_FIELD_COUNT = 44;
 
-/** Per-player field count (structure-of-arrays, field-major). */
-export const PLAYER_FIELD_COUNT = 21;
+/**
+ * Per-player field count (structure-of-arrays, field-major). Field 21 is
+ * `phase_fraction`, APPENDED by the #576 layout bump so fields 0..20 keep
+ * the positions the previous layout gave them.
+ */
+export const PLAYER_FIELD_COUNT = 22;
 
 /** Per-event field count (structure-of-arrays, field-major). */
 export const EVENT_FIELD_COUNT = 15;
@@ -298,9 +309,14 @@ export interface DecodedRenderFrameBall extends RenderFrameBall {
   readonly vz: number;
 }
 
-/** `RenderFramePlayers` (`pitch.ts`) plus `speed`, which the wire carries but that slice does not declare. */
+/**
+ * `RenderFramePlayers` (`pitch.ts`) plus `speed`, which the wire carries but
+ * that slice does not declare, and `phase_fraction`, which that slice
+ * declares optional (drawing never reads it) but the wire always carries.
+ */
 export interface DecodedRenderFramePlayers extends RenderFramePlayers {
   readonly speed: readonly number[];
+  readonly phase_fraction: readonly number[];
 }
 
 /** `RenderFrameRoster` (`pitch.ts`) plus `names` and `count`, which the wire carries but that slice does not declare. */
@@ -836,6 +852,7 @@ export function decode(words: ArrayLike<number>): DecodedRenderFrame {
     aerial_outcome: column(words, playersAt, 20, count).map((code) =>
       optDecode(code, aerialOutcomeFromCode, "aerial outcome"),
     ),
+    phase_fraction: column(words, playersAt, 21, count),
   };
 
   const eventsAt = playersAt + PLAYER_FIELD_COUNT * count;

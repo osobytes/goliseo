@@ -39,6 +39,7 @@ use gc_core::vec2::Vec2;
 use gc_sim::aerial::{AerialOutcome, AerialStyle};
 use gc_sim::brain::TeamPhase;
 use gc_sim::combat::IMMUNITY_TICKS;
+use gc_sim::combat_feasibility::CombatActionPhase;
 use gc_sim::combat_snapshot::CombatMatchState;
 use gc_sim::keeper::{self, KeeperBehaviorState, KeeperShotType, SaveStyle};
 use gc_sim::r#match as sim_match;
@@ -55,7 +56,8 @@ use crate::player_pose::{
 };
 
 /// This protocol's version. Bump whenever [`RenderFrame`]'s shape changes.
-pub const VERSION: u32 = 1;
+/// 1 → 2: [`RenderFramePlayers::phase_fraction`] (#576).
+pub const VERSION: u32 = 2;
 
 /// A charge the locally controlled player has partway built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +178,14 @@ pub struct RenderFramePlayers {
     pub aerial_style: Vec<Option<AerialStyle>>,
     /// Resolved aerial outcome, if any. Sparse.
     pub aerial_outcome: Vec<Option<AerialOutcome>>,
+    /// Elapsed progress through this slot's current timed combat phase, in
+    /// `[0, 1)` — [`CombatPoseSample::phase_fraction`], carried per player so
+    /// the animator can sweep the swing clip through its strike key (#576).
+    /// `0.0` for a match without combat, for the held combat phases, and for
+    /// a player with no action family; dense, never sparse, because `0.0`
+    /// ("at the start of the phase, or nothing to report") is the correct
+    /// reading in every one of those cases.
+    pub phase_fraction: Vec<f64>,
 }
 
 /// The ball's per-frame presentation state.
@@ -335,20 +345,22 @@ pub struct RenderFrameEvents {
 ///   telegraph kinds, reach/arc geometry, readiness fractions — is genuinely
 ///   TypeScript-owned and genuinely does need a marshalling layer this crate
 ///   does not have. None of it is declared here.
-/// - The POSE-SELECTION half — `phase`, `forced_state`, `forced_ticks`, and
-///   now `immunity_ticks` (carried as [`crate::player_pose::CombatPoseSample::immunity_fraction`],
-///   normalised below) — is not TypeScript-owned at all. It is already
+/// - The POSE-SELECTION half — `phase`, `forced_state`, `forced_ticks`, plus
+///   `immunity_ticks` (carried as [`crate::player_pose::CombatPoseSample::immunity_fraction`],
+///   normalised below) and the current phase's progress (carried as
+///   [`crate::player_pose::CombatPoseSample::phase_fraction`], #576) — is not
+///   TypeScript-owned at all. It is already
 ///   native Rust simulation state, stepped every tick, on this side of the
 ///   wall: `gc_sim::combat_snapshot::CombatPlayerState`. [`combat_model`]
 ///   below adapts it in-process, with no boundary crossing whatsoever.
 ///
 /// So this type stays narrow because pose selection and its renderer's
-/// post-hit cue only ever needed four fields, not because the data was out
-/// of reach. `immunity_fraction` is the one field of the four `select`
-/// itself never reads — see [`crate::player_pose::CombatPoseSample`]'s own
-/// doc — but it is still the POSE-SELECTION half, not the RICH PRESENTATION
-/// one: it is native Rust state read straight off `CombatPlayerState`, not
-/// a TypeScript-computed projection.
+/// cues only ever needed five fields, not because the data was out
+/// of reach. `immunity_fraction` and `phase_fraction` are the two fields
+/// `select` itself never reads — see [`crate::player_pose::CombatPoseSample`]'s
+/// own doc — but they are still the POSE-SELECTION half, not the RICH
+/// PRESENTATION one: both are native Rust state read straight off
+/// `CombatPlayerState`, not a TypeScript-computed projection.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameCombatModel {
     /// RESERVED, AND NOT THE SIGNAL ANYTHING READS. Carried for shape
@@ -372,6 +384,35 @@ pub struct FrameCombatModel {
     /// One entry per roster slot; exactly the shape
     /// [`crate::player_pose::CombatPoseSample`] reads.
     pub players: Vec<CombatPoseSample>,
+}
+
+// [`CombatPoseSample::phase_fraction`]'s normalisation (#576): elapsed
+// progress through the current TIMED phase, `(total - remaining) / total`,
+// where `total` is the phase length `gc_data::action_families` authors for
+// this player's family. The held phases (ready, guard, aim) have no fixed
+// length, so they — and a player with no family — report `0.0`. Clamped so
+// a `phase_ticks` outside `[0, total]` (an interrupt reset mid-phase) can
+// never send the animator outside the clip.
+fn phase_fraction(runtime: &gc_sim::combat_snapshot::CombatPlayerState) -> f64 {
+    let Some(family_id) = runtime.family_id else {
+        return 0.0;
+    };
+    let family = gc_data::action_families::get(family_id);
+    let total = match runtime.phase {
+        CombatActionPhase::Windup => family.windup_ticks,
+        // Melee/unarmed author `active_ticks`; ranged's is 1. `unwrap_or(1)`
+        // rather than `expect` because a guard runtime that somehow reported
+        // `Active` should degrade to "phase over" (fraction 0 of 1), not take
+        // the frame down — the phase machine upstream never produces it.
+        CombatActionPhase::Active => family.active_ticks.unwrap_or(1),
+        CombatActionPhase::Recovery => family.recovery_ticks,
+        CombatActionPhase::Ready | CombatActionPhase::Guard | CombatActionPhase::Aim => return 0.0,
+    };
+    if total <= 0 {
+        return 0.0;
+    }
+    let elapsed = (total - runtime.phase_ticks).clamp(0, total);
+    elapsed as f64 / total as f64
 }
 
 /// Adapt one live [`CombatMatchState`] into the pose-selection slice
@@ -452,6 +493,7 @@ pub fn combat_model(state: &MatchState, combat: &CombatMatchState) -> FrameComba
                 // by a nonzero constant unconditionally: `IMMUNITY_TICKS` is
                 // `combat_rules`' own fixed constant, never zero.
                 immunity_fraction: runtime.immunity_ticks as f64 / IMMUNITY_TICKS as f64,
+                phase_fraction: phase_fraction(runtime),
             }
         })
         .collect();
@@ -1022,6 +1064,7 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
         aerial_jump: Vec::with_capacity(count),
         aerial_style: Vec::with_capacity(count),
         aerial_outcome: Vec::with_capacity(count),
+        phase_fraction: Vec::with_capacity(count),
     };
 
     for zero_based in 0..count {
@@ -1129,6 +1172,12 @@ pub fn build(state: &MatchState, opts: &RenderFrameOptions) -> RenderFrame {
         players.aerial_jump.push(player.aerial_jump);
         players.aerial_style.push(player.aerial_style);
         players.aerial_outcome.push(player.aerial_outcome);
+        // A match without combat reports 0.0 everywhere — "nothing to
+        // report" and "at the start of the phase" deliberately share the
+        // value; see the field's doc.
+        players
+            .phase_fraction
+            .push(combat_sample.map_or(0.0, |sample| sample.phase_fraction));
     }
 
     let ball_point = render_pose.map_or(state.ball, |pose| pose.ball);

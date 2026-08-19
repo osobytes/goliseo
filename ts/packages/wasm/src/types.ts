@@ -1388,7 +1388,7 @@ export interface PlayerPoseBridge {
    *   "player": { "id": "nebula_02", "is_keeper": false, /* ... *\/ },
    *   // All three optional/omittable, mirroring `player_pose::select`'s
    *   // own optional parameters -- omit exactly when the caller has none.
-   *   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6 },
+   *   "combat": { "phase": "guard", "forced_state": "stagger", "forced_ticks": 4, "immunity_fraction": 0.6, "phase_fraction": 0.25 },
    *   "keeper_context": { "near_ball": true, "shuffling": false, "tip": false },
    *   "outfield_context": { "now": 12.5, "containing": false, "kick_follow": true }
    * }
