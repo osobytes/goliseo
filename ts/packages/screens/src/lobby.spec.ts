@@ -751,6 +751,19 @@ function lockedRealHost(mode: SessionMatchMode): LobbyScreenState {
   return state;
 }
 
+// Locks a fake-coordinator, single-human, bot-filled session in `mode` --
+// used where a case only needs SOME roster/ownership to exist (e.g. to
+// exercise the assigned/ready phase's footer or players strip) and does not
+// need the real per-mode LIVE/AI-OWNED/AI-FILL distinctions `lockedRealHost`
+// exists for.
+function lockedHost(mode: SessionMatchMode): LobbyScreenState {
+  let state = click(newState(VP, ports()), "role_host");
+  state = click(state, `mode_${mode}`);
+  state = dispatch(state, { kind: "lobby", command: { kind: "bot_fill" } });
+  state = dispatch(state, { kind: "lobby", command: { kind: "lock" } });
+  return state;
+}
+
 describe("online lobby screen", () => {
   it("opens on an explicit host or guest choice", () => {
     const state = newState(VP, ports());
@@ -803,8 +816,29 @@ describe("online lobby screen", () => {
     expect(peers?.text?.includes("1 / 2")).toBe(true);
   });
 
-  it("shows all eight canonical slots and both protected keepers", () => {
+  // #566: the eight slot rows are cut during handshake -- ownership is
+  // unpublished, so every one would read "unassigned".
+  it("cuts the eight slot rows and the keeper lines during handshake", () => {
     const state = hosting();
+    const currentLayout = lobbyLayout(state);
+    for (const slot of [
+      "home_1",
+      "home_2",
+      "home_3",
+      "home_4",
+      "away_1",
+      "away_2",
+      "away_3",
+      "away_4",
+    ]) {
+      expect(hit.find(currentLayout, `slot_${slot}`)).toBeNull();
+    }
+    expect(hit.find(currentLayout, "keeper_home")).toBeNull();
+    expect(hit.find(currentLayout, "keeper_away")).toBeNull();
+  });
+
+  it("shows all eight canonical slots and both keepers, once assigned in 2v2", () => {
+    const state = lockedHost("2v2");
     const currentLayout = lobbyLayout(state);
     for (const slot of [
       "home_1",
@@ -819,7 +853,8 @@ describe("online lobby screen", () => {
       expect(hit.find(currentLayout, `slot_${slot}`)).not.toBeNull();
     }
     const homeKeeper = hit.find(currentLayout, "keeper_home");
-    expect(homeKeeper?.text?.includes("PROTECTED AI")).toBe(true);
+    expect(homeKeeper?.text).toContain("Keeper:");
+    expect(homeKeeper?.text).not.toContain("PROTECTED");
     expect(hit.find(currentLayout, "keeper_away")).not.toBeNull();
   });
 
@@ -869,15 +904,21 @@ describe("online lobby screen", () => {
     );
   });
 
-  it("disables controls that the current phase forbids", () => {
+  it("disables a control the current phase forbids, and hides one it doesn't offer at all", () => {
     const state = hosting();
     const currentLayout = lobbyLayout(state);
+    // Not yet an invite to copy -- disabled, not hidden, since inviting is
+    // still the thing to do on this phase.
     expect(hit.find(currentLayout, "copy_signal")?.data?.disabled).toBe(true);
-    expect(hit.find(currentLayout, "ready")?.data?.disabled).toBe(true);
-    expect(hit.find(currentLayout, "start")?.data?.disabled).toBe(true);
+    // READY/START do not apply until ownership exists (assigned/ready) --
+    // #566's own principle ("nothing on screen the player cannot act on")
+    // means they are absent here, not merely disabled.
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    expect(hit.find(currentLayout, "start")).toBeNull();
     // A disabled control is not activated by a click on it.
-    const nextState = click(state, "ready");
+    const nextState = click(state, "copy_signal");
     expect(view(nextState).error).toBeUndefined();
+    expect(nextState.effects.length).toBe(0);
   });
 
   it("leaves on back and on the leave control", () => {
@@ -888,9 +929,12 @@ describe("online lobby screen", () => {
     expect(clicked?.go).toBe("main_menu");
   });
 
-  it("moves focus with directional actions", () => {
+  // #566: tab order is the statement of priority, and a room code is the
+  // primary way in (it connects automatically) -- initial focus reflects
+  // that instead of landing on the manual "HOST A SESSION" button.
+  it("opens with focus on the room-code host button, and moves with directional actions", () => {
     const state = newState(VP, ports());
-    expect(state.focus).toBe("role_host");
+    expect(state.focus).toBe("room_code_host");
     const [moved] = lobbyUpdate(state, { kind: "action", action: "down" });
     expect(moved.focus).not.toBe(state.focus);
     const focused = hit.find(lobbyLayout(moved), moved.focus);
@@ -899,11 +943,23 @@ describe("online lobby screen", () => {
 
   it("keeps every state inside the virtual canvas", () => {
     const roleState = newState(VP, ports());
+    const composerState = click(newState(VP, ports()), "room_code_join");
     const hostState = hosting();
     const guestState = click(newState(VP, ports()), "role_guest");
-    let readyState = dispatch(hosting(), { kind: "lobby", command: { kind: "bot_fill" } });
-    readyState = dispatch(readyState, { kind: "lobby", command: { kind: "lock" } });
-    for (const state of [roleState, hostState, guestState, readyState]) {
+    const assigned2v2 = lockedHost("2v2");
+    const assigned1v1 = lockedHost("1v1");
+    const assigned4v4 = lockedHost("4v4");
+    const withDetails = click(assigned4v4, "details");
+    for (const state of [
+      roleState,
+      composerState,
+      hostState,
+      guestState,
+      assigned2v2,
+      assigned1v1,
+      assigned4v4,
+      withDetails,
+    ]) {
       assertWithinCanvas(lobbyLayout(state));
     }
   });
@@ -917,22 +973,44 @@ describe("online lobby screen", () => {
   // here.
   it("renders every state without touching a real display", () => {
     const roleState = newState(VP, ports());
+    const composerState = click(newState(VP, ports()), "room_code_join");
     const hostState = hosting();
-    const locked = dispatch(dispatch(hosting(), { kind: "lobby", command: { kind: "bot_fill" } }), {
-      kind: "lobby",
-      command: { kind: "lock" },
-    });
+    const locked = lockedHost("4v4");
+    const withDetails = click(locked, "details");
+    if (!locked.model.coordinator) {
+      throw new Error("lockedHost must produce a coordinator");
+    }
+    const countdownState: LobbyScreenState = {
+      ...locked,
+      model: {
+        ...locked.model,
+        coordinator: { ...locked.model.coordinator, phase: "countdown", countdown_remaining: 125 },
+      },
+    };
+    const terminalState = dispatch(hostState, { kind: "lobby", command: { kind: "leave" } });
     const backend = fakeGraphicsBackend();
-    for (const state of [roleState, hostState, locked]) {
+    for (const state of [
+      roleState,
+      composerState,
+      hostState,
+      locked,
+      withDetails,
+      countdownState,
+      terminalState,
+    ]) {
       expect(() => draw.layout(backend, lobbyLayout(state), VP)).not.toThrow();
     }
   });
 
-  it("surfaces a terminal reason in the layout", () => {
+  // #566: a terminated lobby is a real end screen -- `terminal_text` is the
+  // headline, not a footnote in a muted "trouble" line.
+  it("surfaces a terminal reason as the terminal screen's headline", () => {
     let state = hosting();
     state = dispatch(state, { kind: "lobby", command: { kind: "leave" } });
-    const trouble = hit.find(lobbyLayout(state), "trouble");
-    expect(trouble?.text?.includes("YOU ENDED THE SESSION")).toBe(true);
+    expect(view(state).phase).toBe("terminal");
+    const headline = hit.find(lobbyLayout(state), "headline");
+    // TERMINAL_TEXT is authored sentence case; the layout must not shout it.
+    expect(headline?.text).toBe("You ended the session.");
   });
 
   it("surfaces a dropped guest's build on a lobby that is still standing", () => {
@@ -956,9 +1034,9 @@ describe("online lobby screen", () => {
       },
     };
     const text = hit.find(lobbyLayout(withDeparture), "trouble")?.text ?? "";
-    expect(text.includes("DIFFERENT BUILD")).toBe(true);
-    expect(text.includes("INSTALL THE SAME BUILD ON BOTH")).toBe(true);
-    expect(text.includes("MANIFEST_MISMATCH")).toBe(true);
+    expect(text).toContain("different build");
+    expect(text).toContain("Install the same build on both");
+    expect(text).toContain("manifest_mismatch");
   });
 
   it("lets a finished session outrank a dropped guest", () => {
@@ -977,29 +1055,43 @@ describe("online lobby screen", () => {
       },
     };
     withDeparture = dispatch(withDeparture, { kind: "lobby", command: { kind: "leave" } });
-    const text = hit.find(lobbyLayout(withDeparture), "trouble")?.text ?? "";
-    expect(text.includes("YOU ENDED THE SESSION")).toBe(true);
-    expect(text.includes("DIFFERENT BUILD")).toBe(false);
+    expect(view(withDeparture).phase).toBe("terminal");
+    const headline = hit.find(lobbyLayout(withDeparture), "headline")?.text ?? "";
+    expect(headline).toBe("You ended the session.");
+    expect(headline).not.toContain("different build");
+    // The terminal screen has no "trouble" line at all -- the headline
+    // replaced it, and a stale departure card was never load-bearing here.
+    expect(hit.find(lobbyLayout(withDeparture), "trouble")).toBeNull();
   });
 
   // Unblocked: driven against the real `@gc/wasm` `Coordinator` -- see this
-  // file's header. 1v1 seats a lone connected human on all four home
-  // slots; only the first (canonical order) is that human's opening LIVE
-  // slot, the rest are AI while still owned by them, and every away slot
-  // is a declared bot fill.
-  it("names the AI-driven slots inside a human's owned set", () => {
+  // file's header. #566: 1v1 has nothing to trade (the lone human already
+  // owns the whole line), so it renders as two team summary cards instead
+  // of eight per-slot rows -- no `slot_*`/`prefer_*` widgets at all.
+  it("1v1: shows two team summary cards, and no per-slot controls", () => {
     const state = lockedRealHost("1v1");
     expect(view(state).error).toBeUndefined();
     const currentLayout = lobbyLayout(state);
-    const home1 = hit.find(currentLayout, "slot_home_1");
-    expect(home1?.text?.includes("LIVE")).toBe(true);
-    for (const slot of ["home_2", "home_3", "home_4"]) {
-      const widget = hit.find(currentLayout, `slot_${slot}`);
-      expect(widget?.text?.includes("AI (OWNED)")).toBe(true);
-    }
-    for (const slot of ["away_1", "away_2", "away_3", "away_4"]) {
-      const widget = hit.find(currentLayout, `slot_${slot}`);
-      expect(widget?.text?.includes("AI FILL")).toBe(true);
+    const home = hit.find(currentLayout, "team_summary_home");
+    expect(home?.text).toContain("Zyro Vex");
+    expect(home?.text).toContain("You");
+    expect(home?.text).toContain("Keeper: Ozzo (AI)");
+    const away = hit.find(currentLayout, "team_summary_away");
+    expect(away?.text).toContain("Away");
+    expect(away?.text).toContain("AI-controlled");
+    expect(away?.text).toContain("Keeper: Gax Oru (AI)");
+    for (const slot of [
+      "home_1",
+      "home_2",
+      "home_3",
+      "home_4",
+      "away_1",
+      "away_2",
+      "away_3",
+      "away_4",
+    ]) {
+      expect(hit.find(currentLayout, `slot_${slot}`)).toBeNull();
+      expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
     }
   });
 
@@ -1007,11 +1099,21 @@ describe("online lobby screen", () => {
   // home_1/home_2 (`slots_per_human` = 2); a pair control is offered on
   // every *other* same-team slot -- trading the human's non-live slot
   // (home_2) for it -- and nowhere else: not on the two slots already
-  // owned (nothing to trade for), not on the away team (wrong team).
-  it("offers a pair control only where there is a pair to choose", () => {
+  // owned (nothing to trade for), not on the away team (wrong team). #566:
+  // 2v2 is the one mode where per-slot ownership is a real decision, so it
+  // keeps the eight-row team-column roster.
+  it("2v2: shows per-slot rows, with a pair control only where there is a pair to choose", () => {
     const state = lockedRealHost("2v2");
     expect(view(state).error).toBeUndefined();
     const currentLayout = lobbyLayout(state);
+    const home1 = hit.find(currentLayout, "slot_home_1");
+    expect(home1?.text).toContain("LIVE");
+    const home2 = hit.find(currentLayout, "slot_home_2");
+    expect(home2?.text).toContain("AI (OWNED)");
+    for (const slot of ["away_1", "away_2", "away_3", "away_4"]) {
+      const widget = hit.find(currentLayout, `slot_${slot}`);
+      expect(widget?.text).toContain("AI FILL");
+    }
     expect(hit.find(currentLayout, "prefer_home_3")).not.toBeNull();
     expect(hit.find(currentLayout, "prefer_home_4")).not.toBeNull();
     for (const slot of ["home_1", "home_2", "away_1", "away_2", "away_3", "away_4"]) {
@@ -1019,29 +1121,298 @@ describe("online lobby screen", () => {
     }
   });
 
-  // Unblocked: same real coordinator. In 1v1 the lone human already owns
-  // every home slot (nothing on its own team left to trade for); in 4v4 it
-  // owns exactly one slot (nothing to trade away). Both are properties of
-  // the real ownership the coordinator published, not of this screen's own
-  // logic.
-  it("offers no pair control at all in 1v1 or 4v4", () => {
-    for (const mode of ["1v1", "4v4"] as const) {
-      const state = lockedRealHost(mode);
-      expect(view(state).error).toBeUndefined();
-      const currentLayout = lobbyLayout(state);
-      for (const slot of [
-        "home_1",
-        "home_2",
-        "home_3",
-        "home_4",
-        "away_1",
-        "away_2",
-        "away_3",
-        "away_4",
-      ]) {
-        expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
-      }
+  // Unblocked: same real coordinator. In 4v4 the lone human owns exactly
+  // one slot (nothing to trade away), so #566 renders one personal card
+  // ("You play ... — Home") plus a teammate list instead of per-slot rows.
+  it("4v4: shows a personal card and a teammate list, and no per-slot controls", () => {
+    const state = lockedRealHost("4v4");
+    expect(view(state).error).toBeUndefined();
+    const currentLayout = lobbyLayout(state);
+    const youCard = hit.find(currentLayout, "you_card");
+    expect(youCard?.text).toBe("You play Zyro Vex — Home");
+    const teammates = hit.find(currentLayout, "teammates")?.text ?? "";
+    expect(teammates).toContain("Mika Olu");
+    expect(teammates).toContain("AI FILL");
+    expect(teammates).toContain("Keeper: Ozzo (AI)");
+    for (const slot of [
+      "home_1",
+      "home_2",
+      "home_3",
+      "home_4",
+      "away_1",
+      "away_2",
+      "away_3",
+      "away_4",
+    ]) {
+      expect(hit.find(currentLayout, `slot_${slot}`)).toBeNull();
+      expect(hit.find(currentLayout, `prefer_${slot}`)).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Countdown seconds, the terminal identity dump, and the DETAILS toggle
+// (#566). These are the three genuinely new screen behaviours the redesign
+// adds -- everything else maps to a `LobbyCommand` the model already
+// accepted.
+// ---------------------------------------------------------------------------
+
+describe("countdown, terminal identity, and DETAILS (#566)", () => {
+  function withCountdown(remaining: number): LobbyScreenState {
+    const state = lockedHost("4v4");
+    if (!state.model.coordinator) {
+      throw new Error("lockedHost must produce a coordinator");
+    }
+    return {
+      ...state,
+      model: {
+        ...state.model,
+        coordinator: {
+          ...state.model.coordinator,
+          phase: "countdown",
+          countdown_remaining: remaining,
+        },
+      },
+    };
+  }
+
+  it("renders the countdown in seconds, ceil(ticks / 60), never raw ticks", () => {
+    // 125 ticks at 60 ticks/sec is 2.08... seconds -- ceil'd up to 3, not
+    // floored or shown as "125 TICKS".
+    const state = withCountdown(125);
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "countdown")?.text).toBe("3");
+    for (const widget of currentLayout) {
+      expect(widget.text ?? "").not.toContain("TICKS");
+    }
+  });
+
+  it("shows an exact multiple of 60 as that many whole seconds", () => {
+    const state = withCountdown(180);
+    expect(hit.find(lobbyLayout(state), "countdown")?.text).toBe("3");
+  });
+
+  it("the countdown phase is otherwise minimal: a hero numeral, one line, and LEAVE", () => {
+    const state = withCountdown(60);
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "leave")).not.toBeNull();
+    // No roster, no players strip, no mode chips -- nothing left to act on.
+    expect(hit.find(currentLayout, "you_card")).toBeNull();
+    expect(hit.find(currentLayout, "players_heading")).toBeNull();
+    // A clean countdown has nothing to report -- no "trouble" line at all,
+    // not merely an empty one.
+    expect(hit.find(currentLayout, "trouble")).toBeNull();
+  });
+
+  // Council review: `departure_text` is phase-independent (a peer can drop
+  // seconds before kickoff exactly as easily as during handshake), so the
+  // countdown's otherwise-minimal screen still has to make room for it --
+  // pre-#566 the "trouble" line rendered in every state, and a silent
+  // countdown would have been a regression from that.
+  it("still surfaces a non-fatal departure during countdown, without cluttering the clean case", () => {
+    let state = withCountdown(90);
+    if (!state.model.coordinator) {
+      throw new Error("withCountdown must produce a coordinator");
+    }
+    state = {
+      ...state,
+      model: {
+        ...state.model,
+        coordinator: {
+          ...state.model.coordinator,
+          departure: { peer_id: "guest_2", reason: "transport_lost", code: "transport_lost" },
+        },
+      },
+    };
+    const trouble = hit.find(lobbyLayout(state), "trouble");
+    expect(trouble).not.toBeNull();
+    expect(trouble?.text).toBe("The connection to a guest was lost.");
+    // The hero numeral is still the headline -- the departure is one muted
+    // line, not a takeover of the countdown screen.
+    expect(hit.find(lobbyLayout(state), "countdown")?.text).toBe("2");
+  });
+
+  it("always shows the identity dump on the terminal screen, load-bearing for a build/manifest mismatch", () => {
+    let state = hosting();
+    state = dispatch(state, { kind: "lobby", command: { kind: "leave" } });
+    expect(view(state).phase).toBe("terminal");
+    // "identity_card" is the display card -- distinct from the role
+    // screen's "identity" BUTTON (which cycles the guest peer id), even
+    // though a `card` kind is only ever safe here because it is
+    // `focusable: false` (both are pinned by name so a future id collision
+    // between the two fails loudly instead of silently sharing a click).
+    const identity = hit.find(lobbyLayout(state), "identity_card");
+    expect(identity).not.toBeNull();
+    expect(identity?.text).toContain("BUILD");
+    // No toggle on the terminal screen -- the card is simply always there.
+    expect(hit.find(lobbyLayout(state), "details")).toBeNull();
+  });
+
+  it("DETAILS toggles the identity card outside terminal, and does not touch the model", () => {
+    const state = lockedHost("4v4");
+    const before = { ...state.model };
+    expect(hit.find(lobbyLayout(state), "identity_card")).toBeNull();
+
+    const toggled = click(state, "details");
+    expect(hit.find(lobbyLayout(toggled), "identity_card")?.text).toContain("BUILD");
+    expect(toggled.model).toEqual(before);
+
+    const toggledBack = click(toggled, "details");
+    expect(hit.find(lobbyLayout(toggledBack), "identity_card")).toBeNull();
+  });
+
+  // Council review (cheap hardening): a stale `true` would otherwise carry
+  // across attempts within one `LobbyScreenState` instance -- the DETAILS
+  // toggle is screen-local, so nothing in `lobby_model.ts` ever clears it.
+  // Constructed directly (rather than by first reaching a phase where
+  // DETAILS is actually clickable) because the point is the reset behaviour
+  // of `room_cancel` itself, not which flow happens to make `details: true`
+  // reachable beforehand.
+  it("resets DETAILS when a room attempt is cancelled via the CANCEL widget", () => {
+    let state = click(newState(VP, ports()), "room_code_join");
+    state = { ...state, details: true };
+    const cancelled = click(state, "room_cancel");
+    expect(view(cancelled).room_entry).toBeUndefined();
+    expect(cancelled.details).toBe(false);
+  });
+
+  it("resets DETAILS when Escape cancels a room attempt", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = { ...state, details: true };
+    const [next] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(view(next).room_active).toBe(false);
+    expect(next.details).toBe(false);
+  });
+
+  it("leaves DETAILS untouched by a command that is not room_cancel", () => {
+    let state = lockedHost("4v4");
+    state = { ...state, details: true };
+    state = dispatch(state, { kind: "lobby", command: { kind: "ready", ready: true } });
+    expect(state.details).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// READY/START visibility across manifest -> assigned -> ready (#566 council
+// review, blocking finding 2): no case ever constructed `phase ===
+// "manifest"` before, so its one distinguishing behaviour -- the roster
+// shows, but READY/START do not apply yet -- was unproven. The `ready`-phase
+// case is the companion: presence-when-enabled was never pinned either, and
+// it is now a per-phase conditional (`footerWidgets`' `showReady`/
+// `showStart`), not merely a `disabled` flag on an always-present button.
+// ---------------------------------------------------------------------------
+
+describe("roster phase gating: manifest / assigned / ready (#566)", () => {
+  function withPhase(
+    mode: SessionMatchMode,
+    phase: "manifest" | "assigned" | "ready",
+  ): LobbyScreenState {
+    const state = lockedHost(mode);
+    if (!state.model.coordinator) {
+      throw new Error("lockedHost must produce a coordinator");
+    }
+    return {
+      ...state,
+      model: { ...state.model, coordinator: { ...state.model.coordinator, phase } },
+    };
+  }
+
+  it("manifest: shows the roster, but READY and START do not apply yet", () => {
+    const state = withPhase("2v2", "manifest");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "slot_home_1")).not.toBeNull();
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    expect(hit.find(currentLayout, "start")).toBeNull();
+  });
+
+  it("assigned: READY is present and enabled; START does not apply yet", () => {
+    const state = withPhase("2v2", "assigned");
+    const currentLayout = lobbyLayout(state);
+    const ready = hit.find(currentLayout, "ready");
+    expect(ready).not.toBeNull();
+    expect(ready?.data?.disabled).toBe(false);
+    expect(hit.find(currentLayout, "start")).toBeNull();
+  });
+
+  it("ready: READY and, for the host, an enabled START are both present", () => {
+    const state = withPhase("2v2", "ready");
+    const currentLayout = lobbyLayout(state);
+    const ready = hit.find(currentLayout, "ready");
+    expect(ready).not.toBeNull();
+    expect(ready?.data?.disabled).toBe(false);
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// running / result (#566 council review, blocking finding 3): this screen
+// normally never renders these phases -- a `start_match` effect returns
+// `{ go: "online_match" }` and the owner unmounts it -- but `layoutGeneric`
+// exists as a defensive fallback, and an untested fallback is not a
+// fallback anyone can trust. Minimal smoke coverage: it doesn't throw, and
+// it doesn't offer controls from a phase it isn't.
+// ---------------------------------------------------------------------------
+
+describe("running / result: defensive fallback (#566)", () => {
+  function withPhase(phase: "running" | "result"): LobbyScreenState {
+    const state = hosting();
+    if (!state.model.coordinator) {
+      throw new Error("hosting() must produce a coordinator");
+    }
+    return {
+      ...state,
+      model: { ...state.model, coordinator: { ...state.model.coordinator, phase } },
+    };
+  }
+
+  for (const phase of ["running", "result"] as const) {
+    it(`${phase}: renders a minimal fallback without throwing`, () => {
+      const state = withPhase(phase);
+      expect(() => lobbyLayout(state)).not.toThrow();
+      const currentLayout = lobbyLayout(state);
+      expect(hit.find(currentLayout, "leave")).not.toBeNull();
+      // No roster, no handshake furniture -- this is a fallback, not a
+      // sixth designed phase.
+      expect(hit.find(currentLayout, "you_card")).toBeNull();
+      expect(hit.find(currentLayout, "slot_home_1")).toBeNull();
+      expect(hit.find(currentLayout, "invite")).toBeNull();
+      expect(hit.find(currentLayout, "room_code_host")).toBeNull();
+      assertWithinCanvas(currentLayout);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// dispatchCommand's own focus repair (#566 council review, cheap hardening):
+// the click path has always repaired focus against the layout it just
+// produced; a raw "lobby" dispatch -- every network-driven event
+// (`room_created`, `signal`, `control`, `tick`, and every case here that
+// calls `dispatch()` rather than `click()`) -- did not, so a guest whose
+// screen flips handshake -> assigned the moment the host clicks LOCK kept
+// focus on a widget that no longer existed until their own next input.
+// ---------------------------------------------------------------------------
+
+describe("focus repair on a network-driven phase change (#566)", () => {
+  it("repairs focus after a lobby-kind dispatch changes phase, mirroring the click path", () => {
+    let state = hosting();
+    // Deliberately point focus at a widget that will not survive the
+    // upcoming phase change, the way a network event can leave it --
+    // `hosting()`'s own click already repairs focus for the click that
+    // produced it, so this simulates the case that click-time repair
+    // cannot reach.
+    state = { ...state, focus: "invite" };
+    state = dispatch(state, { kind: "lobby", command: { kind: "bot_fill" } });
+    state = dispatch(state, { kind: "lobby", command: { kind: "lock" } });
+    expect(view(state).phase).not.toBe("handshake");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "invite")).toBeNull();
+    const focused = hit.find(currentLayout, state.focus);
+    expect(
+      focused,
+      `focus "${state.focus}" must point at a widget that exists in the new layout`,
+    ).not.toBeNull();
   });
 });
 
@@ -1210,7 +1581,7 @@ describe("room-code entry (#552)", () => {
     expect(view(state).room_code).toBe("A3F9K2");
     expect(view(state).room_active).toBe(true);
     const currentLayout = lobbyLayout(state);
-    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("ROOM CODE  A3F9K2");
+    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("A3F9K2");
     expect(hit.find(currentLayout, "copy_signal")).toBeNull();
     expect(hit.find(currentLayout, "paste_signal")).toBeNull();
   });
@@ -1293,7 +1664,7 @@ describe("room-code entry (#552)", () => {
     expect(view(state).error).toBeUndefined(); // cleared, as every command clears it
     expect(view(state).room_error).toBe(ROOM_FAILURE_TEXT["handshake_failed"]); // still readable
     const trouble = hit.find(lobbyLayout(state), "trouble");
-    expect(trouble?.text).toBe(ROOM_FAILURE_TEXT["handshake_failed"]?.toUpperCase());
+    expect(trouble?.text).toBe(ROOM_FAILURE_TEXT["handshake_failed"]);
   });
 
   it("leaving a room-code connection in progress closes it", () => {
@@ -1483,6 +1854,25 @@ describe("room-code entry (#552)", () => {
     const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
     expect(action?.go).toBe("main_menu");
   });
+
+  // Review-flagged coverage gap (#566's own delta): the three cases above
+  // all cover a room-code attempt still IN FLIGHT (`role` undefined). Once
+  // `room_created` has actually resolved a role, the attempt is no longer
+  // "pending" -- `update()`'s own `roomAttemptPending` guard requires
+  // `role === undefined` -- so Escape must fall back to the universal
+  // "leave" path and eject the whole lobby, exactly as it would for a
+  // manually-chosen role. Nothing here should route to `room_cancel`.
+  it("Escape on an ESTABLISHED room-code connection leaves the lobby, not room_cancel", () => {
+    let state = click(newState(VP, ports()), "room_code_host");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
+    expect(view(state).role).toBe("host");
+    expect(view(state).room_active).toBe(true);
+
+    const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action?.go, "an established connection leaves, it does not cancel").toBe("main_menu");
+    // `leave()` closes the room-code link along with everything else.
+    expect(next.effects.some((effect) => effect.kind === "room_close")).toBe(true);
+  });
 });
 
 // The presentation pass over an unchanged model: same ids, same commands, new
@@ -1490,7 +1880,7 @@ describe("room-code entry (#552)", () => {
 // edit that quietly undoes it goes red.
 describe("online lobby presentation", () => {
   it("groups seats into team columns instead of one flat list of eight", () => {
-    const currentLayout = lobbyLayout(hosting());
+    const currentLayout = lobbyLayout(lockedHost("2v2"));
     const columnOf = (id: string): number | undefined => hit.find(currentLayout, id)?.rect?.x;
 
     const homeColumn = columnOf("slot_home_1");
@@ -1511,7 +1901,7 @@ describe("online lobby presentation", () => {
   });
 
   it("stacks each team's four slots vertically, so a column reads as a team", () => {
-    const currentLayout = lobbyLayout(hosting());
+    const currentLayout = lobbyLayout(lockedHost("2v2"));
     const rows = ["home_1", "home_2", "home_3", "home_4"].map(
       (slot) => hit.find(currentLayout, `slot_${slot}`)?.rect?.y ?? -1,
     );
@@ -1524,7 +1914,7 @@ describe("online lobby presentation", () => {
 
   it("shows an invite code rather than a byte count, and never the blob", () => {
     let state = hosting();
-    expect(hit.find(lobbyLayout(state), "signal_out")?.text).toContain("NO INVITE YET");
+    expect(hit.find(lobbyLayout(state), "signal_out")?.text).toContain("No invite yet");
 
     state = dispatch(state, {
       kind: "lobby",
@@ -1543,7 +1933,7 @@ describe("online lobby presentation", () => {
     const state = click(hosting(), "mode_1v1");
     const line = hit.find(lobbyLayout(state), "peer_count")?.text ?? "";
     expect(line).toContain("1 / 2");
-    expect(line).toContain("WAITING ON 1 PLAYER");
+    expect(line).toContain("waiting on 1 player");
   });
 
   it("offers no seating or signaling controls before a role is chosen", () => {
@@ -1564,6 +1954,23 @@ describe("online lobby presentation", () => {
       kind: "lobby",
       command: { kind: "room_created", code: "A3F9K2" },
     });
+    const assigned2v2 = lockedHost("2v2");
+    const assigned1v1 = lockedHost("1v1");
+    const assigned4v4 = lockedHost("4v4");
+    if (!assigned4v4.model.coordinator) {
+      throw new Error("lockedHost must produce a coordinator");
+    }
+    const countdownState: LobbyScreenState = {
+      ...assigned4v4,
+      model: {
+        ...assigned4v4.model,
+        coordinator: {
+          ...assigned4v4.model.coordinator,
+          phase: "countdown",
+          countdown_remaining: 125,
+        },
+      },
+    };
     const cases: readonly (readonly [string, LobbyScreenState])[] = [
       ["role", newState(VP, ports())],
       ["host", hosting()],
@@ -1571,6 +1978,12 @@ describe("online lobby presentation", () => {
       ["room composer", click(newState(VP, ports()), "room_code_join")],
       ["room host", roomHosted],
       ["room dropped", dispatch(roomHosted, { kind: "lobby", command: { kind: "room_dropped" } })],
+      ["assigned 2v2", assigned2v2],
+      ["assigned 1v1", assigned1v1],
+      ["assigned 4v4", assigned4v4],
+      ["assigned 4v4 with details", click(assigned4v4, "details")],
+      ["countdown", countdownState],
+      ["terminal", dispatch(hosting(), { kind: "lobby", command: { kind: "leave" } })],
     ];
 
     for (const [name, state] of cases) {
@@ -1603,7 +2016,7 @@ describe("online lobby presentation", () => {
 
     const dropped = dispatch(hosted, { kind: "lobby", command: { kind: "room_dropped" } });
     const currentLayout = lobbyLayout(dropped);
-    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("ROOM CODE  A3F9K2");
+    expect(hit.find(currentLayout, "room_code_display")?.text).toBe("A3F9K2");
     expect(hit.find(currentLayout, "copy_signal")).not.toBeNull();
     expect(hit.find(currentLayout, "signal_out")).not.toBeNull();
   });
