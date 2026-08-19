@@ -60,6 +60,7 @@ export function loadOnlineWasmHost(): OnlineWasmHost {
     buildMatchDriverRenderFrame(
       bridge: OnlineMatchDriverHandle,
       kickFollowSlots: number,
+      dispossessedSlots: number,
     ): Float64Array {
       // `bridge` is always the concrete class `Coordinator`/`MatchDriverBridge`
       // above constructed -- this cast documents that this loader's own
@@ -67,6 +68,7 @@ export function loadOnlineWasmHost(): OnlineWasmHost {
       // wasm-bindgen class, not a different object.
       (bridge as unknown as InstanceType<typeof gcWasmWeb.MatchDriverBridge>).renderFrameBuild(
         kickFollowSlots,
+        dispossessedSlots,
       );
       const raw = gcWasmWeb.__getRawExports();
       const ptr = raw.driver_render_frame_ptr();

@@ -357,13 +357,13 @@ describe("createSimHost", () => {
       const wire = ["2", "0", ...Array.from({ length: 8 }, () => "0,0,0,0")].join("|");
       session.step(wire);
 
-      const first = rawHost.buildRenderFrame(session.handle, 0);
+      const first = rawHost.buildRenderFrame(session.handle, 0, 0);
       expect(first).not.toBeNull();
       const firstBuffer = first?.buffer;
 
       rawHost.memory.grow(4);
 
-      const second = rawHost.buildRenderFrame(session.handle, 0);
+      const second = rawHost.buildRenderFrame(session.handle, 0, 0);
       expect(second).not.toBeNull();
       // A view derived after growth must not still point at the pre-growth
       // buffer -- if it did, that would mean stale-view caching crept back

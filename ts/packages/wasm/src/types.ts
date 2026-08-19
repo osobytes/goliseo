@@ -257,8 +257,13 @@ export interface RawExports {
    * scalar precisely so it can ride this path; see
    * `gc_wasm::session::kick_follow_ids` for why the ids themselves do not
    * cross. `releaseFollow.slotMask(roster.ids)` (`@gc/render`) produces it.
+   *
+   * `dispossessedSlots` is the renderer's dispossession flinch window (#591),
+   * the same roster-slot-bitmask shape (`0` when nothing is flinching) — see
+   * `gc_wasm::session::dispossessed_ids`.
+   * `dispossessionFlinch.slotMask(roster.ids)` (`@gc/render`) produces it.
    */
-  render_frame_build(handle: number, kickFollowSlots: number): number;
+  render_frame_build(handle: number, kickFollowSlots: number, dispossessedSlots: number): number;
   render_frame_ptr(): number;
   render_frame_len(): number;
   driver_render_frame_ptr(): number;
@@ -771,8 +776,11 @@ export interface MatchDriverBridge {
    * `kickFollowSlots`: the renderer's release follow-through window as a
    * roster-slot bitmask, the same scalar the raw
    * `RawExports.render_frame_build` takes. `0` when no window is open.
+   *
+   * `dispossessedSlots`: the renderer's dispossession flinch window (#591),
+   * the same roster-slot-bitmask shape. `0` when no window is open.
    */
-  renderFrameBuild(kickFollowSlots: number): number;
+  renderFrameBuild(kickFollowSlots: number, dispossessedSlots: number): number;
   /** Match-constant per-player roster fields, as a flat array -- the
    * `MatchDriverBridge` counterpart of {@link SimSession.rosterNumeric},
    * over this bridge's own roster (built once in its constructor, the same

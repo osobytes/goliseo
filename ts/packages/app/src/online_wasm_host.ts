@@ -106,7 +106,7 @@ export interface OnlineMatchDriverHandle {
   terminalJson(): string;
   diagnosticsJson(): string;
   snapshotLookup(boundaryTick: number): unknown;
-  renderFrameBuild(kickFollowSlots: number): number;
+  renderFrameBuild(kickFollowSlots: number, dispossessedSlots: number): number;
   rosterNumeric(): Float64Array;
   rosterIdsAndNames(): string;
   free(): void;
@@ -150,5 +150,6 @@ export interface OnlineWasmHost {
   buildMatchDriverRenderFrame(
     bridge: OnlineMatchDriverHandle,
     kickFollowSlots: number,
+    dispossessedSlots: number,
   ): Float64Array;
 }

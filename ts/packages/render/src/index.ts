@@ -24,6 +24,7 @@ export { viewState } from "./view_state.ts";
 export { correctionSmoothing } from "./correction_smoothing.ts";
 export { replay } from "./replay.ts";
 export { releaseFollow } from "./release_follow.ts";
+export { dispossessionFlinch } from "./dispossession_flinch.ts";
 export { Benchmark, GATES, DELTA_BUDGET, evaluate, emit } from "./benchmark.ts";
 
 // The scene-assembly surface: pitch.ts already composes arena + players +
@@ -72,6 +73,7 @@ export type * as viewStateTypes from "./view_state.ts";
 export type * as correctionSmoothingTypes from "./correction_smoothing.ts";
 export type * as replayTypes from "./replay.ts";
 export type * as releaseFollowTypes from "./release_follow.ts";
+export type * as dispossessionFlinchTypes from "./dispossession_flinch.ts";
 export type * as benchmarkTypes from "./benchmark.ts";
 export type * as pitchTypes from "./pitch.ts";
 export type * as arenaTypes from "./arena.ts";

@@ -838,6 +838,28 @@ impl Session {
 /// "no window is open" path without allocating, which is the common case.
 /// Bits past the roster's own length are ignored.
 pub(crate) fn kick_follow_ids(roster: &RenderFrameRoster, slots: u32) -> Option<Vec<String>> {
+    slot_mask_ids(roster, slots)
+}
+
+/// Resolve a renderer-supplied roster-slot bitmask into the player ids
+/// [`gc_render::frame::RenderFrameOptions::dispossessed`] wants.
+///
+/// Same rationale and same bitmask-over-the-wire shape as [`kick_follow_ids`]
+/// -- the renderer-owned dispossession flinch window
+/// (`packages/render/src/dispossession_flinch.ts`) must never enter a
+/// snapshot, a hash or a rollback resimulation either, so it crosses this
+/// side of the wasm boundary the identical way, every frame. See
+/// [`gc_render::player_pose::OutfieldPoseContext::dispossessed`]'s doc for
+/// why this producer exists (#591): a standing-poke tackle never sets
+/// `MatchPlayer::stun_timer`, so with no presentation-owned producer the
+/// victim showed no reaction to being poked at all.
+pub(crate) fn dispossessed_ids(roster: &RenderFrameRoster, slots: u32) -> Option<Vec<String>> {
+    slot_mask_ids(roster, slots)
+}
+
+/// The bitmask-to-ids resolution [`kick_follow_ids`] and [`dispossessed_ids`]
+/// share -- one algorithm, two independent renderer-owned windows.
+fn slot_mask_ids(roster: &RenderFrameRoster, slots: u32) -> Option<Vec<String>> {
     if slots == 0 {
         return None;
     }
@@ -861,6 +883,10 @@ pub(crate) fn kick_follow_ids(roster: &RenderFrameRoster, slots: u32) -> Option<
 /// open, which is what every caller passed implicitly before this parameter
 /// existed.
 ///
+/// `dispossessed_slots` is the renderer's dispossession flinch window, the
+/// same roster-slot-bitmask shape -- see [`dispossessed_ids`]. `0` means no
+/// window is open.
+///
 /// `combat` comes straight off this session's own live combat companion
 /// ([`crate::registry::Entry::combat`], stepped every [`Session::step`]) via
 /// `gc_render::frame::combat_model`, and is `None` for a session
@@ -870,10 +896,15 @@ pub(crate) fn kick_follow_ids(roster: &RenderFrameRoster, slots: u32) -> Option<
 /// was never offered a combat sample and ALL SEVEN combat poses were
 /// structurally unreachable in a real match (#441), the same way
 /// `kick_follow` above was before #428.
-pub(crate) fn frame_options(entry: &Entry, kick_follow_slots: u32) -> RenderFrameOptions {
+pub(crate) fn frame_options(
+    entry: &Entry,
+    kick_follow_slots: u32,
+    dispossessed_slots: u32,
+) -> RenderFrameOptions {
     RenderFrameOptions {
         roster: Some(entry.roster.clone()),
         kick_follow: kick_follow_ids(&entry.roster, kick_follow_slots),
+        dispossessed: dispossessed_ids(&entry.roster, dispossessed_slots),
         combat: entry
             .combat
             .as_ref()
@@ -1475,7 +1506,7 @@ mod kick_follow_tests {
         let session = session();
         session.with_entry(|entry| {
             assert_eq!(kick_follow_ids(&entry.roster, 0), None);
-            assert_eq!(frame_options(entry, 0).kick_follow, None);
+            assert_eq!(frame_options(entry, 0, 0).kick_follow, None);
         });
     }
 
@@ -1521,13 +1552,103 @@ mod kick_follow_tests {
         session.with_entry(|entry| {
             assert!(!entry.roster.is_keeper[1], "slot 1 must be an outfielder");
 
-            let without = render_frame::build(&entry.state, &frame_options(entry, 0));
+            let without = render_frame::build(&entry.state, &frame_options(entry, 0, 0));
             assert_ne!(without.players.pose_id[1], PlayerPoseId::KickFollow);
 
-            let with = render_frame::build(&entry.state, &frame_options(entry, 0b0010));
+            let with = render_frame::build(&entry.state, &frame_options(entry, 0b0010, 0));
             assert_eq!(with.players.pose_id[1], PlayerPoseId::KickFollow);
             // ...and only that slot.
             assert_ne!(with.players.pose_id[2], PlayerPoseId::KickFollow);
+        });
+    }
+}
+
+/// #591's dispossession flinch window -- exactly parallel to
+/// [`kick_follow_tests`], one mask resolution helper and one end-to-end
+/// proof, because [`dispossessed_ids`] is [`kick_follow_ids`] over an
+/// independent window rather than a different algorithm.
+#[cfg(test)]
+mod dispossessed_tests {
+    use super::*;
+    use gc_render::player_pose::PlayerPoseId;
+
+    fn session() -> Session {
+        Session::new(
+            "nebula", "orion", 7.0, 20.0, 3, None, None, None, None, None,
+        )
+        .expect("authored teams with five-player rosters")
+    }
+
+    #[test]
+    fn an_empty_mask_opens_no_window_at_all() {
+        let session = session();
+        session.with_entry(|entry| {
+            assert_eq!(dispossessed_ids(&entry.roster, 0), None);
+            assert_eq!(frame_options(entry, 0, 0).dispossessed, None);
+        });
+    }
+
+    #[test]
+    fn each_set_bit_resolves_to_that_roster_slot_s_id() {
+        let session = session();
+        session.with_entry(|entry| {
+            let ids = &entry.roster.ids;
+            assert_eq!(
+                dispossessed_ids(&entry.roster, 0b0010),
+                Some(vec![ids[1].clone()])
+            );
+            assert_eq!(
+                dispossessed_ids(&entry.roster, 0b1001),
+                Some(vec![ids[0].clone(), ids[3].clone()])
+            );
+        });
+    }
+
+    #[test]
+    fn bits_past_the_roster_are_ignored_rather_than_wrapping_onto_real_slots() {
+        let session = session();
+        session.with_entry(|entry| {
+            let past_the_end = 1u32 << 31;
+            assert!(entry.roster.ids.len() < 31);
+            assert_eq!(dispossessed_ids(&entry.roster, past_the_end), None);
+        });
+    }
+
+    /// THE END-TO-END PROOF this wiring exists for: a mask handed to
+    /// [`frame_options`] must actually come out of
+    /// `gc_render::player_pose::select` as the `stumble` pose, with no
+    /// sim-owned `stun_timer` involved -- the standing-poke tackle's victim
+    /// reaction (#591).
+    ///
+    /// Slot 1, not slot 0: slot 0 is the keeper, and `player_pose::select`
+    /// gates every outfield pose (this one included) on `!is_keeper`.
+    #[test]
+    fn a_masked_outfield_slot_reaches_the_frame_as_the_stumble_pose() {
+        let session = session();
+        session.with_entry(|entry| {
+            assert!(!entry.roster.is_keeper[1], "slot 1 must be an outfielder");
+            assert_eq!(entry.state.players[1].stun_timer, 0.0);
+
+            let without = render_frame::build(&entry.state, &frame_options(entry, 0, 0));
+            assert_ne!(without.players.pose_id[1], PlayerPoseId::Stumble);
+
+            let with = render_frame::build(&entry.state, &frame_options(entry, 0, 0b0010));
+            assert_eq!(with.players.pose_id[1], PlayerPoseId::Stumble);
+            // ...and only that slot.
+            assert_ne!(with.players.pose_id[2], PlayerPoseId::Stumble);
+        });
+    }
+
+    /// `kick_follow_slots` and `dispossessed_slots` are independent bitmasks
+    /// over the SAME roster: one slot following through and a different slot
+    /// flinching must both reach the frame in the same call.
+    #[test]
+    fn kick_follow_and_dispossessed_slots_coexist_on_different_players() {
+        let session = session();
+        session.with_entry(|entry| {
+            let built = render_frame::build(&entry.state, &frame_options(entry, 0b0010, 0b0100));
+            assert_eq!(built.players.pose_id[1], PlayerPoseId::KickFollow);
+            assert_eq!(built.players.pose_id[2], PlayerPoseId::Stumble);
         });
     }
 }
@@ -1568,7 +1689,7 @@ mod combat_pose_tests {
         let session = session(false);
         session.with_entry(|entry| {
             assert!(entry.combat.is_none(), "an ordinary match runs no combat");
-            let options = frame_options(entry, 0);
+            let options = frame_options(entry, 0, 0);
             assert!(options.combat.is_none());
 
             let before_the_fix = RenderFrameOptions {
@@ -1600,7 +1721,7 @@ mod combat_pose_tests {
             let combat = entry.combat.as_mut().expect("combat_enabled builds one");
             combat.players[1].phase = CombatActionPhase::Windup;
 
-            let built = render_frame::build(&entry.state, &frame_options(entry, 0));
+            let built = render_frame::build(&entry.state, &frame_options(entry, 0, 0));
             assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatWindup);
             assert_ne!(built.players.pose_id[2], PlayerPoseId::CombatWindup);
         });
@@ -1620,7 +1741,7 @@ mod combat_pose_tests {
             combat.players[2].forced_state = Some(CombatForcedState::Stagger);
             combat.players[2].forced_ticks = 3;
 
-            let built = render_frame::build(&entry.state, &frame_options(entry, 0));
+            let built = render_frame::build(&entry.state, &frame_options(entry, 0, 0));
             assert_eq!(built.players.pose_id[1], PlayerPoseId::CombatKnockback);
             assert_eq!(built.players.pose_id[2], PlayerPoseId::CombatStagger);
         });

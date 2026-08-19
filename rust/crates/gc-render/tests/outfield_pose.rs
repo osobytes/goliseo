@@ -147,6 +147,7 @@ fn selects_every_contract_pose_from_simulation_owned_state() {
         now: Some(NOW),
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
 
     clear_signals(player);
@@ -168,6 +169,43 @@ fn selects_every_contract_pose_from_simulation_owned_state() {
     }
 }
 
+/// #591: the standing-poke tackle's victim reaction. `stun_timer` is a
+/// SLIDE tackle's own knockdown (`win_ball`'s `sliding` flag) — a standing
+/// poke never sets it, so before this producer existed a poked player showed
+/// no reaction at all. `OutfieldPoseContext::dispossessed` is the
+/// presentation-only second trigger for the same `stumble` pose, with no
+/// simulation-owned timer involved.
+#[test]
+fn a_presentation_owned_dispossession_flinch_selects_stumble_with_no_sim_timer_set() {
+    let mut state = fixture();
+    let player = &mut state.players[1];
+    clear_signals(player);
+    assert_eq!(player.stun_timer, 0.0, "no sim-owned stun this tick");
+
+    let neutral = OutfieldPoseContext {
+        now: Some(NOW),
+        containing: false,
+        kick_follow: false,
+        dispossessed: false,
+    };
+    assert_eq!(
+        player_pose::select(player, None, None, Some(&neutral)).id,
+        PlayerPoseId::Locomotion
+    );
+
+    let flinching = OutfieldPoseContext {
+        dispossessed: true,
+        ..neutral
+    };
+    let selection = player_pose::select(player, None, None, Some(&flinching));
+    assert_eq!(selection.id, PlayerPoseId::Stumble);
+    assert_eq!(selection.priority, PlayerPoseId::Stumble.priority());
+    assert_eq!(
+        player.stun_timer, 0.0,
+        "the flinch is presentation-only and never touches sim state"
+    );
+}
+
 #[test]
 fn reads_the_telegraph_window_from_the_simulation_run_grant() {
     let mut state = fixture();
@@ -176,6 +214,7 @@ fn reads_the_telegraph_window_from_the_simulation_run_grant() {
         now: Some(NOW),
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
     clear_signals(player);
 
@@ -223,6 +262,7 @@ fn reads_the_telegraph_window_from_the_simulation_run_grant() {
         now: None,
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
     assert_eq!(
         player_pose::select(player, None, None, Some(&no_clock)).id,
@@ -238,6 +278,7 @@ fn holds_one_explicit_overlap_order_so_stacked_signals_cannot_flicker() {
         now: Some(NOW),
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
     clear_signals(player);
 
@@ -281,6 +322,7 @@ fn never_lends_an_outfield_pose_to_a_goalkeeper() {
         now: Some(NOW),
         containing: true,
         kick_follow: true,
+        dispossessed: false,
     };
     keeper.tackle_timer = 0.1;
     keeper.stun_timer = 0.1;
@@ -301,6 +343,7 @@ fn maps_both_teams_through_the_same_state() {
         now: Some(NOW),
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
     for index in [1usize, 6] {
         let player = &mut state.players[index];
@@ -329,6 +372,7 @@ fn shares_the_contain_silhouette_between_ai_contain_and_the_human_jockey() {
         now: Some(NOW),
         containing: true,
         kick_follow: false,
+        dispossessed: false,
     };
     let ai_only = player_pose::select(player, None, None, Some(&ai_context));
     player.jockey_timer = 0.2;
@@ -336,6 +380,7 @@ fn shares_the_contain_silhouette_between_ai_contain_and_the_human_jockey() {
         now: Some(NOW),
         containing: false,
         kick_follow: false,
+        dispossessed: false,
     };
     let jockey_only = player_pose::select(player, None, None, Some(&jockey_context));
     assert_eq!(ai_only.id, PlayerPoseId::Contain);

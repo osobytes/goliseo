@@ -1283,7 +1283,7 @@ function realMatchDriverPort(
     batchControl: (b) => b.control,
     batchCheckpoints: (b) => b.checkpoints,
     batchLive: (b) => b.live,
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)),
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0, 0)),
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {

@@ -222,6 +222,7 @@ fn selects_the_same_pose_the_pose_authority_does() {
                 containing: press.mode == StablePressMode::Contain
                     && press.presser_index == Some(index as u32),
                 kick_follow: false,
+                dispossessed: false,
             }
         });
         let expected = player_pose::select(

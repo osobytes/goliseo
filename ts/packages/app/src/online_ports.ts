@@ -942,7 +942,11 @@ export function realMatchDriverPort(
     // SEPARATE `.roster()` call, never from inside the frame object, and
     // `DecodedRenderFrame` already carries `players`/`control` structurally
     // matching `OnlineRenderFramePlayers`/`OnlineRenderFrameControl`.
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0)),
+    // `0, 0`: neither the release follow-through window nor the
+    // dispossession flinch window (#591) is wired for online play yet -- no
+    // production caller here supplies either, same as before this second
+    // parameter existed.
+    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0, 0)),
     roster: (d) => d.roster,
     tick: (d) => d.tickCount,
     dispose: (d) => {
