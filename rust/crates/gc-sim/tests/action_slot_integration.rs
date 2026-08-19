@@ -413,3 +413,98 @@ fn action_recovery_control_measurably_scales_a_recovering_players_displacement()
          to isolate the scale rather than the transition out of it"
     );
 }
+
+// ---------------------------------------------------------------------
+// The #590 tie-break: a pass release edge on the poke's resolution tick
+// fires the pass; the poke whiffs and pays its miss recovery.
+// ---------------------------------------------------------------------
+
+/// Both halves of #590's decided collision, on one fixture: a challenger
+/// whose committed poke resolves on exactly the tick the carrier's pass
+/// release edge arrives. WITH the edge, the pass fires (a `pass` event, the
+/// ball in flight toward a teammate) and the poke resolves as a miss
+/// (`tackle_miss`, `Recovering` with the standard cost). WITHOUT it -- the
+/// control, and this test's own red demonstration -- the identical fixture
+/// resolves as a clean tackle win. The tick order runs tackle resolution
+/// before `update_ball`'s owner-input dispatch, so before #590 the WITH
+/// case was byte-identical to the WITHOUT case: the release edge landed on
+/// an ownerless tick and was consumed by nothing, which is the residual
+/// eaten-release mechanism #586's investigation measured.
+fn tiebreak_fixture() -> (MatchState, Tuning) {
+    let owner_pos = Vec2::new(500.0, 270.0);
+    let mut players = ten_players(owner_pos, true);
+    // The challenger: home outfielder h1 (one-based index 2), placed within
+    // standing-poke reach of the ball, mid-`Executing` with exactly one
+    // tick remaining so this step's `advance_remaining` makes it due.
+    players[1].pos = Vec2::new(510.0, 270.0);
+    let charging =
+        action_slot::commit_charge(&action_slot::new_state(), ActionVerb::Tackle, Some(7), 0.0);
+    players[1].action = action_slot::release(&charging, 0.1, 1.0, DT);
+
+    let mut state = base_state(players, Some(7), owner_pos);
+    // The carrier (a_carrier, one-based index 7) is the human-controlled
+    // player, so the legacy step's one `MatchInput` drives it -- the shape
+    // `release_edge_beats_the_poke` requires (`is_human_player`).
+    state.controlled = 7;
+    state.human_controlled = true;
+    (state, Tuning::new())
+}
+
+fn step_with(s: &mut MatchState, input: match_snapshot::MatchInput, tune: &Tuning) {
+    sim_match::step(s, DT, StepInput::Legacy(input), None, tune);
+}
+
+#[test]
+fn a_pass_release_edge_on_the_pokes_resolution_tick_fires_the_pass_and_whiffs_the_poke() {
+    let (mut state, tune) = tiebreak_fixture();
+    let input = match_snapshot::MatchInput {
+        pass: true,
+        ..match_snapshot::MatchInput::default()
+    };
+    step_with(&mut state, input, &tune);
+
+    let kinds: Vec<&str> = state.events.iter().map(|e| e.kind.wire_str()).collect();
+    assert!(
+        kinds.contains(&"pass"),
+        "the release edge must fire the pass on the collision tick; events were {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"tackle_miss"),
+        "the poke must whiff when the ball is already on its way; events were {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&"tackle"),
+        "a whiffed poke must not also report a won tackle; events were {kinds:?}"
+    );
+    assert_eq!(
+        state.players[1].action.phase,
+        ActionPhase::Recovering,
+        "the whiffing challenger pays the standard miss recovery"
+    );
+    assert_eq!(
+        state.owner, None,
+        "the ball is in flight to the receiver, owned by nobody"
+    );
+}
+
+#[test]
+fn without_the_release_edge_the_same_poke_wins_the_ball() {
+    let (mut state, tune) = tiebreak_fixture();
+    step_with(&mut state, match_snapshot::MatchInput::default(), &tune);
+
+    let kinds: Vec<&str> = state.events.iter().map(|e| e.kind.wire_str()).collect();
+    assert!(
+        kinds.contains(&"tackle"),
+        "the control must stay a clean tackle win, or the fixture proves nothing; events \
+         were {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&"pass"),
+        "no pass can fire without the edge; events were {kinds:?}"
+    );
+    assert_eq!(
+        state.players[1].action.phase,
+        ActionPhase::None,
+        "a won poke resolves clean, with no recovery cost"
+    );
+}

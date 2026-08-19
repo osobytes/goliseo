@@ -90,21 +90,43 @@
 #   0e. gate_ci_timeout_sync (in this file)
 #      -- the fifth gate beside 0/0b/0c/0d, same cost, for the same reason
 #      this whole "stage timing" apparatus exists: two merges on `main` got
-#      CANCELLED by ci.yml's `gate` job timeout-minutes with no verdict at
+#      CANCELLED by ci.yml's gate job timeout-minutes with no verdict at
 #      all, because nobody was watching the gate's total wall clock (#538).
 #      Every gate_* call below now runs through run_stage(), which times it,
 #      records it into the per-stage table main() prints at the end of every
 #      run, and enforces GATE_WALL_CLOCK_BUDGET_SECONDS -- a ceiling that
 #      fails the gate with a clear message once the running total gets close
 #      to ci.yml's timeout, rather than waiting for the runner to kill the
-#      job silently. That budget is DERIVED from CI_GATE_TIMEOUT_MINUTES, not
-#      an independent number, and this gate is the assertion that
-#      CI_GATE_TIMEOUT_MINUTES still equals what ci.yml's `gate` job actually
-#      declares -- see the comment on that constant, and self_test()'s
-#      ci_timeout_sync_scenario and stage_timing_scenario.
+#      job silently. That budget is DERIVED from the per-group timeout
+#      constants below, not an independent number.
+#      Since #594 split the gate into parallel CI jobs (see GATE GROUPS
+#      below), this gate is also the assertion that the split cannot rot:
+#      ci.yml must declare one gate-<group> job per group in GATE_GROUPS,
+#      with exactly the timeout-minutes the constants here state, invoking
+#      `check.sh --group <group>` for every group and never for an unknown
+#      one, and the rust-test shard matrix must list exactly
+#      1/N .. N/N for N = RUST_TEST_SHARD_COUNT. A stage that fell out of
+#      every CI job would be a gate that silently stopped gating -- #279's
+#      shape -- and this is what makes that a red X instead. See
+#      self_test()'s ci_timeout_sync_scenario and stage_timing_scenario.
 #   1. cargo fmt --all --check                                      (rust)
 #   2. cargo clippy --workspace --all-targets -- -D warnings
-#   3. cargo test --workspace
+#   3. cargo nextest run --workspace [--partition hash:I/N]
+#      -- nextest rather than `cargo test` since #594, for two reasons that
+#      are speed-shaped but gate-relevant: `cargo test` runs test BINARIES
+#      sequentially, so the whole workspace queued behind knob_contract.rs's
+#      single 227s binary (measured, CI run 32222577699); and nextest's
+#      `--partition hash:I/N` is what lets ci.yml split this stage across
+#      N parallel shard jobs deterministically. The nextest CLI is a pinned
+#      toolchain component like wasm-bindgen-cli -- see
+#      REQUIRED_CARGO_NEXTEST_VERSION.
+#   3d. cargo test --workspace --doc
+#      -- because nextest runs NO doctests, by design. Without this stage
+#      the workspace's doctests would have silently stopped gating the day
+#      stage 3 switched runners -- a gate heading that no longer runs what
+#      it names, #279's shape. Runs in every shard: it costs seconds and a
+#      conditional "only shard 1 runs it" rule is one more thing that can
+#      silently stop being true.
 #   4. cargo clippy -p gc-wasm --target wasm32-unknown-unknown -- -D warnings
 #      -- deliberately separate from #2. Step 2 never compiles gc-wasm's
 #      wasm-only code paths (wasm-bindgen's generated JS-interop bindings, and
@@ -274,8 +296,31 @@
 #     once already. Run it locally with
 #     `./scripts/check_rollback_native.sh`.
 #
-# `./scripts/check.sh`              -- run every gate above
-# `./scripts/check.sh --self-test`  -- prove this script can go red
+# GATE GROUPS (#594). ci.yml no longer runs this script once in one serial
+# job: the gate's wall clock was the sum of every stage (~12.5 min typical,
+# 31 min on knob-contract-heavy branches), and it is the merge bottleneck.
+# Every stage now belongs to exactly one group, and ci.yml runs one job per
+# group IN PARALLEL, each invoking this same script -- so AGENTS.md §9's
+# mirror rule holds by construction rather than by hand-mirrored steps:
+#   static     -- gates 0/0b/0c/0d, fmt, both clippys: everything cheap or
+#                 compile-only. (~1 min)
+#   rust-test  -- gates 3 and 3d, shardable N ways via `--shard I/N`.
+#                 The only long pole; ci.yml runs it as an N-way matrix.
+#   ts         -- gates 5..10: the pnpm install, both TS gates, the wasm
+#                 build, vitest, the determinism digest and the corpus
+#                 differential. (~3 min)
+# Gate 0e and the toolchain pins run in EVERY group ("always"): each CI job
+# must verify its own toolchain, and the group/timeout sync is exactly the
+# check that must not depend on which job you are in. Running with no
+# --group at all is group "all" -- every stage, the unchanged local
+# contract. A stage assigned to a misspelled group fails EVERY run loudly
+# (see run_grouped_stage) rather than silently running in no CI job.
+#
+# `./scripts/check.sh`                       -- run every gate above
+# `./scripts/check.sh --group <g>`           -- one group (static|rust-test|ts)
+# `./scripts/check.sh --group rust-test --shard I/N`
+#                                            -- one shard of the rust tests
+# `./scripts/check.sh --self-test`           -- prove this script can go red
 #
 # TOOLCHAIN PINS (also enforced in .github/workflows/ci.yml's gate job, which
 # downloads and verifies each of these before calling this script):
@@ -341,35 +386,102 @@ EXPECTED_BOUNDARIES="7202"
 REQUIRED_WASM_BINDGEN_VERSION="0.2.118"
 REQUIRED_NODE_MAJOR=22
 REQUIRED_PNPM_VERSION="11.1.2"
+# Pinned exactly, like wasm-bindgen-cli, and for a determinism-adjacent
+# reason rather than caution for its own sake: nextest owns WHICH tests land
+# in which `--partition hash:I/N` shard, so two different nextest versions on
+# two shard jobs could each skip the tests they believe the other ran.
+# ci.yml downloads this exact version hash-verified; scripts/setup.sh
+# installs the same pin locally.
+REQUIRED_CARGO_NEXTEST_VERSION="0.9.143"
 
-# #538. The single source of truth for the `gate` job's `timeout-minutes` in
-# .github/workflows/ci.yml -- kept here, not just there, because
-# GATE_WALL_CLOCK_BUDGET_SECONDS below is DERIVED from it (never an
-# independent number that could silently drift out of proportion), and
-# because gate_ci_timeout_sync() asserts the two stay equal on every run, the
-# same "never trust one signal" discipline EXPECTED_FINAL_HASH above gets
-# from digest_drift_scenario. See ci.yml's own comment on that line for the
-# arithmetic this value was chosen from.
-CI_GATE_TIMEOUT_MINUTES=75
+# #594. The gate groups ci.yml runs as parallel jobs -- see the GATE GROUPS
+# section of the header. Order is display order only; membership is stated
+# per-stage in main(), and run_grouped_stage() refuses a group not listed
+# here, so a typo cannot silently orphan a stage out of every CI job.
+GATE_GROUPS="static rust-test ts"
 
-# Minutes reserved, inside CI_GATE_TIMEOUT_MINUTES, for the parts of the
-# `gate` job this script cannot see or time: the checkout, the match-harness
-# self-test, four toolchain installs (rustup, wasm-bindgen, node, pnpm), this
-# script's OWN --self-test invocation (measured at 8s locally against
-# throwaway fixtures -- the "Prove the gate detects failure" step), and the
-# real-browser peer-agreement step plus its own dependency install. None of
-# those run inside `main()`, so none of them can be a stage in the timing
-# table below. Rounded up generously past the local measurement for a
-# slower/shared CI runner and an uncached rust-toolchain download, which this
-# machine's already-warm ~/.rustup made invisible.
-CI_GATE_OVERHEAD_BUFFER_MINUTES=10
+# How many parallel shard jobs ci.yml fans the rust-test group into. Gate 0e
+# asserts ci.yml's shard matrix lists exactly 1/N .. N/N for this N, so
+# raising it is a one-constant change here plus the matrix line there --
+# and forgetting either half is a red X, not a silent gap. Chosen so one
+# shard (compile + ~1/3 of the tests) sits comfortably inside its job's
+# timeout with room for the knob-contract growth #488-#491 are about to add;
+# raise it when a shard's own stage-timing line starts crowding its budget.
+RUST_TEST_SHARD_COUNT=3
+
+# #538/#594. The single source of truth for each gate-<group> job's
+# `timeout-minutes` in .github/workflows/ci.yml -- kept here, not just
+# there, because GATE_WALL_CLOCK_BUDGET_SECONDS below is DERIVED from them
+# (never an independent number that could silently drift out of proportion),
+# and because gate_ci_timeout_sync() asserts ci.yml still declares exactly
+# these values on every run, the same "never trust one signal" discipline
+# EXPECTED_FINAL_HASH above gets from digest_drift_scenario.
+#
+# The arithmetic, from CI run 32222577699's stage table (a typical PR, cold
+# caches, 4-vCPU ubuntu-24.04) plus ~1.5 min of per-job checkout + toolchain
+# setup ci.yml adds outside this script:
+#   static    -- measured ~45s of stages (parity gates ~0s, fmt 2s, clippy
+#                22s + 19s) plus the full --self-test (~11s). 10 min is
+#                generous headroom over ~2.5 min all-in.
+#   rust-test -- one shard is ~100s of test compile plus ~1/N of the ~500s
+#                suite (of which knob_contract.rs alone was 227s). ~6 min
+#                all-in cold; 20 min absorbs the incoming knob-contract
+#                growth and a cold cache.
+#   ts        -- measured ~180s of stages (wasm build 37s, vitest 39s,
+#                eslint 22s, corpus 26s, prettier 9s, digest 7s, vite 1s)
+#                plus the browser peer-agreement step ci.yml appends to the
+#                same job. 20 min covers a cold-cache native corpus build.
+CI_GATE_STATIC_TIMEOUT_MINUTES=10
+CI_GATE_RUST_TEST_TIMEOUT_MINUTES=20
+CI_GATE_TS_TIMEOUT_MINUTES=20
+
+# The timeout the selected group's CI job runs under -- what
+# GATE_WALL_CLOCK_BUDGET_SECONDS is derived from. Group "all" (the local,
+# no-flags run) gets the sum: locally the groups run in sequence, so the
+# honest ceiling is the sum of what CI grants them in parallel.
+group_timeout_minutes() {
+    case "$1" in
+        static) echo "$CI_GATE_STATIC_TIMEOUT_MINUTES" ;;
+        rust-test) echo "$CI_GATE_RUST_TEST_TIMEOUT_MINUTES" ;;
+        ts) echo "$CI_GATE_TS_TIMEOUT_MINUTES" ;;
+        all) echo "$((CI_GATE_STATIC_TIMEOUT_MINUTES + CI_GATE_RUST_TEST_TIMEOUT_MINUTES + CI_GATE_TS_TIMEOUT_MINUTES))" ;;
+        *) echo "" ;;
+    esac
+}
+
+# Minutes reserved, inside a job's timeout, for the parts of that job this
+# script cannot see or time: the checkout, the pinned toolchain installs and
+# cache restores, the static job's --self-test invocation (measured at 8s
+# locally against throwaway fixtures), and the ts job's real-browser
+# peer-agreement step plus its own dependency install. None of those run
+# inside `main()`, so none of them can be a stage in the timing table below.
+# Rounded up generously past the local measurement for a slower/shared CI
+# runner and an uncached rust-toolchain download, which this machine's
+# already-warm ~/.rustup made invisible.
+CI_GATE_OVERHEAD_BUFFER_MINUTES=5
 
 # Floors, not exact counts: they exist only to catch a suite that silently
 # matched and ran nothing (still exit 0), not to pin the exact count, which
 # grows as the codebase does. Comfortably below the counts recorded when this
 # gate was written (1,521 Rust tests; 831 vitest tests).
+#
+# MIN_RUST_TESTS_PASSED is the floor for the WHOLE workspace; a `--shard I/N`
+# run asserts MIN_RUST_TESTS_PASSED / N instead (see rust_test_shard_floor),
+# because a shard legitimately runs ~1/N of the suite -- while a shard that
+# ran nothing at all still cannot pass.
 MIN_RUST_TESTS_PASSED=500
 MIN_TS_TESTS_PASSED=300
+
+# The same shape of floor for gate 3d, on the number of per-crate
+# `Doc-tests` harness runs rather than on passing doctests -- because the
+# workspace's only doctest today (gc_test_alloc's) is authored as `ignore`d,
+# so a floor on PASSING doctests would be a gate that can never go green.
+# What this stage must prove is that `cargo test --doc` swept the workspace
+# at all: nextest runs no doctests, so a --doc invocation that quietly
+# matched nothing would be the silent un-gating this stage was added to
+# prevent (#594). Seven workspace crates emit a Doc-tests section today;
+# this floor keeps the same comfortable margin every other floor here does.
+MIN_RUST_DOCTEST_SUITES=5
 
 # The same shape of floor for gate 0: a parity checker that resolved no enums
 # at all would find no disagreement and exit 0. Eleven enums cross the
@@ -523,14 +635,16 @@ GATE_ABORTED=0
 # ci.yml's own `timeout-minutes` on the `gate` job, instead of waiting for
 # the runner to kill it silently.
 #
-# DERIVED from CI_GATE_TIMEOUT_MINUTES, not an independent number -- that is
-# what keeps the ceiling and the job timeout from drifting apart on their
-# own. gate_ci_timeout_sync() (run as the very first stage) additionally
-# asserts CI_GATE_TIMEOUT_MINUTES itself still matches what ci.yml declares,
-# so a change to one without the other fails loudly instead of silently
-# going stale. This still leaves CI_GATE_OVERHEAD_BUFFER_MINUTES of margin
-# before the job's own hard kill, for the CI-only steps that number's own
-# comment lists.
+# DERIVED from the per-group timeout constants (via group_timeout_minutes),
+# not an independent number -- that is what keeps the ceiling and the job
+# timeout from drifting apart on their own. The value below is the "all"
+# default; the argument parser at the bottom of this file re-derives it for
+# the selected group before main() runs. gate_ci_timeout_sync() (run as the
+# very first stage) additionally asserts the constants themselves still
+# match what ci.yml declares per job, so a change to one without the other
+# fails loudly instead of silently going stale. This still leaves
+# CI_GATE_OVERHEAD_BUFFER_MINUTES of margin before the job's own hard kill,
+# for the CI-only steps that number's own comment lists.
 #
 # This only stops a stage from STARTING once the budget is already spent; it
 # does not interrupt a single stage that is itself the overrun (each gate_*
@@ -540,7 +654,15 @@ GATE_ABORTED=0
 # silent cancellation into a named failure. A single stage that alone blows
 # the whole budget is still only caught by ci.yml's own timeout-minutes; that
 # gap is real and is left to #538, not papered over here.
-GATE_WALL_CLOCK_BUDGET_SECONDS=$(( (CI_GATE_TIMEOUT_MINUTES - CI_GATE_OVERHEAD_BUFFER_MINUTES) * 60 ))
+GATE_WALL_CLOCK_BUDGET_SECONDS=$(( ($(group_timeout_minutes all) - CI_GATE_OVERHEAD_BUFFER_MINUTES) * 60 ))
+
+# #594. Which gate group this invocation runs (see the GATE GROUPS header
+# section), and which shard of the rust tests. "all" and "1/1" are the
+# defaults a plain `./scripts/check.sh` gets: every stage, every test --
+# the local contract is unchanged by the CI split. Set by the argument
+# parser at the bottom of this file.
+GATE_GROUP="all"
+RUST_TEST_SHARD="1/1"
 
 # Milliseconds since the epoch. GNU date's %N is what makes sub-second
 # resolution possible -- gates 0/0b/0c/0d finish in well under a second, and
@@ -587,6 +709,34 @@ run_stage() {
     STAGE_NAMES+=("$label")
     STAGE_MS+=("$((end - start))")
     return "$rc"
+}
+
+# #594. run_stage plus group routing: `run_grouped_stage <group> <label>
+# <cmd...>` runs the stage only when <group> is selected (or the run is
+# group "all"); "always" stages run in every group.
+#
+# The membership check comes FIRST, before the skip decision, deliberately:
+# a stage assigned to a misspelled group ("rusttest") must fail EVERY run of
+# EVERY group loudly, because the alternative -- returning "not my group" --
+# is a stage that runs in no CI job at all while each job stays green,
+# which is a gate that silently stopped gating (#279). See self_test()'s
+# gate_group_scenario for the red demonstration.
+run_grouped_stage() {
+    local group="$1"
+    shift
+
+    case " always $GATE_GROUPS " in
+        *" $group "*) ;;
+        *)
+            fail_msg "stage '$1' is assigned to unknown gate group '$group' (known: always $GATE_GROUPS) -- a misspelled group would run in NO ci.yml job, so this fails every run instead"
+            return 1
+            ;;
+    esac
+
+    if [ "$GATE_GROUP" != "all" ] && [ "$group" != "always" ] && [ "$group" != "$GATE_GROUP" ]; then
+        return 0
+    fi
+    run_stage "$@"
 }
 
 # Prints the per-stage table this file exists to produce (#538): every
@@ -663,6 +813,28 @@ verify_toolchain_pins() {
         fi
     fi
 
+    # cargo-nextest is only exercised by the rust-test group (gates 3/3d),
+    # so a machine running only the static or ts group is not required to
+    # carry it -- but where it WILL run, a version drift is checked up front
+    # for the sharding reason on REQUIRED_CARGO_NEXTEST_VERSION's comment,
+    # not discovered as a partition mismatch between two green shard jobs.
+    if [ "$GATE_GROUP" = "all" ] || [ "$GATE_GROUP" = "rust-test" ]; then
+        local nextest_version
+        nextest_version="$(run_in "$rust_dir" cargo nextest --version 2>/dev/null | head -n 1 | awk '{print $2}')"
+        if [ -z "$nextest_version" ]; then
+            fail_msg "cargo-nextest not found; need exactly $REQUIRED_CARGO_NEXTEST_VERSION"
+            echo "      install: ./scripts/setup.sh (or: cargo install cargo-nextest --version $REQUIRED_CARGO_NEXTEST_VERSION --locked)"
+            status=1
+        elif [ "$nextest_version" != "$REQUIRED_CARGO_NEXTEST_VERSION" ]; then
+            fail_msg "cargo-nextest is $nextest_version, need exactly $REQUIRED_CARGO_NEXTEST_VERSION"
+            echo "      (nextest owns which tests land in which --partition shard; two versions"
+            echo "       across shard jobs could each skip tests they believe the other ran)"
+            status=1
+        else
+            echo "    cargo-nextest: $nextest_version"
+        fi
+    fi
+
     local node_major
     node_major="$(node -p 'process.versions.node.split(".")[0]')"
     if [ "$node_major" -lt "$REQUIRED_NODE_MAJOR" ]; then
@@ -688,17 +860,19 @@ verify_toolchain_pins() {
 # #538: gate/CI timeout sync
 # ---------------------------------------------------------------------------
 
-# Extracts the `gate` job's `timeout-minutes:` value from a ci.yml-shaped
-# file -- the `gate` job's specifically, not `rollback-native-matrix`'s
-# separate 45. Factored out from gate_ci_timeout_sync() so self_test() can
-# drive this REAL parser against a throwaway fixture (ci_timeout_sync_scenario)
-# instead of a hand-written copy of its logic.
-extract_gate_timeout_minutes() {
+# Extracts one named job's `timeout-minutes:` value from a ci.yml-shaped
+# file -- that job's specifically, not the first `timeout-minutes:` in the
+# file (which would silently read some other job's). Factored out from
+# gate_ci_timeout_sync() so self_test() can drive this REAL parser against a
+# throwaway fixture (ci_timeout_sync_scenario) instead of a hand-written
+# copy of its logic.
+extract_job_timeout_minutes() {
     local ci_yml="$1"
-    awk '
-        /^    gate:[[:space:]]*$/ { in_gate = 1; next }
-        in_gate && /^    [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
-        in_gate && /timeout-minutes:/ {
+    local job="$2"
+    awk -v job="$job" '
+        $0 ~ ("^    " job ":[[:space:]]*$") { in_job = 1; next }
+        in_job && /^    [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+        in_job && /timeout-minutes:/ {
             match($0, /[0-9]+/)
             print substr($0, RSTART, RLENGTH)
             exit
@@ -707,33 +881,85 @@ extract_gate_timeout_minutes() {
 }
 
 # Gate 0e, beside 0/0b/0c/0d: same cost (no toolchain, no build, seconds),
-# same failure shape -- two hand-maintained copies of one number silently
-# disagreeing. CI_GATE_TIMEOUT_MINUTES only means anything as long as it
-# equals what .github/workflows/ci.yml's `gate` job actually declares; this
-# is the assertion that makes that true rather than assumed, the same
-# discipline check_determinism_terminator applies to the OMP-1 digests.
-# Takes the ci.yml path and the expected minutes as optional overrides
-# (defaulting to the real file and CI_GATE_TIMEOUT_MINUTES) so self_test()'s
-# ci_timeout_sync_scenario can drive this REAL function -- not a copy of its
-# comparison -- against a throwaway fixture and a deliberate mismatch.
+# same failure shape -- hand-maintained copies of the same facts silently
+# disagreeing, except the facts are now the whole shape of the CI split
+# (#594) rather than one number (#538). The per-group timeout constants
+# only mean anything as long as .github/workflows/ci.yml actually declares
+# them; the group list only means "every stage still gates" as long as
+# ci.yml runs every group and no unknown ones; RUST_TEST_SHARD_COUNT only
+# means "the whole suite runs" as long as the shard matrix is exactly
+# 1/N .. N/N. This is the assertion that makes all of that true rather than
+# assumed, the same discipline check_determinism_terminator applies to the
+# OMP-1 digests. Takes the ci.yml path as an optional override (defaulting
+# to the real file) so self_test()'s ci_timeout_sync_scenario can drive
+# this REAL function -- not a copy of its comparisons -- against throwaway
+# fixtures with deliberate mismatches.
 gate_ci_timeout_sync() {
     local ci_yml="${1:-$project_root/.github/workflows/ci.yml}"
-    local expected="${2:-$CI_GATE_TIMEOUT_MINUTES}"
-    step "gate timeout sync (ci.yml's gate job <-> check.sh's CI_GATE_TIMEOUT_MINUTES)"
-    local found
-    found="$(extract_gate_timeout_minutes "$ci_yml")"
+    step "gate group sync (ci.yml's gate-* jobs <-> check.sh's groups, timeouts and shards)"
+    local failures=0
+    local group job expected found
 
-    if [ -z "$found" ]; then
-        fail_msg "could not find the gate job's timeout-minutes in $ci_yml -- extract_gate_timeout_minutes() may need updating for a ci.yml restructure"
+    for group in $GATE_GROUPS; do
+        job="gate-$group"
+        expected="$(group_timeout_minutes "$group")"
+        found="$(extract_job_timeout_minutes "$ci_yml" "$job")"
+        if [ -z "$found" ]; then
+            fail_msg "could not find job '$job' (or its timeout-minutes) in $ci_yml -- every group in GATE_GROUPS must be a ci.yml job, or its stages stop gating"
+            failures=1
+        elif [ "$found" != "$expected" ]; then
+            fail_msg "ci.yml's $job declares timeout-minutes: $found, but check.sh expects $expected for group '$group'"
+            echo "      update the CI_GATE_*_TIMEOUT_MINUTES constant here (and re-check"
+            echo "      GATE_WALL_CLOCK_BUDGET_SECONDS' buffer) in the SAME change that touches"
+            echo "      ci.yml's timeout-minutes -- see #538/#594."
+            failures=1
+        fi
+        if ! grep -q -- "--group $group" "$ci_yml"; then
+            fail_msg "ci.yml never invokes 'check.sh --group $group' -- that group's stages have silently stopped gating (#279's shape)"
+            failures=1
+        fi
+    done
+
+    # The vice-versa direction: an invocation of a group this script does not
+    # know is a job that runs nothing while looking like a gate.
+    local used
+    while read -r used; do
+        [ -z "$used" ] && continue
+        case " all $GATE_GROUPS " in
+            *" $used "*) ;;
+            *)
+                fail_msg "ci.yml invokes 'check.sh --group $used', which is not a group this script defines (known: $GATE_GROUPS)"
+                failures=1
+                ;;
+        esac
+    done < <(grep -o -- '--group [a-z-]*' "$ci_yml" | awk '{print $2}' | sort -u)
+
+    # The shard matrix must be exactly 1/N .. N/N for RUST_TEST_SHARD_COUNT:
+    # a missing entry is a slice of the test suite no job runs; an extra or
+    # mismatched entry is a job asserting a floor derived from the wrong N.
+    local shard_line entries i
+    shard_line="$(grep -E '^ *shard: *\[' "$ci_yml" | head -n 1)"
+    if [ -z "$shard_line" ]; then
+        fail_msg "no 'shard: [...]' matrix line found in $ci_yml -- the rust-test group must fan out over RUST_TEST_SHARD_COUNT=$RUST_TEST_SHARD_COUNT shards"
+        failures=1
+    else
+        for i in $(seq 1 "$RUST_TEST_SHARD_COUNT"); do
+            if ! printf '%s' "$shard_line" | grep -q "\"$i/$RUST_TEST_SHARD_COUNT\""; then
+                fail_msg "ci.yml's shard matrix is missing \"$i/$RUST_TEST_SHARD_COUNT\" -- that slice of the rust test suite would run in NO job"
+                failures=1
+            fi
+        done
+        entries="$(printf '%s' "$shard_line" | grep -o '"[0-9]*/[0-9]*"' | wc -l)"
+        if [ "$entries" -ne "$RUST_TEST_SHARD_COUNT" ]; then
+            fail_msg "ci.yml's shard matrix lists $entries shard entr(y/ies), want exactly $RUST_TEST_SHARD_COUNT (RUST_TEST_SHARD_COUNT)"
+            failures=1
+        fi
+    fi
+
+    if [ "$failures" -ne 0 ]; then
         return 1
     fi
-    if [ "$found" != "$expected" ]; then
-        fail_msg "ci.yml's gate job declares timeout-minutes: $found, but check.sh's CI_GATE_TIMEOUT_MINUTES is $expected"
-        echo "      update CI_GATE_TIMEOUT_MINUTES here (and re-check GATE_WALL_CLOCK_BUDGET_SECONDS'"
-        echo "      buffer) in the SAME change that touches ci.yml's timeout-minutes -- see #538."
-        return 1
-    fi
-    echo "    ci.yml gate job timeout-minutes ($found) matches CI_GATE_TIMEOUT_MINUTES"
+    echo "    ci.yml declares one job per group ($GATE_GROUPS), timeouts match, shard matrix is exactly 1..$RUST_TEST_SHARD_COUNT of $RUST_TEST_SHARD_COUNT"
     return 0
 }
 
@@ -942,35 +1168,123 @@ gate_rust_clippy_workspace() {
     run_in "$rust_dir" cargo clippy --workspace --all-targets -- -D warnings
 }
 
+# The floor gate 3 asserts for the CURRENT shard: the whole-workspace floor
+# for an unsharded run, MIN_RUST_TESTS_PASSED / N for a shard of N. A hash
+# partition is roughly uniform by count, and the real per-shard count
+# (~1521/N when this was written) clears MIN_RUST_TESTS_PASSED / N by the
+# same comfortable margin every other floor here keeps -- while a shard that
+# silently matched nothing still cannot pass.
+rust_test_shard_floor() {
+    local shard_n="${RUST_TEST_SHARD#*/}"
+    echo "$((MIN_RUST_TESTS_PASSED / shard_n))"
+}
+
+# The verdict logic for gate 3, factored out of gate_rust_test() so
+# self_test()'s rust_test_summary_scenario can drive this REAL code against
+# fixture summaries (a failure despite exit 0, an absent summary, a
+# malformed count) instead of a hand-written copy (AGENTS.md §9).
+#
+# Never trust the exit code alone: nextest's own final `Summary` line is
+# read back and required to show zero failures and a floor on the count, so
+# a run that silently matched zero tests (still exit 0) cannot pass as if
+# it had run the real thing. nextest omits the `N failed` clause entirely on
+# a clean run, so an absent clause is zero -- but an absent SUMMARY is a
+# failure, never a pass.
+check_nextest_summary() {
+    local status="$1"
+    local summary="$2"
+    local floor="$3"
+
+    if [ "$status" -ne 0 ]; then
+        fail_msg "cargo nextest run exited $status"
+        return 1
+    fi
+    if [ -z "$summary" ]; then
+        fail_msg "cargo nextest exited 0 but printed no 'Summary' line -- absent evidence is not a pass"
+        return 1
+    fi
+
+    local passed failed
+    passed="$(printf '%s' "$summary" | grep -o '[0-9]\+ passed' | grep -o '^[0-9]\+' | tail -n 1)"
+    failed="$(printf '%s' "$summary" | grep -o '[0-9]\+ failed' | grep -o '^[0-9]\+' | tail -n 1)"
+    failed="${failed:-0}"
+
+    # See all_integers(): a non-numeric count would make `-ne 0` evaluate
+    # FALSE and fall through to a pass.
+    if ! all_integers "$passed" "$failed"; then
+        fail_msg "nextest's summary line is malformed (passed='$passed' failed='$failed'): '$summary'"
+        return 1
+    fi
+    if [ "$failed" -ne 0 ]; then
+        fail_msg "cargo nextest reported $failed failing test(s) despite exit 0"
+        return 1
+    fi
+    if [ "$passed" -lt "$floor" ]; then
+        fail_msg "cargo nextest only reported $passed passing tests (want >= $floor for shard $RUST_TEST_SHARD) -- looks like the suite ran far less than expected"
+        return 1
+    fi
+    echo "    $passed Rust tests passed, 0 failed (shard $RUST_TEST_SHARD, floor $floor)"
+    return 0
+}
+
+# Gate 3. See the header: nextest, not `cargo test`, because cargo test runs
+# test BINARIES sequentially (the workspace queued behind knob_contract.rs's
+# single 227s binary) and because `--partition hash:I/N` is what ci.yml's
+# parallel shard jobs split on. An unsharded run (1/1) passes no partition
+# flag at all rather than `hash:1/1` -- the local single-machine run should
+# be bit-for-bit the plain invocation, not a degenerate partition of it.
 gate_rust_test() {
-    step "rust: cargo test --workspace"
+    step "rust: cargo nextest run --workspace (shard $RUST_TEST_SHARD)"
     local log
     log="$(mktemp)"
-    run_in "$rust_dir" cargo test --workspace 2>&1 | tee "$log"
+    if [ "$RUST_TEST_SHARD" = "1/1" ]; then
+        run_in "$rust_dir" cargo nextest run --workspace 2>&1 | tee "$log"
+    else
+        run_in "$rust_dir" cargo nextest run --workspace --partition "hash:$RUST_TEST_SHARD" 2>&1 | tee "$log"
+    fi
     local status=$?
 
-    # Never trust the exit code alone: sum every "test result:" line rather
-    # than trusting a single aggregate, and require both zero failures and a
-    # floor on the total, so a suite that silently matched zero tests (still
-    # exit 0) cannot pass as if it had run the real thing.
-    local total_failed total_passed
+    local summary
+    summary="$(strip_ansi <"$log" | grep -o 'Summary \[.*' | tail -n 1)"
+    rm -f "$log"
+
+    check_nextest_summary "$status" "$summary" "$(rust_test_shard_floor)"
+}
+
+# Gate 3d. nextest runs NO doctests -- that is a documented property of its
+# execution model, not an oversight -- so the workspace's doctests run here
+# under plain `cargo test --doc`, or they run nowhere at all. Same
+# never-trust-one-signal parsing as the suite gate: sum every "test result:"
+# line and require zero failures, plus a floor on the number of per-crate
+# Doc-tests harness runs (NOT on passing doctests -- see
+# MIN_RUST_DOCTEST_SUITES' comment: today's only doctest is `ignore`d, so a
+# passing-count floor could never go green).
+gate_rust_doctest() {
+    step "rust: cargo test --workspace --doc"
+    local log
+    log="$(mktemp)"
+    run_in "$rust_dir" cargo test --workspace --doc 2>&1 | tee "$log"
+    local status=$?
+
+    local total_failed total_passed suites
     total_failed="$(grep -o '[0-9]\+ failed' "$log" | grep -o '^[0-9]\+' | awk '{s+=$1} END {print s+0}')"
     total_passed="$(grep -o '[0-9]\+ passed' "$log" | grep -o '^[0-9]\+' | awk '{s+=$1} END {print s+0}')"
+    suites="$(grep -c 'Doc-tests ' "$log")"
     rm -f "$log"
 
     if [ "$status" -ne 0 ]; then
-        fail_msg "cargo test --workspace exited $status"
+        fail_msg "cargo test --workspace --doc exited $status"
         return 1
     fi
     if [ "$total_failed" -ne 0 ]; then
-        fail_msg "cargo test --workspace reported $total_failed failing test(s) despite exit 0"
+        fail_msg "cargo test --workspace --doc reported $total_failed failing doctest(s) despite exit 0"
         return 1
     fi
-    if [ "$total_passed" -lt "$MIN_RUST_TESTS_PASSED" ]; then
-        fail_msg "cargo test --workspace only reported $total_passed passing tests (want >= $MIN_RUST_TESTS_PASSED) -- looks like the suite ran far less than expected"
+    if [ "$suites" -lt "$MIN_RUST_DOCTEST_SUITES" ]; then
+        fail_msg "cargo test --workspace --doc only ran $suites per-crate Doc-tests harness(es) (want >= $MIN_RUST_DOCTEST_SUITES) -- the doctest sweep this stage exists for did not cover the workspace"
         return 1
     fi
-    echo "    $total_passed Rust tests passed, 0 failed"
+    echo "    $suites crates' doctests swept: $total_passed passed, 0 failed"
     return 0
 }
 
@@ -1963,27 +2277,59 @@ stage_timing_scenario() {
     return "$failures"
 }
 
-# Scenario: extract_gate_timeout_minutes() (#538) must find the `gate` job's
-# OWN timeout-minutes and nothing else's -- a parser that grabbed the FIRST
-# timeout-minutes in the file would silently read rollback-native-matrix's
-# 45 instead of gate's, and a parser that matched nothing would report
-# "in sync" by never comparing anything at all.
+# Scenario: gate 0e after the split (#538/#594). extract_job_timeout_minutes()
+# must find the NAMED job's own timeout-minutes and nothing else's -- a parser
+# that grabbed the first timeout-minutes in the file would silently read one
+# job's value for every job -- and gate_ci_timeout_sync() must go red on every
+# distinct way the CI split can rot: a drifted timeout, a group with no job, a
+# group ci.yml never invokes, an invocation of a group this script does not
+# define, and a shard matrix that is missing a slice or carries a stray one.
+# Every red case below mutates a FAITHFUL fixture (generated from the real
+# constants, so this scenario cannot drift out of date) and drives the REAL
+# gate function, not a copy of its comparisons.
 ci_timeout_sync_scenario() {
     local dir="$1"
     local fixture="$dir/ci.yml"
     local failures=0
-    local found
+    local found i
 
-    cat >"$fixture" <<'EOF'
+    local shard_entries=""
+    for i in $(seq 1 "$RUST_TEST_SHARD_COUNT"); do
+        shard_entries="$shard_entries\"$i/$RUST_TEST_SHARD_COUNT\", "
+    done
+    shard_entries="${shard_entries%, }"
+
+    cat >"$fixture" <<EOF
 jobs:
-    gate:
-        name: Gate
+    gate-static:
+        name: Gate (static)
         runs-on: ubuntu-24.04
-        timeout-minutes: 42
+        timeout-minutes: $CI_GATE_STATIC_TIMEOUT_MINUTES
 
         steps:
-            - name: something
-              run: true
+            - name: gate
+              run: ./scripts/check.sh --group static
+
+    gate-rust-test:
+        name: Gate (rust tests)
+        runs-on: ubuntu-24.04
+        timeout-minutes: $CI_GATE_RUST_TEST_TIMEOUT_MINUTES
+        strategy:
+            matrix:
+                shard: [$shard_entries]
+
+        steps:
+            - name: gate
+              run: ./scripts/check.sh --group rust-test --shard \${{ matrix.shard }}
+
+    gate-ts:
+        name: Gate (ts)
+        runs-on: ubuntu-24.04
+        timeout-minutes: $CI_GATE_TS_TIMEOUT_MINUTES
+
+        steps:
+            - name: gate
+              run: ./scripts/check.sh --group ts
 
     rollback-native-matrix:
         name: Native rollback matrix (on demand)
@@ -1991,38 +2337,198 @@ jobs:
         timeout-minutes: 99
 EOF
 
-    found="$(extract_gate_timeout_minutes "$fixture")"
-    if [ "$found" = "42" ]; then
-        echo "ok  the gate job's own timeout-minutes (42) is extracted, not the other job's (99)"
+    found="$(extract_job_timeout_minutes "$fixture" "gate-ts")"
+    if [ "$found" = "$CI_GATE_TS_TIMEOUT_MINUTES" ]; then
+        echo "ok  gate-ts's own timeout-minutes is extracted, not an earlier job's or rollback's 99"
     else
-        echo "SELF-TEST FAIL: extract_gate_timeout_minutes() returned '$found', want 42"
+        echo "SELF-TEST FAIL: extract_job_timeout_minutes() returned '$found' for gate-ts, want $CI_GATE_TS_TIMEOUT_MINUTES"
         failures=1
     fi
 
     local no_timeout_fixture="$dir/no_timeout.yml"
-    printf 'jobs:\n    gate:\n        name: Gate\n        runs-on: ubuntu-24.04\n\n        steps:\n            - name: something\n              run: true\n' >"$no_timeout_fixture"
-    found="$(extract_gate_timeout_minutes "$no_timeout_fixture")"
+    printf 'jobs:\n    gate-static:\n        name: Gate (static)\n        runs-on: ubuntu-24.04\n\n        steps:\n            - name: something\n              run: true\n' >"$no_timeout_fixture"
+    found="$(extract_job_timeout_minutes "$no_timeout_fixture" "gate-static")"
     if [ -z "$found" ]; then
-        echo "ok  a gate job with no timeout-minutes at all is reported as not found, not as some stray number"
+        echo "ok  a job with no timeout-minutes at all is reported as not found, not as some stray number"
     else
-        echo "SELF-TEST FAIL: extract_gate_timeout_minutes() found '$found' in a file with no timeout-minutes line"
+        echo "SELF-TEST FAIL: extract_job_timeout_minutes() found '$found' in a file with no timeout-minutes line"
         failures=1
     fi
 
-    # Drive the real gate_ci_timeout_sync(), not a copy of its comparison:
-    # the fixture declares 42, so asking it to match 42 must pass and asking
-    # it to match anything else (e.g. the real CI_GATE_TIMEOUT_MINUTES) must
-    # fail -- proving this gate actually goes red on a genuine drift, not
-    # just that the extractor reads a number.
-    expect_pass "gate_ci_timeout_sync accepts a fixture that matches the expected value" \
-        gate_ci_timeout_sync "$fixture" 42 \
+    expect_pass "gate_ci_timeout_sync accepts a faithful fixture (every job, timeout, group and shard in place)" \
+        gate_ci_timeout_sync "$fixture" \
         || failures=1
-    expect_fail "gate_ci_timeout_sync rejects a fixture that does not match the expected value" \
-        gate_ci_timeout_sync "$fixture" "$((CI_GATE_TIMEOUT_MINUTES + 1))" \
+
+    # The first timeout-minutes line in the fixture is gate-static's; 9999
+    # matches no constant, so this is purely "one job's timeout drifted".
+    sed '0,/timeout-minutes:/s//timeout-minutes: 9999 #/' "$fixture" >"$dir/drifted_timeout.yml"
+    expect_fail "gate_ci_timeout_sync rejects a job whose timeout-minutes drifted from check.sh's constant" \
+        gate_ci_timeout_sync "$dir/drifted_timeout.yml" \
         || failures=1
-    expect_fail "gate_ci_timeout_sync rejects a file with no timeout-minutes to find at all" \
-        gate_ci_timeout_sync "$no_timeout_fixture" 42 \
+
+    awk '/^    gate-rust-test:/ { skip = 1; next }
+         skip && /^    [A-Za-z0-9_-]+:[[:space:]]*$/ { skip = 0 }
+         !skip' "$fixture" >"$dir/missing_job.yml"
+    expect_fail "gate_ci_timeout_sync rejects a ci.yml with no job for a group in GATE_GROUPS" \
+        gate_ci_timeout_sync "$dir/missing_job.yml" \
         || failures=1
+
+    sed '/--group ts/d' "$fixture" >"$dir/uninvoked_group.yml"
+    expect_fail "gate_ci_timeout_sync rejects a ci.yml that never invokes one of the groups (its stages would stop gating)" \
+        gate_ci_timeout_sync "$dir/uninvoked_group.yml" \
+        || failures=1
+
+    sed 's|--group static|--group rusttest|' "$fixture" >"$dir/unknown_group.yml"
+    expect_fail "gate_ci_timeout_sync rejects an invocation of a group this script does not define" \
+        gate_ci_timeout_sync "$dir/unknown_group.yml" \
+        || failures=1
+
+    sed "s|\"1/$RUST_TEST_SHARD_COUNT\", ||" "$fixture" >"$dir/missing_shard.yml"
+    expect_fail "gate_ci_timeout_sync rejects a shard matrix missing a slice (tests no job would run)" \
+        gate_ci_timeout_sync "$dir/missing_shard.yml" \
+        || failures=1
+
+    sed "s|shard: \[|shard: [\"9/9\", |" "$fixture" >"$dir/stray_shard.yml"
+    expect_fail "gate_ci_timeout_sync rejects a shard matrix carrying a stray entry (a floor derived from the wrong N)" \
+        gate_ci_timeout_sync "$dir/stray_shard.yml" \
+        || failures=1
+
+    return "$failures"
+}
+
+# Scenario: run_grouped_stage() (#594). Three properties, each of which has a
+# silent-failure twin this scenario exists to make loud: an unknown group must
+# be a named failure in EVERY run (the misspelling that would otherwise let a
+# stage run in no CI job while every job stays green); an unselected group's
+# stage must skip WITHOUT running its command; and selected, "always", and
+# group-"all" stages must actually run. Drives the REAL run_grouped_stage,
+# with the timing globals saved and restored the way stage_timing_scenario
+# does.
+gate_group_scenario() {
+    local failures=0
+    local saved_names=("${STAGE_NAMES[@]}")
+    local saved_ms=("${STAGE_MS[@]}")
+    local saved_aborted="$GATE_ABORTED"
+    local saved_start="$GATE_START_MS"
+    local saved_group="$GATE_GROUP"
+
+    STAGE_NAMES=()
+    STAGE_MS=()
+    GATE_ABORTED=0
+    GATE_START_MS="$(now_ms)"
+
+    local ran=0
+    mark_ran() { ran=1; }
+
+    GATE_GROUP="static"
+
+    if run_grouped_stage rusttest "self-test: misspelled group" mark_ran; then
+        echo "SELF-TEST FAIL: a stage assigned to unknown group 'rusttest' was accepted -- it would run in NO ci.yml job"
+        failures=1
+    else
+        echo "ok  a stage assigned to an unknown group is a named failure, not a silent skip"
+    fi
+    if [ "$ran" -ne 0 ]; then
+        echo "SELF-TEST FAIL: run_grouped_stage ran a stage despite its unknown group"
+        failures=1
+    else
+        echo "ok  the unknown-group failure does not run the stage's command"
+    fi
+
+    ran=0
+    if run_grouped_stage ts "self-test: unselected group stage" mark_ran; then
+        if [ "$ran" -eq 0 ]; then
+            echo "ok  a stage from an unselected group skips without running its command"
+        else
+            echo "SELF-TEST FAIL: run_grouped_stage ran a stage from an unselected group"
+            failures=1
+        fi
+    else
+        echo "SELF-TEST FAIL: an unselected group's stage reported failure instead of skipping"
+        failures=1
+    fi
+
+    ran=0
+    run_grouped_stage static "self-test: selected group stage" mark_ran
+    if [ "$ran" -eq 1 ]; then
+        echo "ok  the selected group's stage runs"
+    else
+        echo "SELF-TEST FAIL: the selected group's stage did not run"
+        failures=1
+    fi
+
+    ran=0
+    run_grouped_stage always "self-test: always stage" mark_ran
+    if [ "$ran" -eq 1 ]; then
+        echo "ok  an 'always' stage runs whichever group is selected"
+    else
+        echo "SELF-TEST FAIL: an 'always' stage did not run under a selected group"
+        failures=1
+    fi
+
+    GATE_GROUP="all"
+    ran=0
+    run_grouped_stage ts "self-test: all-groups stage" mark_ran
+    if [ "$ran" -eq 1 ]; then
+        echo "ok  group 'all' runs every group's stages"
+    else
+        echo "SELF-TEST FAIL: group 'all' skipped another group's stage"
+        failures=1
+    fi
+
+    STAGE_NAMES=("${saved_names[@]}")
+    STAGE_MS=("${saved_ms[@]}")
+    GATE_ABORTED="$saved_aborted"
+    GATE_START_MS="$saved_start"
+    GATE_GROUP="$saved_group"
+
+    return "$failures"
+}
+
+# Scenario: gate 3's verdict logic (#594). check_nextest_summary() and
+# rust_test_shard_floor() are the REAL code gate_rust_test() runs; the
+# fixtures here are the exact failure shapes the parser must reject -- a
+# failure count despite exit 0, an absent summary line, a count under the
+# shard floor, and a summary whose counts are not numbers (the bash
+# `[ -ne ]`-on-NaN fall-through all_integers exists for).
+rust_test_summary_scenario() {
+    local failures=0
+
+    expect_pass "a clean nextest summary over the floor passes" \
+        check_nextest_summary 0 "     Summary [ 245.181s] 600 tests run: 600 passed, 3 skipped" 500 \
+        || failures=1
+    expect_fail "a nonzero nextest exit fails even with a clean summary" \
+        check_nextest_summary 100 "     Summary [ 245.181s] 600 tests run: 600 passed, 3 skipped" 500 \
+        || failures=1
+    expect_fail "reported failures fail despite exit 0" \
+        check_nextest_summary 0 "     Summary [ 1.0s] 600 tests run: 599 passed, 1 failed, 3 skipped" 500 \
+        || failures=1
+    expect_fail "a count under the shard floor fails (a shard that ran almost nothing)" \
+        check_nextest_summary 0 "     Summary [ 0.1s] 3 tests run: 3 passed, 0 skipped" 500 \
+        || failures=1
+    expect_fail "an absent summary line is a failure, not a pass" \
+        check_nextest_summary 0 "" 500 \
+        || failures=1
+    expect_fail "a summary whose counts are not numbers is a named failure, not a fall-through pass" \
+        check_nextest_summary 0 "     Summary [ 0.1s] all tests run: everything passed" 500 \
+        || failures=1
+
+    local saved_shard="$RUST_TEST_SHARD"
+    RUST_TEST_SHARD="2/3"
+    if [ "$(rust_test_shard_floor)" = "$((MIN_RUST_TESTS_PASSED / 3))" ]; then
+        echo "ok  a 2/3 shard's floor is MIN_RUST_TESTS_PASSED / 3"
+    else
+        echo "SELF-TEST FAIL: rust_test_shard_floor for 2/3 returned $(rust_test_shard_floor), want $((MIN_RUST_TESTS_PASSED / 3))"
+        failures=1
+    fi
+    RUST_TEST_SHARD="1/1"
+    if [ "$(rust_test_shard_floor)" = "$MIN_RUST_TESTS_PASSED" ]; then
+        echo "ok  an unsharded run's floor is the whole-workspace MIN_RUST_TESTS_PASSED"
+    else
+        echo "SELF-TEST FAIL: rust_test_shard_floor for 1/1 returned $(rust_test_shard_floor), want $MIN_RUST_TESTS_PASSED"
+        failures=1
+    fi
+    RUST_TEST_SHARD="$saved_shard"
 
     return "$failures"
 }
@@ -3288,7 +3794,13 @@ self_test() {
     echo "==> self-test: stage timing and the wall-clock ceiling (#538)"
     stage_timing_scenario || failures=1
 
-    echo "==> self-test: gate/CI timeout sync, check.sh <-> ci.yml (gate 0e, #538)"
+    echo "==> self-test: gate groups, --group routing and the unknown-group guard (#594)"
+    gate_group_scenario || failures=1
+
+    echo "==> self-test: nextest summary verdicts and the per-shard floor (gate 3, #594)"
+    rust_test_summary_scenario || failures=1
+
+    echo "==> self-test: gate/CI group sync, check.sh <-> ci.yml (gate 0e, #538/#594)"
     mkdir -p "$work/ci_timeout_sync"
     ci_timeout_sync_scenario "$work/ci_timeout_sync" || failures=1
 
@@ -3374,36 +3886,44 @@ main() {
 
     local fail=0
 
-    # #538, ahead of even the toolchain pins: needs nothing built or
-    # installed, and it is what keeps GATE_WALL_CLOCK_BUDGET_SECONDS below
-    # from silently drifting out of proportion with ci.yml's real timeout.
-    run_stage "0e gate timeout sync (ci.yml)" gate_ci_timeout_sync || fail=1
+    # Every stage below states its gate group first (#594) -- see the GATE
+    # GROUPS header section for what runs where and why. "always" stages run
+    # in every group: each parallel CI job must verify its own toolchain, and
+    # the group sync is exactly the check that must not depend on which job
+    # you are in.
 
-    run_stage "toolchain pins" verify_toolchain_pins || fail=1
+    # #538/#594, ahead of even the toolchain pins: needs nothing built or
+    # installed, and it is what keeps GATE_WALL_CLOCK_BUDGET_SECONDS below
+    # from silently drifting out of proportion with ci.yml's real timeouts --
+    # and, since the split, what keeps every group wired to a real CI job.
+    run_grouped_stage always "0e gate group sync (ci.yml)" gate_ci_timeout_sync || fail=1
+
+    run_grouped_stage always "toolchain pins" verify_toolchain_pins || fail=1
 
     # Gate 0 first: it needs nothing built or installed, and enum drift is the
     # one failure here that reaches a player's browser rather than a console.
-    run_stage "0  wire enum parity" gate_wire_enum_parity || fail=1
+    run_grouped_stage static "0  wire enum parity" gate_wire_enum_parity || fail=1
     # Gate 0b, beside it: same cost, same failure shape, different vocabulary
     # (#447).
-    run_stage "0b presentation parity" gate_presentation_parity || fail=1
+    run_grouped_stage static "0b presentation parity" gate_presentation_parity || fail=1
     # Gate 0c, beside both: the same failure shape again, for the impairment
     # profiles browser and native evidence must share (#472).
-    run_stage "0c network profile parity" gate_network_profile_parity || fail=1
+    run_grouped_stage static "0c network profile parity" gate_network_profile_parity || fail=1
     # Gate 0d, beside all three: same cost, and the failure it catches is a
     # feature test quietly declining to state its knob's direction rather than
     # two languages disagreeing (#499).
-    run_stage "0d unstated knob shift audit" gate_unstated_knob_shift || fail=1
+    run_grouped_stage static "0d unstated knob shift audit" gate_unstated_knob_shift || fail=1
 
-    run_stage "1  rust: cargo fmt --check" gate_rust_fmt || fail=1
-    run_stage "2  rust: cargo clippy --workspace" gate_rust_clippy_workspace || fail=1
-    run_stage "3  rust: cargo test --workspace" gate_rust_test || fail=1
-    run_stage "4  rust: cargo clippy -p gc-wasm (wasm32)" gate_rust_clippy_wasm || fail=1
+    run_grouped_stage static "1  rust: cargo fmt --check" gate_rust_fmt || fail=1
+    run_grouped_stage static "2  rust: cargo clippy --workspace" gate_rust_clippy_workspace || fail=1
+    run_grouped_stage rust-test "3  rust: cargo nextest run --workspace" gate_rust_test || fail=1
+    run_grouped_stage rust-test "3d rust: cargo test --workspace --doc" gate_rust_doctest || fail=1
+    run_grouped_stage static "4  rust: cargo clippy -p gc-wasm (wasm32)" gate_rust_clippy_wasm || fail=1
 
-    run_stage "5  ts: pnpm install" gate_ts_install || fail=1
+    run_grouped_stage ts "5  ts: pnpm install" gate_ts_install || fail=1
     # Formatting needs nothing built, so it runs straight after the install and
     # reports in seconds rather than after the wasm build (#471).
-    run_stage "5b ts: prettier --check" gate_ts_format || fail=1
+    run_grouped_stage ts "5b ts: prettier --check" gate_ts_format || fail=1
     # The wasm build comes BEFORE the typecheck, not after. `@gc/wasm`'s `web`
     # subpath resolves to `dist/pkg-web/gc_wasm.d.ts`, which wasm-bindgen
     # GENERATES -- and `dist/` is gitignored, so on a clean checkout it does not
@@ -3411,29 +3931,88 @@ main() {
     # `TS2307: Cannot find module '@gc/wasm/web'`, which is invisible to anyone
     # whose working tree still has yesterday's artifacts on disk. That is
     # exactly how it passed locally for everyone and failed every CI run.
-    run_stage "6  ts: build gc-wasm artifacts" gate_wasm_build || fail=1
-    run_stage "7  ts: tsc --build --force" gate_ts_typecheck || fail=1
+    run_grouped_stage ts "6  ts: build gc-wasm artifacts" gate_wasm_build || fail=1
+    run_grouped_stage ts "7  ts: tsc --build --force" gate_ts_typecheck || fail=1
     # The lint is type-aware, so it runs after the wasm build and the typecheck
     # for exactly the reason the typecheck does: without `@gc/wasm`'s GENERATED
     # .d.ts on disk, everything downstream of it is an error type and the rules
     # that matter quietly find nothing (#471).
-    run_stage "7b ts: eslint --max-warnings 0" gate_ts_lint || fail=1
-    run_stage "8  ts: vitest run" gate_ts_test || fail=1
-    run_stage "9  determinism digest terminator" gate_determinism || fail=1
-    run_stage "9b native-vs-wasm corpus differential (#517)" gate_wasm_native_corpus || fail=1
-    run_stage "10 ts: vite build + web wasm byte compare" gate_app_bundle || fail=1
+    run_grouped_stage ts "7b ts: eslint --max-warnings 0" gate_ts_lint || fail=1
+    run_grouped_stage ts "8  ts: vitest run" gate_ts_test || fail=1
+    run_grouped_stage ts "9  determinism digest terminator" gate_determinism || fail=1
+    run_grouped_stage ts "9b native-vs-wasm corpus differential (#517)" gate_wasm_native_corpus || fail=1
+    run_grouped_stage ts "10 ts: vite build + web wasm byte compare" gate_app_bundle || fail=1
 
     report_stage_timings
 
+    local scope="group: $GATE_GROUP"
+    if [ "$RUST_TEST_SHARD" != "1/1" ]; then
+        scope="$scope, shard: $RUST_TEST_SHARD"
+    fi
     if [ "$fail" -ne 0 ]; then
-        echo "GATE FAILED"
+        echo "GATE FAILED ($scope)"
         return 1
     fi
-    echo "GATE OK"
+    echo "GATE OK ($scope)"
     return 0
 }
 
-if [ "${1:-}" = "--self-test" ]; then
+usage() {
+    cat <<EOF
+usage: scripts/check.sh [--self-test] [--group <static|rust-test|ts|all>] [--shard I/N]
+
+  (no flags)        run every gate -- the full local contract
+  --group <g>       run one gate group (what ci.yml's parallel jobs do; #594)
+  --shard I/N       with the rust-test group: run one hash-partition shard
+                    of the workspace test suite (1 <= I <= N)
+  --self-test       prove this script can go red, against throwaway fixtures
+EOF
+}
+
+SELF_TEST_REQUESTED=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --self-test)
+            SELF_TEST_REQUESTED=1
+            ;;
+        --group)
+            shift
+            case " all $GATE_GROUPS " in
+                *" ${1:-} "*) GATE_GROUP="$1" ;;
+                *)
+                    echo "unknown gate group '${1:-}' (known: all $GATE_GROUPS)"
+                    usage
+                    exit 2
+                    ;;
+            esac
+            ;;
+        --shard)
+            shift
+            shard_i="${1%%/*}"
+            shard_n="${1#*/}"
+            if [ "${1:-}" = "$shard_i" ] || ! all_integers "$shard_i" "$shard_n" \
+                || [ "$shard_i" -lt 1 ] || [ "$shard_n" -lt 1 ] || [ "$shard_i" -gt "$shard_n" ]; then
+                echo "invalid --shard '${1:-}': want I/N with 1 <= I <= N"
+                usage
+                exit 2
+            fi
+            RUST_TEST_SHARD="$1"
+            ;;
+        *)
+            echo "unknown argument: $1"
+            usage
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+# Re-derive the wall-clock ceiling for the group actually selected -- the
+# top-of-file default assumed "all". Same formula, same buffer; see the
+# comments on both constants.
+GATE_WALL_CLOCK_BUDGET_SECONDS=$(( ($(group_timeout_minutes "$GATE_GROUP") - CI_GATE_OVERHEAD_BUFFER_MINUTES) * 60 ))
+
+if [ "$SELF_TEST_REQUESTED" -eq 1 ]; then
     self_test
     exit $?
 fi

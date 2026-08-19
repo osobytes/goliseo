@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Bootstraps the toolchain scripts/check.sh needs: Rust (via rustup, pinned by
-# rust/rust-toolchain.toml), wasm-bindgen-cli, Node.js and pnpm. Idempotent --
-# safe to re-run; each step is skipped once the right version is already on
-# PATH.
+# rust/rust-toolchain.toml), wasm-bindgen-cli, cargo-nextest, Node.js and
+# pnpm. Idempotent -- safe to re-run; each step is skipped once the right
+# version is already on PATH.
 #
 # The pins mirror .github/workflows/ci.yml's `gate` job exactly, so a
 # contributor's machine and the CI runner end up with the same toolchain.
@@ -72,6 +72,30 @@ else
     cargo install wasm-bindgen-cli --version "$REQUIRED_WASM_BINDGEN_VERSION" --locked
 fi
 wasm-bindgen --version
+
+# ---------------------------------------------------------------------------
+# cargo-nextest -- must match scripts/check.sh's
+# REQUIRED_CARGO_NEXTEST_VERSION exactly. Not semver caution for its own
+# sake: nextest owns which tests land in which `--partition hash:I/N` shard
+# (#594), so two versions across two machines could each skip the tests they
+# believe the other ran.
+# ---------------------------------------------------------------------------
+REQUIRED_CARGO_NEXTEST_VERSION="0.9.143"
+echo "==> cargo-nextest $REQUIRED_CARGO_NEXTEST_VERSION"
+installed_nextest_version=""
+if cargo nextest --version >/dev/null 2>&1; then
+    installed_nextest_version="$(cargo nextest --version | head -n 1 | awk '{print $2}')"
+fi
+if [ "$installed_nextest_version" = "$REQUIRED_CARGO_NEXTEST_VERSION" ]; then
+    echo "    already installed: $installed_nextest_version"
+else
+    # `cargo install`, like wasm-bindgen-cli above and for the same reason:
+    # CI's prebuilt-binary-plus-sha256 download is a single linux-x86_64
+    # asset, fine for a disposable runner, but this script also has to work
+    # on whatever architecture a contributor's machine is.
+    cargo install cargo-nextest --version "$REQUIRED_CARGO_NEXTEST_VERSION" --locked
+fi
+cargo nextest --version | head -n 1
 
 # ---------------------------------------------------------------------------
 # Node.js -- pinned to the exact build ci.yml installs (>= 22 is the hard

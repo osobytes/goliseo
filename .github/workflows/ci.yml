@@ -5,6 +5,11 @@ on:
     push:
         branches: [main]
     pull_request:
+    # #594. The merge queue's speculative merge commits. main's ruleset queues
+    # PRs instead of requiring each to be rebased and re-gated by hand (the
+    # strict up-to-date rule this replaced), and the queue only works if the
+    # required gate-* jobs below run on its merge_group refs too.
+    merge_group:
 
 permissions:
     actions: read
@@ -14,62 +19,48 @@ concurrency:
     group: ci-${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# THE project gate, split across parallel jobs (#594; the structural decision
+# #538 measured and left open). Everything every job runs lives in
+# scripts/check.sh, which each job calls exactly as a contributor would
+# locally -- `./scripts/check.sh --group <g>` -- so the two cannot drift
+# (AGENTS.md §9's first rule). The split itself is machine-checked from the
+# script's side: check.sh's gate 0e asserts, on every run of every job, that
+# this file declares one gate-<group> job per group, with exactly the
+# timeout-minutes check.sh's constants state, invoking every group and no
+# unknown ones, with a rust-test shard matrix of exactly 1/N..N/N. A stage
+# that fell out of every job here would be a gate that silently stopped
+# gating (#279's shape), and 0e is what makes that a red X instead.
+#
+# Wall clock: the pre-split serial gate measured ~12.5 min on a typical PR
+# (of which `cargo test --workspace` was 499s -- 72%) and 31 min on
+# knob-contract-heavy branches. Split, the wall clock is the slowest job:
+# one rust-test shard, ~4-5 min cold and less on a warm cache.
 jobs:
-    # THE project gate. Everything it runs lives in scripts/check.sh, which
-    # this job calls exactly as a contributor would locally, so the two
-    # cannot drift (AGENTS.md §9's first rule: every gate in
-    # scripts/check.sh must also appear here, and vice versa).
-    gate:
-        name: Gate
-        # #538. 30 was silently insufficient: the last two merges to `main`
-        # (#527, #530) were CANCELLED at 30m18s each, producing no verdict at
-        # all, after a growth curve of 10m -> 10m -> 7m -> 27m (#516,
-        # locomotion) went unwatched. A cancelled job is not a fast failure --
-        # it is the total absence of one, which is worse.
-        #
-        # The arithmetic behind 75, not a round number picked to clear
-        # today's worst case (the mistake that made 30 insufficient):
-        #   - `scripts/check.sh` on `main` (commit 1709373) measures 1123s
-        #     (18.7 min) locally, of which `cargo test --workspace` alone is
-        #     1023s (91% of the total) -- see that script's stage-timing
-        #     table, printed on every run as of this change.
-        #   - PR #535 raises one knob contract from n=48 to n=144 (measured:
-        #     398.6s at n=144 vs ~130s before) and adds several more tests;
-        #     local total for that branch is estimated near 1400s (23.3 min).
-        #   - This runner's own historical data puts CI at 30min (cancelled,
-        #     i.e. a lower bound) against 1123s (18.7min) local for the SAME
-        #     commit -- a >=1.6x CI/local factor already, and the true factor
-        #     is unknown because that run never finished. ~2x is used below
-        #     as a working ESTIMATE, not a measurement -- there is still no
-        #     completed CI run to calibrate it against. Measuring the real
-        #     factor once this gate can finish at all is left as an open
-        #     question, not folded into this number by assumption.
-        #   - 1400s (#535, local) * ~2 (CI/local, estimated) ~= 2800s (47min).
-        #   - 75 min leaves ~28 min of headroom over that 47 min estimate:
-        #     enough to absorb the CI/local factor being higher than 2x
-        #     (plausible -- it is unmeasured and the sample it comes from is
-        #     censored), ordinary runner variance, and the next several
-        #     merges' worth of gameplay-rework knob contracts (#488-#491)
-        #     landing before #538's structural question is decided.
-        #
-        # scripts/check.sh's own CI_GATE_TIMEOUT_MINUTES constant must equal
-        # this value -- gate_ci_timeout_sync() (gate 0e) asserts it on every
-        # run, and GATE_WALL_CLOCK_BUDGET_SECONDS is derived from it, so
-        # raising this number without raising that one fails loudly instead
-        # of the two silently drifting apart.
-        #
-        # NOT done here, and deliberately: splitting the gate into parallel
-        # jobs, moving the expensive knob contracts to a schedule, or
-        # touching any test's seed count. All three are open structural
-        # questions for #538 to decide, not a call this change makes.
+    # Everything cheap or compile-only: the four parity gates, fmt, and both
+    # clippy targets -- plus the two self-test proofs, which run ONCE, here,
+    # deliberately: check.sh --self-test is one indivisible run proving every
+    # gate's red demonstrations against throwaway fixtures, and this is the
+    # job with the slack to carry it (AGENTS.md §9: a gate that cannot fail
+    # is worse than no gate).
+    gate-static:
+        name: Gate (static)
         runs-on: ubuntu-24.04
-        timeout-minutes: 75
+        # timeout-minutes below must equal check.sh's
+        # CI_GATE_STATIC_TIMEOUT_MINUTES -- gate 0e asserts it on every run,
+        # and check.sh's own wall-clock ceiling is derived from that
+        # constant. See its comment for the arithmetic.
+        timeout-minutes: 10
 
         steps:
             - name: Check out source
               uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
               with:
                   ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install the pinned gate toolchain
+              uses: ./.github/actions/gate-toolchain
+              with:
+                  cache-suffix: static
 
             # #432/#440/#454. The live-match harness driver's real output --
             # pixel captures, and the keeper-lean COUNTS that #449, #450 and
@@ -92,99 +83,74 @@ jobs:
             - name: Check the match harness driver logic and its TypeScript mirrors (starts no browser)
               run: python3 -B scripts/browser_match_harness.py --self-test
 
-            # rust/rust-toolchain.toml pins the channel (1.93), the rustfmt
-            # and clippy components, and the wasm32-unknown-unknown target.
-            # rustup reads that file automatically for any cargo/rustc
-            # invocation under rust/; `rustup show` below just forces the
-            # download to happen here, as a named step, instead of silently
-            # during the first `cargo fmt` inside check.sh. ubuntu-24.04
-            # images ship rustup already; this only installs it if that ever
-            # changes.
-            - name: Install rustup if missing
-              run: |
-                  if ! command -v rustup >/dev/null 2>&1; then
-                      curl --fail --location --retry 3 --silent --show-error \
-                          https://sh.rustup.rs \
-                          | sh -s -- -y --profile minimal --default-toolchain none
-                      printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-                  fi
-
-            - name: Select the pinned rust toolchain
-              working-directory: rust
-              run: rustup show
-
-            # Pinned to exactly the version crates/gc-wasm/Cargo.toml
-            # requires (`wasm-bindgen = "=0.2.118"`): the CLI checks its
-            # generated glue against the crate's schema version exactly, not
-            # semver, and a mismatch fails opaquely inside wasm-bindgen's own
-            # codegen. wasm-bindgen's releases do not publish a checksums
-            # file, so this hash was computed by hand from the published
-            # asset -- the same way LOVE_SHA256 and STYLUA_SHA256 were pinned
-            # for the deleted Lua toolchain, for the same reason.
-            - name: Install pinned wasm-bindgen-cli
-              env:
-                  WASM_BINDGEN_VERSION: 0.2.118
-                  WASM_BINDGEN_SHA256: 00b519c9fc2d6e087265da1a00f29160bfcc6a823993482bc2e691910287427b
-              run: |
-                  tool_dir="$RUNNER_TEMP/wasm-bindgen-cli"
-                  mkdir -p "$tool_dir"
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/wasm-bindgen.tar.gz" \
-                      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-                  echo "${WASM_BINDGEN_SHA256}  $tool_dir/wasm-bindgen.tar.gz" | sha256sum --check --status
-                  tar -xzf "$tool_dir/wasm-bindgen.tar.gz" -C "$tool_dir" --strip-components=1
-                  chmod +x "$tool_dir/wasm-bindgen"
-                  "$tool_dir/wasm-bindgen" --version
-                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
-
-            # ts/package.json "engines" requires >= 22; the redundant
-            # determinism assertion inside check.sh additionally needs
-            # `node --experimental-strip-types`, stable since Node 22.6.
-            - name: Install pinned Node.js
-              env:
-                  NODE_VERSION: 22.22.0
-                  NODE_SHA256: 9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37
-              run: |
-                  tool_dir="$RUNNER_TEMP/node"
-                  mkdir -p "$tool_dir"
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/node.tar.xz" \
-                      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
-                  echo "${NODE_SHA256}  $tool_dir/node.tar.xz" | sha256sum --check --status
-                  tar -xJf "$tool_dir/node.tar.xz" -C "$tool_dir" --strip-components=1
-                  "$tool_dir/bin/node" --version
-                  printf '%s\n' "$tool_dir/bin" >> "$GITHUB_PATH"
-
-            # Standalone binary, not resolved through any package manager:
-            # this job must run exactly the pnpm version ts/package.json
-            # ("packageManager": "pnpm@11.1.2") pins, not whatever corepack
-            # or npm would otherwise resolve.
-            - name: Install pinned pnpm
-              env:
-                  PNPM_VERSION: 11.1.2
-                  PNPM_SHA256: f82f761572d9621c5a646ccc00a1ecec4cf5839d66b714497e6ca10cd2e086ee
-              run: |
-                  tool_dir="$RUNNER_TEMP/pnpm"
-                  mkdir -p "$tool_dir"
-                  curl --fail --location --retry 3 --silent --show-error \
-                      --output "$tool_dir/pnpm.tar.gz" \
-                      "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"
-                  echo "${PNPM_SHA256}  $tool_dir/pnpm.tar.gz" | sha256sum --check --status
-                  tar -xzf "$tool_dir/pnpm.tar.gz" -C "$tool_dir"
-                  chmod +x "$tool_dir/pnpm"
-                  "$tool_dir/pnpm" --version
-                  printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
-
             # A gate that cannot fail is worse than no gate (AGENTS.md §9).
             # This sabotages a set of hermetic, throwaway fixtures under
             # mktemp -- never the real rust or ts trees -- and requires every
             # one of them to be rejected, pinned to the message each targets,
-            # before the real run below is trusted.
+            # before any of this workflow's real runs are trusted.
             - name: Prove the gate detects failure
               run: ./scripts/check.sh --self-test
 
-            - name: Run the project gate
-              run: ./scripts/check.sh
+            - name: Run the static gate group
+              run: ./scripts/check.sh --group static
+
+    # The workspace test suite -- the long pole the whole split exists for
+    # (#594): 499s of the old 691s serial gate, and the stage that grows
+    # with every knob contract. nextest's `--partition hash:I/N` splits the
+    # suite deterministically across these jobs; check.sh asserts a
+    # per-shard floor so a shard that silently ran almost nothing cannot
+    # pass, and gate 0e asserts this matrix lists exactly 1/N..N/N so no
+    # slice of the suite can fall out of every job.
+    gate-rust-test:
+        name: Gate (rust tests ${{ matrix.shard }})
+        runs-on: ubuntu-24.04
+        # Must equal check.sh's CI_GATE_RUST_TEST_TIMEOUT_MINUTES (gate 0e).
+        timeout-minutes: 20
+        strategy:
+            # One shard's failure is still a verdict from the other two --
+            # a red shard plus two greens localises a failure faster than
+            # three cancelled jobs.
+            fail-fast: false
+            matrix:
+                shard: ["1/3", "2/3", "3/3"]
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install the pinned gate toolchain
+              uses: ./.github/actions/gate-toolchain
+              with:
+                  cache-suffix: rust-test
+
+            - name: Run the rust test shard
+              run: ./scripts/check.sh --group rust-test --shard ${{ matrix.shard }}
+
+    # The TypeScript half plus everything that needs the freshly built wasm
+    # artifacts (the determinism digest, the native-vs-wasm corpus, the app
+    # bundle byte-compare) -- and, appended, the real-browser peer-agreement
+    # evidence, which reuses this job's build instead of paying for its own.
+    gate-ts:
+        name: Gate (ts)
+        runs-on: ubuntu-24.04
+        # Must equal check.sh's CI_GATE_TS_TIMEOUT_MINUTES (gate 0e).
+        timeout-minutes: 20
+
+        steps:
+            - name: Check out source
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Install the pinned gate toolchain
+              uses: ./.github/actions/gate-toolchain
+              with:
+                  cache-suffix: ts
+
+            - name: Run the ts gate group
+              run: ./scripts/check.sh --group ts
 
             # The one property no in-process fake can establish: two
             # INDEPENDENT wasm instances, connected by a real
@@ -201,6 +167,11 @@ jobs:
             # Same-engine Chrome only. The cross-engine Chrome/Firefox
             # variant needs both browser assets and is worth running less
             # often; it belongs on a schedule rather than on every push.
+            #
+            # Runs in THIS job, after the ts group, because gate 6 just built
+            # dist/pkg-web from this checkout -- `--skip-wasm-build` reuses
+            # that artifact instead of rebuilding an identical one. The
+            # harness still runs its own vite build against its own config.
             - name: Install pinned browser evidence dependencies
               run: |
                   python3 -m venv "$RUNNER_TEMP/browser-evidence"
@@ -212,6 +183,7 @@ jobs:
               run: |
                   "$RUNNER_TEMP/browser-evidence/bin/python" -B \
                       scripts/browser_online_peers.py \
+                      --skip-wasm-build \
                       --output "$RUNNER_TEMP/online-peers.json"
 
             - name: Publish the agreement evidence
@@ -228,13 +200,13 @@ jobs:
     # cases) and the ten-case soak matrix. No browser, no GPU, no display --
     # pure CPU inside `cargo test`.
     #
-    # WHY THIS IS A SEPARATE JOB AND NOT PART OF `gate`. Measured in a debug
-    # build on one local machine: 325.9s for the native matrix's 66 cases, of
-    # which the twelve complete-fixture cases are 310.2s; 140.7s more for the
-    # soak matrix. The remaining 54 native cases cost 11.2s and therefore DO
-    # run on every PR, as ordinary un-ignored tests inside
-    # `cargo test --workspace` in scripts/check.sh -- the 42-case scenario
-    # layer (every authored game moment, the combat fixture and the four
+    # WHY THIS IS A SEPARATE JOB AND NOT PART OF THE GATE. Measured in a
+    # debug build on one local machine: 325.9s for the native matrix's 66
+    # cases, of which the twelve complete-fixture cases are 310.2s; 140.7s
+    # more for the soak matrix. The remaining 54 native cases cost 11.2s and
+    # therefore DO run on every PR, as ordinary un-ignored tests inside the
+    # rust-test group in scripts/check.sh -- the 42-case scenario layer
+    # (every authored game moment, the combat fixture and the four
     # combat-load fixtures, at the stress profile, on all three seeds), plus
     # the 12 `combat-{profile}-{seed}` cases that run the combat fixture
     # under every authored network profile. This job exists only for the
