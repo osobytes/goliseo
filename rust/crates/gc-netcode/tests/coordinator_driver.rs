@@ -619,6 +619,114 @@ fn guest_terminates_honestly_when_the_host_never_confirms_the_start_boundary() {
 }
 
 #[test]
+fn guest_arms_its_own_deadline_immediately_for_a_zero_length_countdown() {
+    // A zero-length countdown reaches its own boundary inside the SAME
+    // event: `handle_begin_countdown` emits Countdown and, seeing
+    // `remaining_ticks == 0`, immediately calls `emit_start` too -- so a
+    // guest that receives Countdown here has NO later `Tick` decrement to
+    // arm its deadline on (`silenced_guest_at_countdown_zero` above only
+    // covers the positive-`remaining_ticks` path, which arms via that
+    // decrement). `apply_countdown`'s own immediate-arm branch
+    // (`coordinator.rs`, right where `countdown_remaining` is set) exists
+    // for exactly this case, and had no coverage: deleting it fails nothing
+    // (AGENTS.md §9's unwired-knob failure mode) -- a guest given a
+    // zero-length countdown would silently wait forever instead of ever
+    // reaching its own honest deadline.
+    let mut session = Driver::new(driver::Options {
+        guest_count: Some(1),
+        ..Default::default()
+    });
+    session.connect_all();
+    session.send(
+        HOST,
+        Event::ProposeManifest {
+            manifest: fixture::manifest(None),
+        },
+    );
+    session.pump();
+    session.send(
+        HOST,
+        Event::AssignSlots {
+            assignments: fixture::assignments(1, None),
+            preserve_claims: false,
+        },
+    );
+    session.pump();
+    let peer_ids: Vec<String> = session.nodes.iter().map(|n| n.peer_id.clone()).collect();
+    for peer_id in &peer_ids {
+        session.send(peer_id, Event::SetReady { ready: true });
+    }
+    session.pump();
+
+    // `send` only enqueues (`Driver::send`'s own doc): both wires this event
+    // produces sit in `session.queue` until the next `pump`/`tick`, so they
+    // can be inspected and pruned before either is delivered.
+    session.send(
+        HOST,
+        Event::BeginCountdown {
+            countdown_id: fixture::COUNTDOWN_ID.to_string(),
+            remaining_ticks: 0,
+            first_input_tick: 0,
+        },
+    );
+    let guest = fixture::guest_peer_id(1);
+    let guest_link_id = fixture::link_id(&guest);
+    let is_countdown = |wire: &str| {
+        protocol::decode(wire).is_ok_and(|message| message.kind == protocol::MessageKind::Countdown)
+    };
+    let is_start = |wire: &str| {
+        protocol::decode(wire).is_ok_and(|message| message.kind == protocol::MessageKind::Start)
+    };
+    assert!(
+        session
+            .queue
+            .iter()
+            .any(|packet| packet.link_id == guest_link_id
+                && !packet.to_host
+                && is_start(&packet.wire)),
+        "a zero-length countdown must emit Start in the same event as Countdown"
+    );
+    // Let only this one Countdown wire through: drop everything else
+    // already queued for the guest (Start included), then silence its link
+    // so a LATER host resend of Start (every
+    // `START_RESEND_INTERVAL_TICKS`) cannot reach it either -- dropping
+    // only the already-queued packet would leave the guest to be rescued by
+    // the very next resend, proving nothing about its own deadline.
+    session.queue.retain(|packet| {
+        packet.link_id != guest_link_id || (!packet.to_host && is_countdown(&packet.wire))
+    });
+    session.pump();
+    let link_index = session
+        .links
+        .iter()
+        .position(|link| link.id == guest_link_id)
+        .expect("the guest's link exists");
+    session.links[link_index].guest_open = false;
+
+    assert_eq!(
+        session.node(&guest).unwrap().state.phase,
+        protocol::LifecyclePhase::Countdown,
+        "the guest must still genuinely reach Countdown phase, not just skip to arming"
+    );
+    let clock = session.node(&guest).unwrap().state.clock;
+    assert_eq!(
+        session.node(&guest).unwrap().state.start_armed_at,
+        Some(clock),
+        "a zero-length countdown must arm the guest's deadline immediately"
+    );
+    assert_eq!(session.node(&guest).unwrap().terminal, None);
+
+    session.tick(Some(coordinator::START_ACK_TIMEOUT_TICKS + 1));
+    let terminal = session
+        .node(&guest)
+        .unwrap()
+        .terminal
+        .clone()
+        .expect("the guest gives up once its own deadline passes");
+    assert_eq!(terminal.reason, TerminalReason::StartNeverArrived);
+}
+
+#[test]
 fn widening_the_ack_window_survives_a_stall_that_would_have_timed_out_at_the_old_value() {
     // #612's own repro: a same-machine two-window rAF stall of a couple of
     // seconds routinely spans the start boundary. This proves the exact gate
@@ -657,6 +765,20 @@ fn widening_the_ack_window_survives_a_stall_that_would_have_timed_out_at_the_old
         session.host().state.phase,
         protocol::LifecyclePhase::Countdown
     );
+
+    // Close the loop: the boolean gate above is not a stand-in for the real
+    // outcome, it is the exact comparison `handle_tick` performs before
+    // producing one. Run the SAME session past the current, real deadline
+    // and confirm the concrete reason the coordinator reaches is the one
+    // `start_deadline_exceeded`'s historical-width check was reasoning
+    // about all along -- not merely that *some* termination fires.
+    session.tick(Some(coordinator::START_ACK_TIMEOUT_TICKS - STALL_TICKS + 1));
+    let terminal = session
+        .host()
+        .terminal
+        .clone()
+        .expect("the real, current window must eventually fire on an unacked guest");
+    assert_eq!(terminal.reason, TerminalReason::StartAckTimeout);
 }
 
 #[test]
