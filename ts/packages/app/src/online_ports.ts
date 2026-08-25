@@ -27,11 +27,17 @@
 // rosters (`zyro_vex`, `mika_olu`, ... / `drell`, `morv`, ...) are exactly
 // Nebula's and Orion's real starting fives (`session.ts`'s own
 // `home_team_id`/`away_team_id` defaults), so an online match plays with
-// real playable content; only the coordinator's own identity/versioning
-// fields (`build_id`, `content_id`, ...) are fixture-fixed rather than
+// real playable content; the coordinator's own content/versioning fields
+// (`content_id`, `tuning_id`, ...) are still fixture-fixed rather than
 // derived from a real content pipeline. Fixing that is a content-pipeline
 // milestone, not this issue's scope (#550 explicitly excludes "any change
-// to the session protocol... or `gc-netcode`").
+// to the session protocol... or `gc-netcode`"). `build_id`/`source_id` are
+// the one exception, and deliberately not content: `withRealBuildIdentity`
+// below overrides both with `buildInfo.build_sha` before the fixture
+// manifest ever reaches the coordinator, because the fixture's own fixed
+// literal made `gc-netcode`'s build-skew detection (`build_mismatch`)
+// permanently unreachable across a real deploy -- see that function's own
+// comment (#612).
 //
 // ## What "real" means for the match driver's own transport
 //
@@ -124,6 +130,7 @@ import {
   type TeamData,
   type TransportContractPort,
 } from "@gc/screens";
+import { buildInfo } from "./build_info.ts";
 import { matchContract } from "./match_contract.ts";
 import { matchObserver, type MatchObserver } from "./match_observer.ts";
 import type {
@@ -278,10 +285,36 @@ function fnv1a64Hex(text: string): string {
 }
 const fnv1a64Port: Fnv1a64Port = { hash: fnv1a64Hex };
 
+// `gc_netcode::protocol_fixture`'s `build_id`/`source_id` are fixed test
+// literals (`"build.97b60ea"`/`"source.97b60ea"`), identical on every real
+// deploy -- `gc-netcode`'s own build-skew detection (`build_mismatch`) can
+// therefore never fire against two different production builds, which is
+// exactly the deploy-window failure #612's resend makes newly reachable: an
+// old-bundle guest and a new-bundle host would pair freely, and a resent
+// Start arriving after the old guest already ran with its own narrower
+// phase table would terminate the session outright. Overridden here with a
+// real per-deploy identity (`buildInfo.build_sha`) rather than in
+// `gc-netcode` itself -- the fixture's other fields (`content_id`,
+// `tuning_id`, ...) stay exactly as authored; only the two identity fields
+// a build-skew check actually reads move. Two tabs on the SAME deploy still
+// compute the identical value (same bundle, same `buildInfo`), so pairing
+// within one deploy is unaffected; two tabs spanning a deploy now correctly
+// refuse to pair with the existing, honest `build_mismatch` copy instead of
+// silently desyncing.
+function withRealBuildIdentity(manifest: SessionManifest): SessionManifest {
+  return {
+    ...manifest,
+    build_id: `build.${buildInfo.build_sha}`,
+    source_id: `source.${buildInfo.build_sha}`,
+  };
+}
+
 function protocolFixturePort(wasm: OnlineWasmHost): ProtocolFixturePort {
   return {
     manifest: (mode: SessionMatchMode): SessionManifest =>
-      JSON.parse(wasm.matchDriverFixtureManifestJson(mode)) as SessionManifest,
+      withRealBuildIdentity(
+        JSON.parse(wasm.matchDriverFixtureManifestJson(mode)) as SessionManifest,
+      ),
     runtime: () => RUNTIME_IDENTITY_WIRE,
   };
 }
