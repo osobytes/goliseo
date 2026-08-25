@@ -683,3 +683,118 @@ describe("draw2d text material cache (#403)", () => {
     expect(a).toBe(b);
   });
 });
+
+// THE GENERAL CONTRACT, and the reason this block exists rather than one more
+// per-builder test.
+//
+// #403 cost four wrong hypotheses and two separate fixes (#411, then the text
+// sprite above) because the same defect kept reappearing in a builder nobody
+// had checked yet: a `paint()` clear disposes any material not owned by the
+// cache, disposal destroys the compiled GL program behind it, and the next
+// frame pays a synchronous re-link. Each fix closed one instance. None of them
+// closed the CLASS.
+//
+// The class has a single testable invariant: A STEADY-STATE FRAME MUST DISPOSE
+// NOTHING. If the same content is painted twice, the second paint must reuse
+// every material and every texture the first one built, whatever command kind
+// produced them. That is one assertion, it covers every builder that exists,
+// and -- because `SAMPLES` below is keyed by `DrawCommand["kind"]` -- a new
+// command kind is a COMPILE ERROR here rather than a silently uncovered gap.
+//
+// This is the presentation-layer twin of AGENTS.md §9's knob contract: a seam
+// that cannot be shown to be connected is decoration. Here the seam is the
+// material cache, and "connected" means the clear finds nothing to destroy.
+describe("draw2d steady-state frame contract (#403)", () => {
+  const realDocument = (globalThis as { document?: unknown }).document;
+
+  beforeEach(() => {
+    resetMaterialCache();
+    (globalThis as { document?: unknown }).document = {
+      createElement: () => ({ width: 0, height: 0, getContext: () => null }),
+    };
+  });
+
+  afterEach(() => {
+    if (realDocument === undefined) {
+      delete (globalThis as { document?: unknown }).document;
+    } else {
+      (globalThis as { document?: unknown }).document = realDocument;
+    }
+  });
+
+  // Exhaustive by type: adding a `DrawCommand` kind without adding it here does
+  // not compile, so a new builder cannot join the file uncovered.
+  const SAMPLES: Readonly<Record<DrawCommand["kind"], DrawCommand>> = {
+    rect: { kind: "rect", mode: "fill", x: 0, y: 0, w: 4, h: 4, color: [1, 0, 0] },
+    circle: { kind: "circle", mode: "fill", x: 1, y: 1, r: 2, color: [0, 1, 0] },
+    ellipse: { kind: "ellipse", mode: "fill", x: 1, y: 1, rx: 2, ry: 1, color: [0, 0, 1] },
+    polygon: { kind: "polygon", mode: "fill", points: [0, 0, 2, 0, 2, 2], color: [1, 1, 0] },
+    line: { kind: "line", points: [0, 0, 3, 3], color: [0, 1, 1] },
+    arc: { kind: "arc", mode: "line", x: 0, y: 0, r: 3, angle1: 0, angle2: 1, color: [1, 0, 1] },
+    text: { kind: "text", text: "SHOT", x: 0, y: 0, w: 40, align: "left", color: [1, 1, 1] },
+  };
+
+  // Counts every disposal of a material or a texture for the duration of `run`,
+  // by wrapping the prototypes rather than by listening on individual objects --
+  // the point is to catch a disposal on an object the test never saw, which is
+  // exactly how each instance of this bug escaped.
+  function disposalsDuring(run: () => void): { materials: number; textures: number } {
+    const materialProto = THREE.Material.prototype;
+    const textureProto = THREE.Texture.prototype;
+    const realMaterialDispose = materialProto.dispose;
+    const realTextureDispose = textureProto.dispose;
+    let materials = 0;
+    let textures = 0;
+    materialProto.dispose = function patched(this: THREE.Material): void {
+      materials += 1;
+      realMaterialDispose.call(this);
+    };
+    textureProto.dispose = function patched(this: THREE.Texture): void {
+      textures += 1;
+      realTextureDispose.call(this);
+    };
+    try {
+      run();
+    } finally {
+      materialProto.dispose = realMaterialDispose;
+      textureProto.dispose = realTextureDispose;
+    }
+    return { materials, textures };
+  }
+
+  for (const [kind, command] of Object.entries(SAMPLES)) {
+    it(`disposes nothing when a ${kind} command is repainted unchanged`, () => {
+      const group = new THREE.Group();
+      paint(group, [command]); // warm-up: the first frame legitimately builds.
+      const settled = materialCacheSize();
+
+      const counted = disposalsDuring(() => {
+        for (let frame = 0; frame < 5; frame += 1) {
+          paint(group, [command]);
+        }
+      });
+
+      expect(counted.materials, `${kind}: repainting must not dispose a material`).toBe(0);
+      expect(counted.textures, `${kind}: repainting must not dispose a texture`).toBe(0);
+      expect(materialCacheSize(), `${kind}: steady state must not grow the cache`).toBe(settled);
+    });
+  }
+
+  it("disposes nothing when a whole frame of every command kind is repainted", () => {
+    // The real shape of a frame: many kinds together, cleared and rebuilt.
+    const all = Object.values(SAMPLES);
+    const group = new THREE.Group();
+    paint(group, all);
+    const settled = materialCacheSize();
+
+    const counted = disposalsDuring(() => {
+      for (let frame = 0; frame < 5; frame += 1) {
+        paint(group, all);
+      }
+    });
+
+    expect(counted.materials, "a steady-state frame must dispose no material").toBe(0);
+    expect(counted.textures, "a steady-state frame must dispose no texture").toBe(0);
+    expect(materialCacheSize()).toBe(settled);
+  });
+});
