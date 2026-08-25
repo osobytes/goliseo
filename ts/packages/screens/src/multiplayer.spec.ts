@@ -75,3 +75,69 @@ describe("multiplayer front door", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline code entry (#610): typing a friend's code should not need the
+// "USE AN INVITE" click at all -- a whole screen change to type six
+// characters. This front door now carries its own composer, sharing the
+// exact editing primitives (`room_code_entry.ts`) the lobby's own guest
+// composer uses.
+// ---------------------------------------------------------------------------
+
+describe("multiplayer front door: inline code entry (#610)", () => {
+  function key(state: State, k: string) {
+    return multiplayer.update(state, { kind: "key", key: k });
+  }
+
+  function typeCode(state: State, code: string): State {
+    let next = state;
+    for (const ch of code) {
+      [next] = key(next, ch);
+    }
+    return next;
+  }
+
+  it("renders an inline six-character composer on the front door itself", () => {
+    const layout = multiplayer.layout(multiplayer.newState(VP));
+    const widget = hit.find(layout, "code_entry");
+    expect(widget, "the inline code composer must be on screen").not.toBeNull();
+  });
+
+  it("typing a key anywhere on the screen focuses the composer and starts filling it in -- no prior click", () => {
+    const s = multiplayer.newState(VP);
+    expect(s.focus).not.toBe("code_entry");
+    const [s2] = key(s, "7");
+    expect(s2.focus).toBe("code_entry");
+    expect(hit.find(multiplayer.layout(s2), "code_entry")?.text).toContain("7");
+    // update() never mutates its input state.
+    expect(s.focus).not.toBe("code_entry");
+  });
+
+  it("sends a completed code into the lobby with a room-joining intent, once confirmed", () => {
+    const s = typeCode(multiplayer.newState(VP), "7F3K9Q");
+    const [, action] = multiplayer.update(s, { kind: "action", action: "confirm" });
+    expect(action).toEqual({ go: "lobby", intent: "guest", code: "7F3K9Q" });
+  });
+
+  it("does nothing on confirm while the code is incomplete", () => {
+    let s = multiplayer.newState(VP);
+    s = typeCode(s, "7F3");
+    const [, action] = multiplayer.update(s, { kind: "action", action: "confirm" });
+    expect(action).toBeUndefined();
+  });
+
+  it("still leaves BACK reachable while the composer is focused", () => {
+    let s = multiplayer.newState(VP);
+    [s] = key(s, "7");
+    expect(s.focus).toBe("code_entry");
+    const [, action] = multiplayer.update(s, { kind: "action", action: "back" });
+    expect(action).toEqual({ go: "title" });
+  });
+
+  it("still reaches the lobby with a room-hosting intent when the composer was never touched", () => {
+    let s = multiplayer.newState(VP);
+    [s] = click(s, "mode_2v2");
+    const [, action] = click(s, "host");
+    expect(action).toEqual({ go: "lobby", intent: "host", mode: "2v2" });
+  });
+});

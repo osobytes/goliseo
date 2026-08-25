@@ -2252,24 +2252,20 @@ describe("lobby match modes", () => {
 // ---------------------------------------------------------------------------
 
 describe("lobby readiness and countdown", () => {
-  it("reaches a synchronized start only after every peer is ready", () => {
+  // The individual primitives ("lock", "ready", "start"-as-begin-countdown)
+  // are exercised throughout this file's other cases; this block is now
+  // about the #610 collapse specifically -- see `lobby_model.ts`'s header
+  // addendum for the full design.
+  it("collapses lock -> publish -> ready -> countdown into a single host START command", () => {
     const modelPorts = ports();
     const { driver, host, guests } = seatedLobby(modelPorts, "1v1", 1);
     const guest = must(guests[0], "no guest");
-    driver.send(host, { kind: "lock" });
-    driver.pump(6);
 
+    // One host command. No "lock", no "ready" from either side -- the
+    // guest's own readiness is automatic the moment it is assigned a seat.
     driver.send(host, { kind: "start" });
-    expect(view(modelPorts, host).error).toBeTruthy();
+    driver.pump(8);
 
-    driver.send(host, { kind: "ready", ready: true });
-    driver.send(guest, { kind: "ready", ready: true });
-    driver.pump(4);
-    expect(view(modelPorts, host).phase).toBe("ready");
-    expect(view(modelPorts, host).can_start).toBe(true);
-
-    driver.send(host, { kind: "start" });
-    driver.pump(2);
     expect(view(modelPorts, host).phase).toBe("countdown");
     expect(view(modelPorts, guest).countdown).not.toBeUndefined();
 
@@ -2285,21 +2281,52 @@ describe("lobby readiness and countdown", () => {
     expect(freeze.live["host"]).toBe("home_1");
   });
 
-  it("clears readiness when ownership is republished", () => {
+  it("a START before enough humans are connected errors, and touches nothing", () => {
     const modelPorts = ports();
-    const { driver, host, guests } = seatedLobby(modelPorts, "2v2", 3);
+    // 1v1 needs two humans; bot-fill is off and no guest has connected.
+    const { driver, host } = seatedLobby(modelPorts, "1v1", 0);
+    driver.send(host, { kind: "start" });
+    expect(view(modelPorts, host).error).toBeTruthy();
+    expect(view(modelPorts, host).phase).toBe("handshake");
+    expect(host.model.coordinator?.manifest_id).toBeUndefined();
+  });
+
+  it("a lone host with bot-fill on starts alone -- the bot-fill-only-match capability the collapse preserves", () => {
+    const modelPorts = ports();
+    const { driver, host } = seatedLobby(modelPorts, "1v1", 0);
+    driver.send(host, { kind: "bot_fill" });
+    driver.send(host, { kind: "start" });
+    driver.pump(4);
+    expect(view(modelPorts, host).error).toBeUndefined();
+    expect(view(modelPorts, host).phase).toBe("countdown");
+  });
+
+  it("clears readiness when ownership is republished, and every guest silently re-readies itself (#610)", () => {
+    const modelPorts = ports();
+    const { driver, host } = seatedLobby(modelPorts, "2v2", 3);
     driver.send(host, { kind: "lock" });
     driver.pump(8);
-    for (const peer of [host, ...guests]) {
-      driver.send(peer, { kind: "ready", ready: true });
-    }
+    // Only the host still readies itself explicitly -- every guest already
+    // auto-readied the moment "lock" published its seat.
+    driver.send(host, { kind: "ready", ready: true });
     driver.pump(4);
     expect(view(modelPorts, host).phase).toBe("ready");
 
     driver.send(host, { kind: "swap", index: 2 });
-    driver.pump(4);
+    // Immediately, before any peer has had a chance to react: republishing
+    // ownership clears readiness on the host's own local state, host
+    // included.
     expect(view(modelPorts, host).phase).toBe("assigned");
     expect(view(modelPorts, host).ready_count).toBe(0);
+
+    driver.pump(4);
+    // Every guest processes the republished ownership and re-readies
+    // itself automatically (#610) -- exactly what makes a 2v2 TAKE swap
+    // safe to leave available without asking anyone to click READY again.
+    // The host does not: readiness for it is still an explicit act.
+    expect(view(modelPorts, host).ready_count).toBe(3);
+    expect(view(modelPorts, host).ready).toBe(false);
+    expect(view(modelPorts, host).phase).toBe("assigned");
   });
 });
 
@@ -2499,7 +2526,10 @@ describe("lobby pair selection", () => {
     expect(givenUp.slots.join(",")).toBe("away_1,away_3");
     expect(owned(modelPorts, chooser, "guest_2").join(",")).toBe(before);
     expect(view(modelPorts, chooser).terminal).toBeUndefined();
-    expect(view(modelPorts, chooser).phase).toBe("assigned");
+    // "ready", not "assigned": a guest auto-readies itself the moment it is
+    // assigned a seat (#610) -- unaffected by its own unrelated, unanswered
+    // pair request.
+    expect(view(modelPorts, chooser).phase).toBe("ready");
   });
 
   // Not driven through `Driver` at all: a pure completeness check that
@@ -2663,7 +2693,11 @@ describe("lobby build skew", () => {
     driver.send(host, { kind: "lock" });
     driver.pump(6);
 
-    expect(view(modelPorts, guest).phase).toBe("assigned");
+    // "ready", not "assigned": a guest auto-readies itself once assigned
+    // (#610) -- the explicit "ready" dispatches just below are now
+    // idempotent no-ops for it, kept to prove the individual command still
+    // works exactly as it always did.
+    expect(view(modelPorts, guest).phase).toBe("ready");
     driver.send(host, { kind: "ready", ready: true });
     driver.send(guest, { kind: "ready", ready: true });
     driver.pump(4);
@@ -2873,6 +2907,59 @@ describe("lobby failure paths", () => {
     expect(view(modelPorts, host).phase).toBe("assigned");
   });
 
+  // #610's own abort-window requirement: the countdown is the ONLY out once
+  // START has collapsed lock/publish/ready into one command, so LEAVE
+  // during it must genuinely end the session on both sides -- not hang,
+  // and not surface the #612 rAF-starved-pump failure mode
+  // (`start_ack_timeout`), which is a stalled PUMP, not an explicit LEAVE.
+  it("a guest's LEAVE during the countdown ends the whole session on both sides, with an honest reason", () => {
+    const modelPorts = ports();
+    const { driver, host, guests } = seatedLobby(modelPorts, "1v1", 1);
+    const guest = must(guests[0], "no guest");
+
+    // The two-click collapse (#610): one host command reaches countdown.
+    driver.send(host, { kind: "start" });
+    driver.pump(8);
+    expect(view(modelPorts, host).phase).toBe("countdown");
+    expect(view(modelPorts, guest).phase).toBe("countdown");
+
+    driver.send(guest, { kind: "leave" });
+    // The leaving peer's own screen exits immediately -- `leave()`
+    // (`lobby_model.ts`) always pushes a `"leave"` effect, which is what
+    // `lobby.ts`'s `actionFor` reads to navigate away, regardless of what
+    // the coordinator step above it decided.
+    expect(guest.left).toBe(true);
+    driver.pump(6);
+
+    // The host's WHOLE session ends too -- once `freeze` exists (countdown
+    // has begun), `coordinator.rs`'s `apply_disconnect` terminates the
+    // match rather than merely dropping a seat -- with the real reason,
+    // not a generic "connection lost" and not a hang.
+    const hostView = view(modelPorts, host);
+    expect(hostView.phase).toBe("terminal");
+    expect(must(hostView.terminal, "no terminal").reason).toBe("guest_left");
+    expect(hostView.terminal_text).toBe("A guest left the session.");
+  });
+
+  it("the host's LEAVE during the countdown ends the guest's session too, with an honest reason", () => {
+    const modelPorts = ports();
+    const { driver, host, guests } = seatedLobby(modelPorts, "1v1", 1);
+    const guest = must(guests[0], "no guest");
+
+    driver.send(host, { kind: "start" });
+    driver.pump(8);
+    expect(view(modelPorts, host).phase).toBe("countdown");
+
+    driver.send(host, { kind: "leave" });
+    expect(host.left).toBe(true);
+    driver.pump(6);
+
+    const guestView = view(modelPorts, guest);
+    expect(guestView.phase).toBe("terminal");
+    expect(must(guestView.terminal, "no terminal").reason).toBe("peer_abort");
+    expect(guestView.terminal_text).toBe("A peer ended the session.");
+  });
+
   it("terminates a guest whose local identity differs from the manifest", () => {
     const modelPorts = ports();
     const driver = new Driver(modelPorts);
@@ -2950,8 +3037,11 @@ describe("room-code guest slot assignment (#601)", () => {
     driver.pump(16);
 
     expect(view(modelPorts, host).phase).toBe("assigned");
-    expect(view(modelPorts, guestA).phase).toBe("assigned");
-    expect(view(modelPorts, guestB).phase).toBe("assigned");
+    // "ready", not "assigned": each guest auto-readies itself once assigned
+    // (#610) -- the host stays "assigned" because only "lock" was
+    // dispatched here, never "ready"/"start".
+    expect(view(modelPorts, guestA).phase).toBe("ready");
+    expect(view(modelPorts, guestB).phase).toBe("ready");
     // Each guest ended up owning ITS OWN slots, the thing a `peer_id`
     // mix-up would have scrambled even if admission had not caught it.
     expect(owned(modelPorts, host, "guest_1").length).toBeGreaterThan(0);
@@ -2981,8 +3071,9 @@ describe("room-code guest slot assignment (#601)", () => {
     driver.pump(40);
 
     expect(view(modelPorts, host).phase).toBe("assigned");
+    // "ready", not "assigned" -- see the previous case's comment (#610).
     for (const guest of guests) {
-      expect(view(modelPorts, guest).phase).toBe("assigned");
+      expect(view(modelPorts, guest).phase).toBe("ready");
     }
   });
 

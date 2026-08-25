@@ -44,6 +44,7 @@ import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { App } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { APP_CONTENT, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
+import { fakeRoomRendezvous } from "./test_support/fake_room_rendezvous.ts";
 
 function nodeWasmHost(): OnlineWasmHost {
   const sim = loadSimHost();
@@ -183,7 +184,16 @@ function fakeFailingHostRoomSignaling(reason: string): {
   };
 }
 
-function newApp(roomSignaling?: OnlinePortsDeps["roomSignaling"]): { app: App; stars: TestStar[] } {
+function newApp(roomSignaling?: OnlinePortsDeps["roomSignaling"]): {
+  app: App;
+  stars: TestStar[];
+  /** The star rendezvous backing this app's own `starFactory` -- returned
+   * so a SEPARATE, independently-constructed guest lobby (#610's own
+   * two-click journey test, below) can join the exact same in-process star
+   * network, the way a second browser tab shares nothing but the
+   * transport. */
+  starRendezvous: ReturnType<typeof fakeStarRendezvous>;
+} {
   const rendezvous = fakeStarRendezvous();
   const stars: TestStar[] = [];
   const starFactory: OnlinePortsDeps["starFactory"] = (role, peerId) => {
@@ -202,7 +212,7 @@ function newApp(roomSignaling?: OnlinePortsDeps["roomSignaling"]): { app: App; s
     content: APP_CONTENT.matchContract,
     ...(roomSignaling !== undefined ? { roomSignaling } : {}),
   });
-  return { app: new App(APP_CONTENT, { online: onlinePorts }), stars };
+  return { app: new App(APP_CONTENT, { online: onlinePorts }), stars, starRendezvous: rendezvous };
 }
 
 describe("multiplayer front door -> a real online lobby (#597)", () => {
@@ -312,5 +322,97 @@ describe("multiplayer front door -> a real online lobby (#597)", () => {
     lobby.dispatch({ kind: "bot_fill" });
     lobby.dispatch({ kind: "lock" });
     expect(lobby.state.model.coordinator?.manifest?.match_mode).toBe("2v2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The #610 two-click collapse, driven from the real front door: OPEN A
+// LOBBY (the hosting screen appears already live, a room code and all) then
+// START MATCH -- with a real, independently-connected guest joining over
+// the real relay wire (`fakeRoomRendezvous`, shared with
+// `room_code_lobby.spec.ts`), so this is the host's actual click journey,
+// not the lobby model exercised directly. No LOCK, no READY, from either
+// side.
+// ---------------------------------------------------------------------------
+
+describe("multiplayer front door -> countdown: the #610 two-click host journey", () => {
+  /** A second, independently-constructed lobby joining the SAME star and
+   * room-code rendezvous the host's `App` uses -- exactly what a friend's
+   * separate browser tab is, mirroring `room_code_lobby.spec.ts`'s
+   * `newDispatchableLobby`. */
+  function newGuestLobby(
+    starRendezvous: ReturnType<typeof fakeStarRendezvous>,
+    roomRendezvous: OnlinePortsDeps["roomSignaling"],
+    stars: TestStar[],
+  ): DispatchableLobby {
+    const starFactory: OnlinePortsDeps["starFactory"] = (role, peerId) => {
+      const star = fakeStar({ role, rendezvous: starRendezvous, peer_id: peerId });
+      if (!star.initialize().ok) {
+        return undefined;
+      }
+      stars.push(star);
+      return star;
+    };
+    const onlinePorts = createOnlinePorts({
+      wasm: nodeWasmHost(),
+      starFactory,
+      renderer: noopRenderPort,
+      keyboard: fakeKeyboard(),
+      content: APP_CONTENT.matchContract,
+      ...(roomRendezvous !== undefined ? { roomSignaling: roomRendezvous } : {}),
+    });
+    return onlinePorts.newLobbyScreen(() => {}, {
+      template: onlinePorts.matchManifestTemplate,
+    }) as unknown as DispatchableLobby;
+  }
+
+  it("OPEN A LOBBY, then START MATCH, reaches countdown with a real relay-connected guest -- no LOCK/READY anywhere", () => {
+    const roomRendezvous = fakeRoomRendezvous();
+    const { app, stars, starRendezvous } = newApp(roomRendezvous);
+
+    // Click 1: the front door's own "OPEN A LOBBY" card (1v1: the smallest
+    // real mode, so a single connected guest is already enough to satisfy
+    // START MATCH's own gate -- `can_start`'s doc). The hosting screen it
+    // lands on is already live -- a room code appears with no further
+    // click (#598/#603), which is why this whole journey is only two
+    // clicks despite reaching a fully seated, ready-to-start session.
+    clickWidget(app, "multiplayer");
+    clickWidget(app, "mode_1v1");
+    clickWidget(app, "host");
+    expect(app.currentRoute()).toBe("lobby");
+
+    const lobby = currentLobby(app);
+    pump([lobby], stars);
+    const code = lobby.state.model.room_code;
+    if (code === undefined) {
+      throw new Error("the host must have a room code after a pump cycle");
+    }
+    expect(lobby.state.model.role).toBe("host");
+
+    // A friend joins over the real relay wire -- constructed independently,
+    // never through `App`'s own front door, exactly as a second browser
+    // tab would be.
+    const guest = newGuestLobby(starRendezvous, roomRendezvous, stars);
+    guest.dispatch({ kind: "room_pick", role: "guest" });
+    for (const ch of code) {
+      guest.dispatch({ kind: "room_key", key: ch });
+    }
+    guest.dispatch({ kind: "room_submit" });
+    pump([lobby, guest], stars, 60);
+    expect(guest.state.model.role).toBe("guest");
+    expect(guest.state.model.coordinator?.role).toBe("guest");
+
+    // Click 2: START MATCH. Locks the mode, publishes ownership, marks the
+    // host ready, and begins the countdown -- one command, no LOCK MATCH
+    // and no READY toggle anywhere in this journey.
+    clickLobbyWidget(lobby, "start");
+    pump([lobby, guest], stars, 60);
+
+    expect(lobby.state.model.coordinator?.phase).toBe("countdown");
+    expect(guest.state.model.coordinator?.phase).toBe("countdown");
+
+    pump([lobby, guest], stars, 250);
+    expect(lobby.state.model.started).toBe(true);
+    expect(guest.state.model.started).toBe(true);
   });
 });

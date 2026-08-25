@@ -27,16 +27,11 @@
 import { describe, expect, it } from "vitest";
 import { loadSimHost } from "@gc/wasm";
 import { fakeStar, fakeStarRendezvous, type StarTransportAdapter } from "@gc/transport";
-import { encodeHostSignal, parseServerFrame } from "@gc/online";
-import {
-  LOBBY_ROOM_FAILURE_TEXT,
-  type LobbyScreenState,
-  type RoomSignalingEvent,
-  type RoomSignalingHandle,
-} from "@gc/screens";
+import { LOBBY_ROOM_FAILURE_TEXT, type LobbyScreenState } from "@gc/screens";
 import { createOnlinePorts, type OnlinePortsDeps } from "./online_ports.ts";
 import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { APP_CONTENT, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
+import { fakeRoomRendezvous } from "./test_support/fake_room_rendezvous.ts";
 
 function nodeWasmHost(): OnlineWasmHost {
   const sim = loadSimHost();
@@ -98,154 +93,11 @@ function pump(
 
 type TestStar = StarTransportAdapter & Pumpable;
 
-// ---------------------------------------------------------------------------
-// `fakeRoomRendezvous`: an in-process stand-in for the room-code Worker
-// (`infra/src/room_durable_object.ts`), built only from this issue's own
-// `RoomSignalingEvent`/`RoomSignalingHandle` port shapes -- no WebSocket, no
-// Durable Object, the same trade `fakeStar` makes for WebRTC. It reproduces
-// the two behaviors this spec actually exercises: a host gets a code and
-// learns of each guest that "joins" it (`guestId`s in join order); a
-// guest's `send` is always addressed to the host (single recipient) and a
-// host's `send` must name which guest.
-//
-// #601, round-2 council review: `send` on both sides routes through the
-// REAL `@gc/online` `room_signaling.ts` wire functions
-// (`encodeHostSignal`/`parseServerFrame`), not a hand-rolled
-// `RoomSignalingEvent` passthrough -- a fake that only ever forwarded
-// `effect.signal` directly could never have exercised the `v:1` slot
-// envelope at all, which is exactly what let an earlier claim that this
-// file proved the slot pipeline end to end go unnoticed. What this DOES
-// NOT reproduce is `room_signaling_port.ts`'s own WebSocket glue (message
-// listeners, `readyState`, `close()` semantics) -- that stays
-// `room_signaling_port.spec.ts`'s job, against a `FakeSocket`. What this
-// file proves is the two things together: the real encode/parse functions
-// AND the real `wasm` coordinator's admission, in the same session.
-// ---------------------------------------------------------------------------
-
-interface FakeRoom {
-  readonly code: string;
-  readonly hostQueue: RoomSignalingEvent[];
-  readonly guestQueues: Map<string, RoomSignalingEvent[]>;
-}
-
-interface FakeRoomRendezvous {
-  openHost(): RoomSignalingHandle;
-  openGuest(code: string): RoomSignalingHandle;
-  /** Total `close()` calls across every host handle this rendezvous has
-   * ever produced -- round-2 council review, blocking finding 3: proves
-   * `online_lobby.ts` closes a stale `roomLink` before replacing it with a
-   * fresh one on a retry, rather than leaking it. */
-  hostCloseCount(): number;
-}
-
-function fakeRoomRendezvous(): FakeRoomRendezvous {
-  const rooms = new Map<string, FakeRoom>();
-  let roomCounter = 0;
-  let guestCounter = 0;
-  let hostCloses = 0;
-
-  function openHost(): RoomSignalingHandle {
-    roomCounter += 1;
-    // Digits only, padded to the composer's fixed 6-character width -- the
-    // real alphabet excludes I/L/O/U (`room_signaling.ts`'s own header), and
-    // the guest composer below (`typeCode`) can only ever produce a
-    // 6-character, alphabet-valid code, so the fake code generated here has
-    // to be one too or the round trip through the composer would silently
-    // diverge from it.
-    const code = String(roomCounter).padStart(6, "0");
-    const room: FakeRoom = { code, hostQueue: [{ kind: "created", code }], guestQueues: new Map() };
-    rooms.set(code, room);
-    let closed = false;
-    return {
-      poll: () => (closed ? [] : room.hostQueue.splice(0, room.hostQueue.length)),
-      send: (effect) => {
-        if (closed || effect.to === undefined) {
-          return;
-        }
-        // Host -> DO -> guest, through the real wire functions (this
-        // block's own doc). `encodeHostSignal` wraps `effect.slot` in the
-        // `v:1` envelope when the host provided one; the DO forwards
-        // `body` exactly as sent (`room_durable_object.ts`'s own doc,
-        // "NOT re-stringified") into a fresh `{type:"signal", from:"host",
-        // body}` frame, which `parseServerFrame` -- the guest's own parser
-        // -- decodes back into the signal and, when present, the slot.
-        const hostToDo = JSON.parse(encodeHostSignal(effect.to, effect.signal, effect.slot)) as {
-          readonly body: unknown;
-        };
-        const doToGuest = JSON.stringify({ type: "signal", from: "host", body: hostToDo.body });
-        const parsed = parseServerFrame(doToGuest);
-        if (parsed.ok && parsed.value.type === "signal") {
-          room.guestQueues.get(effect.to)?.push({
-            kind: "signal",
-            signal: parsed.value.body,
-            ...(parsed.value.slot !== undefined ? { slot: parsed.value.slot } : {}),
-          });
-        }
-      },
-      close: () => {
-        if (!closed) {
-          hostCloses += 1;
-        }
-        closed = true;
-        rooms.delete(code);
-      },
-    };
-  }
-
-  function openGuest(code: string): RoomSignalingHandle {
-    const room = rooms.get(code);
-    if (room === undefined) {
-      // Unknown/expired code: as of #599 this completes the WebSocket
-      // upgrade and reports the reason in-band instead of failing the
-      // handshake itself -- `room_durable_object.ts`'s own doc, "Admission
-      // failures". A code no host has ever claimed reads as `room_not_found`
-      // (`room_state.ts`'s `joinGuest`, same reasoning this fake's own
-      // `rooms` map already encodes: an unclaimed code and a nonexistent one
-      // are indistinguishable here).
-      let events: RoomSignalingEvent[] = [{ kind: "failed", reason: "room_not_found" }];
-      return {
-        poll: () => {
-          const drained = events;
-          events = [];
-          return drained;
-        },
-        send: () => {},
-        close: () => {},
-      };
-    }
-    guestCounter += 1;
-    const guestId = `guest-do-${guestCounter}`;
-    const queue: RoomSignalingEvent[] = [{ kind: "joined", code }];
-    room.guestQueues.set(guestId, queue);
-    room.hostQueue.push({ kind: "guest_joined", guest_id: guestId });
-    let closed = false;
-    return {
-      poll: () => (closed ? [] : queue.splice(0, queue.length)),
-      send: (effect) => {
-        if (closed) {
-          return;
-        }
-        // A guest's own signal is never enveloped (`room_signaling.ts`'s
-        // own header, "guest -> host stays raw") -- the DO forwards it as
-        // the raw text it received, `body` a plain string, still through
-        // the real parser for consistency with the host->guest direction
-        // above.
-        const doToHost = JSON.stringify({ type: "signal", from: guestId, body: effect.signal });
-        const parsed = parseServerFrame(doToHost);
-        if (parsed.ok && parsed.value.type === "signal") {
-          room.hostQueue.push({ kind: "signal", signal: parsed.value.body, guest_id: guestId });
-        }
-      },
-      close: () => {
-        closed = true;
-        room.guestQueues.delete(guestId);
-        room.hostQueue.push({ kind: "guest_left", guest_id: guestId });
-      },
-    };
-  }
-
-  return { openHost, openGuest, hostCloseCount: () => hostCloses };
-}
+// `fakeRoomRendezvous` now lives in `test_support/fake_room_rendezvous.ts`
+// (#610): `multiplayer_room_flow.spec.ts`'s own front-door-to-countdown
+// journey needs the exact same real-relay-wire-functions fake this file
+// pioneered, and a second copy is not worth the drift risk. See that
+// module's own doc for what it does and does not reproduce.
 
 function typeCode(lobby: DispatchableLobby, code: string): void {
   for (const ch of code) {
@@ -261,10 +113,11 @@ interface RoomCodeHandshake {
 }
 
 /** Drives a real host and a real, independently-constructed guest through
- * the room-code path (never `copy`/`paste`) to a real, ready, two-human
- * 1v1 session -- the room-code counterpart of `online_ports.spec.ts`'s
- * `runTwoPeerHandshake`. */
-function runRoomCodeHandshake(): RoomCodeHandshake {
+ * the room-code path (never `copy`/`paste`) to real, connected, admitted
+ * peers -- everything `runRoomCodeHandshake` and the #610 collapse test
+ * below share, stopping short of locking/readying/starting so each caller
+ * picks its own path from there. */
+function connectRoomCodeHandshake(): RoomCodeHandshake {
   const starRendezvous = fakeStarRendezvous();
   const stars: TestStar[] = [];
   const starFactory: OnlinePortsDeps["starFactory"] = (role, peerId) => {
@@ -297,6 +150,19 @@ function runRoomCodeHandshake(): RoomCodeHandshake {
   // WebRTC connects (fakeStar) -> admission.
   pump([host, guest], stars, 60);
 
+  return { host, guest, stars, code };
+}
+
+/** Drives a real host and a real, independently-constructed guest through
+ * the room-code path (never `copy`/`paste`) to a real, ready, two-human
+ * 1v1 session -- the room-code counterpart of `online_ports.spec.ts`'s
+ * `runTwoPeerHandshake`. Keeps using the individual "lock"/"ready"
+ * commands (rather than #610's collapsed "start") so this file still
+ * proves each primitive works on its own, over the real production wiring
+ * -- `"connects a real host and guest to a ready 1v1 session..."` below
+ * checks the resulting phase either way reaches it. */
+function runRoomCodeHandshake(): RoomCodeHandshake {
+  const { host, guest, stars, code } = connectRoomCodeHandshake();
   host.dispatch({ kind: "lock" });
   pump([host, guest], stars, 40);
   host.dispatch({ kind: "ready", ready: true });
@@ -397,6 +263,23 @@ describe("room_code_lobby: the room-code path (#552), through production OnlineP
     expect(guest.state.model.started).toBe(true);
   });
 
+  // The #610 collapse, over the REAL production wiring this file exists
+  // to exercise: a single host "start" command, dispatched against two
+  // real, room-code-connected `wasm` coordinators, with no "lock" and no
+  // "ready" from either side -- the guest's own readiness is automatic.
+  it("collapses lock/publish/ready into a single host START command and still reaches countdown and a synchronized start (#610)", () => {
+    const { host, guest, stars } = connectRoomCodeHandshake();
+
+    host.dispatch({ kind: "start" });
+    pump([host, guest], stars, 60);
+    expect(host.state.model.coordinator?.phase).toBe("countdown");
+    expect(guest.state.model.coordinator?.phase).toBe("countdown");
+
+    pump([host, guest], stars, 250);
+    expect(host.state.model.started).toBe(true);
+    expect(guest.state.model.started).toBe(true);
+  });
+
   // #601, round-2 council review, blocking finding 1: proves the slot
   // pipeline for real -- the real `wasm` coordinator's own admission
   // (`peer_id` must be unique on the roster) AND the real
@@ -425,8 +308,11 @@ describe("room_code_lobby: the room-code path (#552), through production OnlineP
     // would leave it.
     expect(host.state.model.coordinator?.peers.length).toBe(3);
     expect(host.state.model.coordinator?.phase).toBe("assigned");
-    expect(guestA.state.model.coordinator?.phase).toBe("assigned");
-    expect(guestB.state.model.coordinator?.phase).toBe("assigned");
+    // "ready", not "assigned": a guest auto-readies itself once assigned
+    // (#610) -- the host stays "assigned" here because only "lock" was
+    // dispatched, never "ready"/"start".
+    expect(guestA.state.model.coordinator?.phase).toBe("ready");
+    expect(guestB.state.model.coordinator?.phase).toBe("ready");
   });
 });
 

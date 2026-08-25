@@ -913,17 +913,22 @@ describe("online lobby screen", () => {
     );
   });
 
-  it("disables a control the current phase forbids, and hides one it doesn't offer at all", () => {
+  it("disables a control the current phase forbids, and hides the READY widget entirely (#610: it no longer exists)", () => {
     const state = hosting();
     const currentLayout = lobbyLayout(state);
     // Not yet an invite to copy -- disabled, not hidden, since inviting is
     // still the thing to do on this phase.
     expect(hit.find(currentLayout, "copy_signal")?.data?.disabled).toBe(true);
-    // READY/START do not apply until ownership exists (assigned/ready) --
-    // #566's own principle ("nothing on screen the player cannot act on")
-    // means they are absent here, not merely disabled.
+    // READY was cut outright (#610) -- absent in every phase, not merely
+    // disabled.
     expect(hit.find(currentLayout, "ready")).toBeNull();
-    expect(hit.find(currentLayout, "start")).toBeNull();
+    // START MATCH is the single prominent action from handshake onward
+    // (#610): present here, but disabled -- `hosting()` is a lone host with
+    // bot-fill off, well short of DEFAULT_MODE's required humans.
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("START MATCH");
     // A disabled control is not activated by a click on it.
     const nextState = click(state, "copy_signal");
     expect(view(nextState).error).toBeUndefined();
@@ -1302,16 +1307,18 @@ describe("countdown, terminal identity, and DETAILS (#566)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// READY/START visibility across manifest -> assigned -> ready (#566 council
-// review, blocking finding 2): no case ever constructed `phase ===
-// "manifest"` before, so its one distinguishing behaviour -- the roster
-// shows, but READY/START do not apply yet -- was unproven. The `ready`-phase
-// case is the companion: presence-when-enabled was never pinned either, and
-// it is now a per-phase conditional (`footerWidgets`' `showReady`/
-// `showStart`), not merely a `disabled` flag on an always-present button.
+// START MATCH visibility across manifest -> assigned -> ready (#566 council
+// review, blocking finding 2; redesigned for #610's two-click collapse):
+// READY doesn't exist in any phase any more -- the host's own readiness and
+// the guest's are both automatic now (`lobby_model.ts`'s header addendum on
+// the collapse). START MATCH stays visible through every one of these
+// phases (`footerWidgets`'s `showStart`, gated on `can_configure`) but
+// disabled, because `can_start` is only ever true in "handshake" -- past
+// it, the button reading "STARTING…" IS the player-visible evidence that
+// the collapse's own round trips are in flight.
 // ---------------------------------------------------------------------------
 
-describe("roster phase gating: manifest / assigned / ready (#566)", () => {
+describe("roster phase gating: manifest / assigned / ready (#566, #610)", () => {
   function withPhase(
     mode: SessionMatchMode,
     phase: "manifest" | "assigned" | "ready",
@@ -1326,32 +1333,35 @@ describe("roster phase gating: manifest / assigned / ready (#566)", () => {
     };
   }
 
-  it("manifest: shows the roster, but READY and START do not apply yet", () => {
+  it("manifest: shows the roster; READY is gone, START MATCH is present but reads STARTING…", () => {
     const state = withPhase("2v2", "manifest");
     const currentLayout = lobbyLayout(state);
     expect(hit.find(currentLayout, "slot_home_1")).not.toBeNull();
     expect(hit.find(currentLayout, "ready")).toBeNull();
-    expect(hit.find(currentLayout, "start")).toBeNull();
-  });
-
-  it("assigned: READY is present and enabled; START does not apply yet", () => {
-    const state = withPhase("2v2", "assigned");
-    const currentLayout = lobbyLayout(state);
-    const ready = hit.find(currentLayout, "ready");
-    expect(ready).not.toBeNull();
-    expect(ready?.data?.disabled).toBe(false);
-    expect(hit.find(currentLayout, "start")).toBeNull();
-  });
-
-  it("ready: READY and, for the host, an enabled START are both present", () => {
-    const state = withPhase("2v2", "ready");
-    const currentLayout = lobbyLayout(state);
-    const ready = hit.find(currentLayout, "ready");
-    expect(ready).not.toBeNull();
-    expect(ready?.data?.disabled).toBe(false);
     const start = hit.find(currentLayout, "start");
     expect(start).not.toBeNull();
-    expect(start?.data?.disabled).toBe(false);
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
+  });
+
+  it("assigned: READY is gone; START MATCH stays present and disabled", () => {
+    const state = withPhase("2v2", "assigned");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
+  });
+
+  it("ready: READY is gone; START MATCH stays present and disabled -- the countdown screen is next, not a re-enabled button", () => {
+    const state = withPhase("2v2", "ready");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
   });
 });
 
