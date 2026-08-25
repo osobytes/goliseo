@@ -1,9 +1,14 @@
 // A pure, reusable six-character room-code composer: the character grid a
-// player edits before submitting a room code. Shared between the lobby's
-// own guest composer (`lobby_model.ts`'s `room_entry`) and the multiplayer
-// front door's inline entry (`multiplayer.ts`, #610) -- both edit the exact
-// same six-slot, closed-alphabet grid, so the editing rules live here once
-// rather than twice.
+// player edits before submitting a room code. Shared, within `lobby.ts`,
+// between the guest's own post-role composer (`lobby_model.ts`'s
+// `room_entry`, `ROOM_CODE_ENTRY_WIDGET`) and the host's inline "have a
+// code? switch to guest" entry on the auto-hosted handshake screen
+// (`JOIN_ENTRY_WIDGET`, #610 round-2 review, blocking finding 1c) -- both
+// edit the exact same six-slot, closed-alphabet grid, so the editing rules
+// live here once rather than twice. (An earlier revision of #610 also
+// threaded this through a since-deleted `multiplayer.ts` front door; that
+// screen folded into the hosting screen itself, but the extraction still
+// earns its keep for the two composers that remain.)
 //
 // Every function here is pure: given an entry and an edit, return the next
 // entry. Submission, focus, and what a completed code connects to are each

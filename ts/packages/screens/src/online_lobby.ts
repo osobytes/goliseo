@@ -118,23 +118,27 @@ export interface OnlineLobbyOptions<TStar, TEvent extends LobbyCommand> {
   readonly modelPorts: LobbyModelPorts;
   readonly modelOptions?: LobbyModelOptions;
   /**
-   * Decided on the multiplayer front door and applied here as the lobby's
-   * opening command, so a player who already chose Host or Join does not
-   * choose it again: the lobby runs `lobby_model.ts`'s `room_pick` path for
-   * this role immediately (#597). Dispatched rather than baked into
-   * `newLobbyModel` so `room_pick`'s own effects (opening the room-code
-   * channel, in particular) run through `run()` exactly as they do when
-   * "HOST/JOIN WITH A ROOM CODE" is clicked -- the model needs no new
-   * option, and the lobby's own role screen (including the manual
-   * copy/paste fallback) stays reachable when nothing was preset, or once a
-   * preset room-code attempt is cancelled or fails.
+   * Decided before this lobby is even mounted -- "PLAY ONLINE" always
+   * passes `"host"` (#610 round-2 review, blocking finding 1: the front
+   * door folded into this hosting screen itself); `app.ts`'s `restartLobby`
+   * passes `"guest"` for the hosting screen's own inline "switch to guest"
+   * composer -- and applied here as the lobby's opening command, so the
+   * lobby runs `lobby_model.ts`'s `room_pick` path for this role
+   * immediately (#597). Dispatched rather than baked into `newLobbyModel`
+   * so `room_pick`'s own effects (opening the room-code channel, in
+   * particular) run through `run()` exactly as they do when "HOST/JOIN
+   * WITH A ROOM CODE" is clicked -- the model needs no new option, and the
+   * lobby's own role screen (including the manual copy/paste fallback)
+   * stays reachable once a preset room-code attempt is cancelled or fails,
+   * or via CANCEL from an already-live one (`lobby.ts`'s
+   * `cancelToRoleScreen`).
    *
    * This preempts `lobby_model.ts`'s OLD preset-manual-role path
    * (dispatching a bare `{kind:"role",...}` here) on purpose: that path
    * locked in the manual-signaling role before the lobby ever rendered, so
    * `lobby.ts`'s room-code buttons -- which only render while no role is
-   * chosen -- were unreachable from the front door. See multiplayer.ts's
-   * `MultiplayerAction` doc for the full mechanism.
+   * chosen -- were unreachable this way. See `lobby.ts`'s own `LobbyAction`
+   * doc for the full mechanism.
    */
   readonly roomIntent?: LobbyRole;
   /**

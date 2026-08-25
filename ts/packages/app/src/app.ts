@@ -27,7 +27,6 @@ import {
   Menu,
   credits,
   help,
-  multiplayer,
   pause,
   result,
   sessionEnded,
@@ -87,6 +86,10 @@ export interface OnlineLobbyScreen extends Screen<ControllerInputEvent, GameSett
        * hosted lobby so the choice survives to the next one
        * (`handleAction`'s `main_menu` branch). */
       readonly bot_fill?: boolean;
+      /** `lobby_model.ts`'s own `LobbyModel.mode` -- read the same way as
+       * `bot_fill` (#610: mode choice moved onto the hosting screen's own
+       * chips, so it has no earlier commit point either). */
+      readonly mode?: string;
     };
   };
   readonly link: unknown;
@@ -169,8 +172,12 @@ export class App {
   settings: GameSettings;
   readonly settingsStorage: SettingsStorage | undefined;
   readonly teamSettingsStorage: SettingsStorage | undefined;
-  /** Seeds `showMultiplayer`'s mode picker and, on a host commit, is
-   * re-saved (`team_settings.ts`'s "last online mode"). */
+  /** Seeds `playOnline`'s auto-hosted mode chip and, on leaving one
+   * hosted, is re-saved (`team_settings.ts`'s "last online mode") -- #610
+   * moved mode choice onto the hosting screen's own chips (`lobby.ts`'s
+   * `headerWidgets`), so this is read back from the departing screen
+   * exactly the way `lastBotFill` below always has been, not committed by
+   * a separate front-door click any more. */
   lastOnlineMode: SessionMatchMode;
   /** Seeds a hosted lobby's `bot_fill` and, on leaving one hosted, is
    * re-saved (`team_settings.ts`'s "last bot-fill choice"). */
@@ -300,13 +307,24 @@ export class App {
     this.replaceRoute("team_sheet", asMenu(menu));
   }
 
-  showMultiplayer(): void {
-    const menu = new Menu(
-      multiplayer,
-      multiplayer.newState(this.viewport, { mode: this.lastOnlineMode }),
-      this.onAction(),
-    );
-    this.replaceRoute("multiplayer", asMenu(menu));
+  /** "PLAY ONLINE" (#610 round-2 review, blocking finding 1: the front
+   * door collapsed into the hosting screen itself) -- routes straight to
+   * an already-live room-hosting attempt. There is no more intermediate
+   * card screen to choose Host or Join on: a friend who means to join
+   * uses the hosting screen's own inline code entry instead
+   * (`lobby.ts`'s `JOIN_ENTRY_WIDGET`). Still pushes the "lobby" route
+   * (not a replace) -- BACK/CANCEL from the auto-hosted screen goes
+   * through `restartLobby` below, staying at the same route depth, so
+   * this is the one and only place a fresh "lobby" route is ever pushed
+   * from the title. A build with no online wiring at all cannot offer
+   * online play; this quietly does nothing rather than crash the title
+   * menu, the same guarantee the old front-door screen existed to give
+   * (`app.spec.ts`'s own regression case predates #610). */
+  playOnline(): void {
+    if (!this.online) {
+      return;
+    }
+    this.showLobby({ intent: "host", mode: this.lastOnlineMode });
   }
 
   /**
@@ -389,19 +407,17 @@ export class App {
   }
 
   // The online route -- see this file's header for why the lobby screen is
-  // injected rather than imported. `intent`/`mode` are the multiplayer
-  // front door's decision (#597: a room-flow intent, not a preset manual
-  // role -- see `multiplayer.ts`'s `MultiplayerAction` doc), forwarded so
-  // the player does not choose Host/Join twice.
-  showLobby(options?: {
+  // injected rather than imported. `intent`/`mode` name a room-flow intent
+  // (#597: not a preset manual role) -- `playOnline` always passes
+  // `intent: "host"`; `restartLobby` passes `intent: "guest"` for the
+  // hosting screen's own inline "switch to guest" composer (#610, see
+  // `lobby.ts`'s `LobbyAction` doc).
+  private newLobbyScreen(options?: {
     readonly modelOptions?: Record<string, unknown>;
     readonly intent?: "host" | "guest";
     readonly mode?: string;
-    /** #598: a join link's room code, pre-filled and auto-submitted the
-     * moment a `"guest"` intent's composer is revealed. See
-     * `AppOptions.presetRoomCode`'s own doc for where this originates. */
     readonly presetRoomCode?: string;
-  }): void {
+  }): Screen<ControllerInputEvent, GameSettings> {
     if (!this.online) {
       throw new Error("no online ports were injected into this App");
     }
@@ -419,8 +435,40 @@ export class App {
       ...(options?.intent === "host" ? { botFill: this.lastBotFill } : {}),
       ...(options?.presetRoomCode !== undefined ? { presetRoomCode: options.presetRoomCode } : {}),
     };
-    const screen = this.online.newLobbyScreen(this.onAction(), resolved);
-    this.pushRoute("lobby", screen);
+    return this.online.newLobbyScreen(this.onAction(), resolved);
+  }
+
+  showLobby(options?: {
+    readonly modelOptions?: Record<string, unknown>;
+    readonly intent?: "host" | "guest";
+    readonly mode?: string;
+    /** #598: a join link's room code, pre-filled and auto-submitted the
+     * moment a `"guest"` intent's composer is revealed. See
+     * `AppOptions.presetRoomCode`'s own doc for where this originates. */
+    readonly presetRoomCode?: string;
+  }): void {
+    this.pushRoute("lobby", this.newLobbyScreen(options));
+  }
+
+  /** Restarts the CURRENT "lobby" route with a genuinely fresh screen --
+   * #610 round-2 review, blocking finding 1: CANCEL-to-role-screen
+   * (`{go:"lobby_restart"}`, no fields) and "switch to guest via a typed
+   * code" (`{go:"lobby_restart", intent:"guest", code}`, `lobby.ts`'s
+   * `switchToGuest`) both need this, since neither is a normal forward
+   * navigation `pushRoute`/`popRoute` cover. `ScreenStack.replace` (unlike
+   * `push`) calls `teardown()` on the screen it replaces FIRST
+   * (`screen_stack.ts`'s own contract) -- the old screen's star transport
+   * and any room-code socket are closed before the new one opens its own,
+   * rather than leaking a star this app never explicitly shuts down
+   * otherwise (the same gap "LEAVE LOBBY -> main menu" has always relied
+   * on `stack.clear()` to close, not a dedicated call). The route depth
+   * (`this.routes`) is untouched: still "lobby", same position, so BACK
+   * from a fresh role screen still returns to whatever was underneath. */
+  private restartLobby(options?: {
+    readonly intent?: "host" | "guest";
+    readonly presetRoomCode?: string;
+  }): void {
+    this.stack.replace(this.newLobbyScreen(options));
   }
 
   // Route the lobby's synchronized start into the real online match. The
@@ -500,23 +548,18 @@ export class App {
       // an edit on BACK.
       this.showTeamSheet();
     } else if (route === "title" && action.go === "multiplayer") {
-      this.showMultiplayer();
-    } else if (route === "multiplayer" && action.go === "title") {
-      this.showTitle();
-    } else if (route === "multiplayer" && action.go === "lobby") {
-      if (action.intent === "host" && action.mode !== undefined) {
-        this.lastOnlineMode = action.mode as SessionMatchMode;
-        this.saveTeamPreferences();
-      }
-      this.showLobby({
-        ...(action.intent !== undefined ? { intent: action.intent as "host" | "guest" } : {}),
-        ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
-        // The front door's own inline code composer (#610) -- reuses the
-        // SAME pre-fill-and-auto-submit path #598's join links already go
-        // through (`showLobby`'s own `presetRoomCode` doc), not a parallel
-        // one.
-        ...(action.code !== undefined ? { presetRoomCode: action.code as string } : {}),
-      });
+      // "PLAY ONLINE" (#610 round-2 review, blocking finding 1) -- straight
+      // to an already-live hosting attempt, no intermediate front door.
+      this.playOnline();
+    } else if (route === "lobby" && action.go === "lobby_restart") {
+      // CANCEL-to-role-screen (no fields) or "switch to guest via a typed
+      // code" (`intent`/`code`) -- `lobby.ts`'s `cancelToRoleScreen`/
+      // `switchToGuest`, #610 round-2 review, blocking finding 1.
+      this.restartLobby(
+        action.intent === "guest" && typeof action.code === "string"
+          ? { intent: "guest", presetRoomCode: action.code }
+          : undefined,
+      );
     } else if (route === "lobby" && action.go === "online_match") {
       if (action.freeze === undefined) {
         throw new Error("an online start needs its freeze");
@@ -538,14 +581,15 @@ export class App {
       (action.go === "multiplayer" || action.go === "main_menu")
     ) {
       // Both exits go through the title, so a dead session leaves nothing
-      // mounted behind it; Multiplayer then reopens the front door.
+      // mounted behind it; "multiplayer" then reopens a fresh hosting
+      // attempt directly (#610).
       this.showTitle();
       if (action.go === "multiplayer") {
-        this.showMultiplayer();
+        this.playOnline();
       }
     } else if (route === "result" && action.go === "back_to_lobby") {
       this.showTitle();
-      this.showMultiplayer();
+      this.playOnline();
     } else if (route === "title" && action.go === "help") {
       const menu = new Menu(
         help,
@@ -613,15 +657,23 @@ export class App {
     } else if (route === "result" && action.go === "change_plan") {
       this.showTeamSheet();
     } else if (action.go === "main_menu") {
-      // A hosted lobby's `bot_fill` has no commit point of its own (it is
-      // toggled inside the lobby, not chosen before entering it, unlike
-      // `mode` above) -- so it is read off the departing screen here,
-      // instead. Host-only: `lobby_model.ts` refuses a non-host toggle, so a
-      // guest's `bot_fill` is always `false` and must never overwrite a real
-      // host preference (`currentLobbyRole`'s own doc).
+      // Neither `bot_fill` nor (since #610) `mode` has a commit point of
+      // its own any more -- both are toggled inside the lobby's own
+      // handshake screen, not chosen before entering it -- so both are
+      // read off the departing screen here instead. Host-only:
+      // `lobby_model.ts` refuses a non-host toggle or mode change, so a
+      // guest's own `bot_fill`/`mode` must never overwrite a real host
+      // preference (`currentLobbyRole`'s own doc). `mode` is read
+      // defensively (`undefined` rather than asserted) so a stub lobby
+      // screen with no model at all -- several specs construct exactly
+      // that -- cannot overwrite a real persisted choice with `undefined`.
       if (route === "lobby" && this.currentLobbyRole === "host") {
         const lobbyScreen = this.stack.current() as OnlineLobbyScreen;
         this.lastBotFill = lobbyScreen.state.model.bot_fill === true;
+        const mode = lobbyScreen.state.model.mode as SessionMatchMode | undefined;
+        if (mode !== undefined) {
+          this.lastOnlineMode = mode;
+        }
         this.saveTeamPreferences();
       }
       this.currentLobbyRole = undefined;

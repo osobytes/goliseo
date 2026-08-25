@@ -11,8 +11,14 @@
 //     that is the window-close gesture, which `App` forwards to an injected
 //     `requestQuit` — but there is no longer a button for it.
 //   - CREDITS folded into Settings -> About, where build info belongs.
-//   - ONLINE LOBBY (DEV) became MULTIPLAYER: a real front door, instead of a
-//     button that threw because no `OnlinePorts` is ever injected.
+//   - ONLINE LOBBY (DEV) became MULTIPLAYER, a real front door -- and #610
+//     round-2 review folded that front door into the hosting screen
+//     itself, so this entry is PLAY ONLINE now (still the `"multiplayer"`
+//     action id -- only the player-facing label changed): it routes
+//     straight to an already-live hosting attempt (a room code, mode
+//     chips, START MATCH), no intermediate card screen. A friend who means
+//     to join uses that screen's own inline code entry instead of a
+//     separate JOIN card.
 //
 // TEAM is new: the team sheet used to be reachable only through PLAY, which
 // meant "look at my team" and "start a match" were the same click. It is a
@@ -61,7 +67,7 @@ function layout(state: TitleScreenState): Layout {
   const labels: readonly [string, string][] = [
     ["play", "PLAY"],
     ["team", "TEAM"],
-    ["multiplayer", "MULTIPLAYER"],
+    ["multiplayer", "PLAY ONLINE"],
     ["help", "HOW TO PLAY"],
     ["settings", "SETTINGS"],
   ];

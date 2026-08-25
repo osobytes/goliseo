@@ -56,13 +56,6 @@ export type { PauseAction, PauseScreenState } from "./pause.ts";
 export { title } from "./title.ts";
 export type { TitleAction, TitleScreenState } from "./title.ts";
 
-export { multiplayer } from "./multiplayer.ts";
-export type {
-  MultiplayerAction,
-  MultiplayerScreenContext,
-  MultiplayerScreenState,
-} from "./multiplayer.ts";
-
 export { sessionEnded } from "./session_ended.ts";
 export type {
   SessionEndedAction,
@@ -150,6 +143,7 @@ export {
   layout as lobbyScreenLayout,
   update as lobbyScreenUpdate,
   ROOM_CODE_ENTRY_WIDGET,
+  JOIN_ENTRY_WIDGET,
 } from "./lobby.ts";
 export type {
   LobbyAction,
