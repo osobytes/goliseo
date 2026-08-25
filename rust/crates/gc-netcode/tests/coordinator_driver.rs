@@ -350,6 +350,315 @@ fn aborts_when_a_peer_never_acknowledges_the_start_boundary() {
     assert!(!session.host().started);
 }
 
+// ---------------------------------------------------------------------------
+// #612: the start boundary survives a stalled guest instead of being a
+// one-shot, 2-second handshake. The host resends Start until it is
+// acknowledged, a resend arriving after either side already applied the
+// original is a no-op rather than a protocol violation, the ack window is
+// wide enough to clear a real stall, and a guest that never hears back gets
+// an honest reason instead of waiting forever.
+// ---------------------------------------------------------------------------
+
+/// Bring a 1v1 session to the point where the host has just emitted Start,
+/// with the guest's link silenced right after so no acknowledgement from
+/// this session's guest ever gets through. `remaining_ticks` must be
+/// positive so the `Countdown` wire (delivered here, before silencing) and
+/// the eventual `Start` (blocked) are genuinely separate events — the guest
+/// really does reach `Countdown` phase and tick its own countdown down
+/// locally, arming its own deadline the same way the host arms its own; it
+/// just never hears the Start that would follow. Returns the session and the
+/// tick Start was first emitted at (== the armed deadline's start on both
+/// peers, since both reach countdown-zero on the same driver tick here).
+fn silenced_guest_at_countdown_zero(remaining_ticks: i64) -> (Driver, i64) {
+    assert!(
+        remaining_ticks > 0,
+        "a zero-length countdown emits Countdown and Start from the same event, \
+         which this helper cannot silence between"
+    );
+    let mut session = Driver::new(driver::Options {
+        guest_count: Some(1),
+        ..Default::default()
+    });
+    session.connect_all();
+    session.send(
+        HOST,
+        Event::ProposeManifest {
+            manifest: fixture::manifest(None),
+        },
+    );
+    session.pump();
+    session.send(
+        HOST,
+        Event::AssignSlots {
+            assignments: fixture::assignments(1, None),
+            preserve_claims: false,
+        },
+    );
+    session.pump();
+    let peer_ids: Vec<String> = session.nodes.iter().map(|n| n.peer_id.clone()).collect();
+    for peer_id in &peer_ids {
+        session.send(peer_id, Event::SetReady { ready: true });
+    }
+    session.pump();
+    session.send(
+        HOST,
+        Event::BeginCountdown {
+            countdown_id: fixture::COUNTDOWN_ID.to_string(),
+            remaining_ticks,
+            first_input_tick: 0,
+        },
+    );
+    session.pump();
+    let link_id = fixture::link_id(&fixture::guest_peer_id(1));
+    let link_index = session.links.iter().position(|l| l.id == link_id).unwrap();
+    session.links[link_index].guest_open = false;
+    session.tick(Some(remaining_ticks));
+    let armed_at = session
+        .host()
+        .state
+        .start_armed_at
+        .expect("countdown-zero arms the host's own start deadline");
+    (session, armed_at)
+}
+
+#[test]
+fn resends_start_periodically_until_the_guest_acknowledges_it() {
+    let (mut session, armed_at) = silenced_guest_at_countdown_zero(1);
+    let host_sends = |session: &Driver| {
+        session
+            .transcript
+            .iter()
+            .filter(|m| m.kind == protocol::MessageKind::Start && m.peer_id == HOST)
+            .count()
+    };
+    assert_eq!(host_sends(&session), 1, "the original send");
+
+    session.tick(Some(coordinator::START_RESEND_INTERVAL_TICKS - 1));
+    assert_eq!(
+        host_sends(&session),
+        1,
+        "no resend before the interval elapses"
+    );
+    assert_eq!(
+        session.host().state.phase,
+        protocol::LifecyclePhase::Countdown
+    );
+
+    session.tick(Some(1));
+    assert_eq!(
+        session.host().state.clock,
+        armed_at + coordinator::START_RESEND_INTERVAL_TICKS
+    );
+    assert_eq!(host_sends(&session), 2, "one resend at the interval");
+
+    let starts: Vec<_> = session
+        .transcript
+        .iter()
+        .filter(|m| m.kind == protocol::MessageKind::Start && m.peer_id == HOST)
+        .collect();
+    assert_eq!(
+        starts[0].body, starts[1].body,
+        "a resend is the identical announcement, not a new one"
+    );
+    assert_ne!(
+        starts[0].sequence, starts[1].sequence,
+        "each send still gets its own sequence number"
+    );
+
+    // The resend has still not reached the guest (link silenced): a second
+    // interval produces a third send, and the host has not given up (the ack
+    // window is far wider than the resend interval).
+    session.tick(Some(coordinator::START_RESEND_INTERVAL_TICKS));
+    assert_eq!(host_sends(&session), 3);
+    assert_eq!(session.host().terminal, None);
+
+    // Now let the next resend actually get through: this is the "guest still
+    // waiting at countdown-zero" path, just reached via a resend rather than
+    // the original send, since the original never arrived.
+    let link_id = fixture::link_id(&fixture::guest_peer_id(1));
+    let link_index = session.links.iter().position(|l| l.id == link_id).unwrap();
+    session.links[link_index].guest_open = true;
+    session.tick(Some(coordinator::START_RESEND_INTERVAL_TICKS));
+
+    assert!(session.all_started());
+    assert_eq!(
+        session.host().state.phase,
+        protocol::LifecyclePhase::Running
+    );
+    assert_eq!(
+        session
+            .node(&fixture::guest_peer_id(1))
+            .unwrap()
+            .state
+            .phase,
+        protocol::LifecyclePhase::Running
+    );
+    assert_eq!(session.host().terminal, None);
+}
+
+#[test]
+fn guest_ignores_a_resent_start_once_it_is_already_running() {
+    let mut session = Driver::new(driver::Options {
+        guest_count: Some(1),
+        ..Default::default()
+    });
+    session.reach_start(Some(1), Some(0));
+    let guest = fixture::guest_peer_id(1);
+    assert_eq!(
+        session.node(&guest).unwrap().state.phase,
+        protocol::LifecyclePhase::Running
+    );
+    let phase_before = session.node(&guest).unwrap().state.phase;
+    let transcript_len_before = session.transcript.len();
+    let freeze = session.host().state.freeze.clone().expect("frozen");
+
+    // Model the host's periodic resend arriving after the guest already
+    // applied the original and moved on — a real resend targets every
+    // guest, started or not (`emit_start` sends to every link).
+    session.inject(
+        HOST,
+        &guest,
+        protocol::MessageKind::Start,
+        Value::record(vec![
+            ("manifest_id", Value::str(freeze.manifest_id.clone())),
+            ("countdown_id", Value::str(freeze.countdown_id.clone())),
+            ("first_input_tick", Value::int(freeze.first_input_tick)),
+        ]),
+        None,
+    );
+
+    // The dedup window still records the newly-sequenced wire (that part is
+    // real book-keeping, not a no-op) — what must not happen is a second
+    // echo or any other outbound reaction, and the guest staying exactly
+    // where it was.
+    assert_eq!(
+        session.transcript.len(),
+        transcript_len_before + 1,
+        "only the injected resend itself, no reaction to it"
+    );
+    assert_eq!(session.node(&guest).unwrap().state.phase, phase_before);
+    assert_eq!(session.node(&guest).unwrap().terminal, None);
+}
+
+#[test]
+fn host_ignores_a_duplicate_start_echo_once_it_is_already_running() {
+    let mut session = Driver::new(driver::Options {
+        guest_count: Some(1),
+        ..Default::default()
+    });
+    session.reach_start(Some(1), Some(0));
+    assert_eq!(
+        session.host().state.phase,
+        protocol::LifecyclePhase::Running
+    );
+    let phase_before = session.host().state.phase;
+    let transcript_len_before = session.transcript.len();
+    let guest = fixture::guest_peer_id(1);
+    let freeze = session.host().state.freeze.clone().expect("frozen");
+
+    // Model a guest's echo being retransmitted (or simply delayed) past the
+    // point the host already saw the original and moved on.
+    session.inject(
+        &guest,
+        HOST,
+        protocol::MessageKind::Start,
+        Value::record(vec![
+            ("manifest_id", Value::str(freeze.manifest_id.clone())),
+            ("countdown_id", Value::str(freeze.countdown_id.clone())),
+            ("first_input_tick", Value::int(freeze.first_input_tick)),
+        ]),
+        None,
+    );
+
+    assert_eq!(
+        session.transcript.len(),
+        transcript_len_before + 1,
+        "only the injected echo itself, no reaction to it"
+    );
+    assert_eq!(session.host().state.phase, phase_before);
+    assert_eq!(session.host().terminal, None);
+}
+
+#[test]
+fn guest_terminates_honestly_when_the_host_never_confirms_the_start_boundary() {
+    let (mut session, armed_at) = silenced_guest_at_countdown_zero(1);
+    let guest = fixture::guest_peer_id(1);
+    let guest_armed_at = session
+        .node(&guest)
+        .unwrap()
+        .state
+        .start_armed_at
+        .expect("the guest's own countdown-zero deadline is armed alongside the host's");
+    assert_eq!(
+        guest_armed_at, armed_at,
+        "both sides reach countdown-zero on the same driver tick here"
+    );
+
+    session.tick(Some(coordinator::START_ACK_TIMEOUT_TICKS - 1));
+    assert_eq!(
+        session.node(&guest).unwrap().terminal,
+        None,
+        "must not fire before its own window elapses"
+    );
+
+    session.tick(Some(2));
+    let terminal = session
+        .node(&guest)
+        .unwrap()
+        .terminal
+        .clone()
+        .expect("the guest gives up once its own deadline passes");
+    assert_eq!(terminal.reason, TerminalReason::StartNeverArrived);
+    assert_eq!(terminal.origin, Origin::Timeout);
+    assert_eq!(terminal.peer_id.as_deref(), Some(HOST));
+
+    // The host is in the exact same position (its guest never acknowledged
+    // either), so it reaches its own honest reason too.
+    let host_terminal = session.host().terminal.clone().expect("host also gives up");
+    assert_eq!(host_terminal.reason, TerminalReason::StartAckTimeout);
+}
+
+#[test]
+fn widening_the_ack_window_survives_a_stall_that_would_have_timed_out_at_the_old_value() {
+    // #612's own repro: a same-machine two-window rAF stall of a couple of
+    // seconds routinely spans the start boundary. This proves the exact gate
+    // `handle_tick` evaluates — `start_deadline_exceeded` — actually moves
+    // with its window parameter (AGENTS.md's knob-contract discipline), not
+    // just that a bigger number was written down: the identical
+    // `armed_at`/`now` pair this run produces fails the gate at the
+    // historical width and survives it at the current one, and the real,
+    // end-to-end coordinator agrees.
+    const HISTORICAL_START_ACK_TIMEOUT_TICKS: i64 = 120;
+    const STALL_TICKS: i64 = 180;
+    const {
+        assert!(
+            HISTORICAL_START_ACK_TIMEOUT_TICKS < STALL_TICKS
+                && STALL_TICKS < coordinator::START_ACK_TIMEOUT_TICKS,
+            "the stall must sit strictly between the two windows for this test to prove anything"
+        );
+    }
+
+    let (mut session, armed_at) = silenced_guest_at_countdown_zero(1);
+    session.tick(Some(STALL_TICKS));
+    let now = session.host().state.clock;
+    assert_eq!(now, armed_at + STALL_TICKS);
+
+    assert!(
+        coordinator::start_deadline_exceeded(armed_at, now, HISTORICAL_START_ACK_TIMEOUT_TICKS),
+        "a {STALL_TICKS}-tick stall must have tripped the historical 120-tick window"
+    );
+    assert!(
+        !coordinator::start_deadline_exceeded(armed_at, now, coordinator::START_ACK_TIMEOUT_TICKS),
+        "the same stall must not trip the current, widened window"
+    );
+
+    assert_eq!(session.host().terminal, None);
+    assert_eq!(
+        session.host().state.phase,
+        protocol::LifecyclePhase::Countdown
+    );
+}
+
 #[test]
 fn ends_the_session_on_a_persistent_boundary_hash_mismatch() {
     let mut session = Driver::new(driver::Options {

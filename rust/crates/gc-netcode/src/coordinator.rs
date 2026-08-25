@@ -174,6 +174,11 @@ pub enum TerminalReason {
     InvalidAssignment,
     /// A peer never acknowledged the canonical start boundary in time.
     StartAckTimeout,
+    /// A guest's own countdown-zero deadline passed with no Start from the
+    /// host — the host-side mirror of [`TerminalReason::StartAckTimeout`],
+    /// distinct so the guest is told the truth instead of waiting forever
+    /// (#612: the host used to be the only side with a deadline at all).
+    StartNeverArrived,
     /// The input channel itself failed.
     InputChannelFailure,
     /// An input arrived too late to be used.
@@ -457,8 +462,24 @@ pub const DUPLICATE_WINDOW: usize = 8;
 pub const HASH_WINDOW: usize = 8;
 /// Consecutive boundary-hash disagreements tolerated before a desync ends the session.
 pub const MAX_HASH_MISMATCHES: i64 = 3;
-/// Ticks a peer is given to acknowledge the canonical start boundary.
-pub const START_ACK_TIMEOUT_TICKS: i64 = 120;
+/// Ticks a peer is given to acknowledge the canonical start boundary — the
+/// host waiting on a guest's echo, or a guest waiting at countdown-zero for
+/// the host's Start to ever arrive, whichever role is checking. Widened from
+/// `120` (2.0s at 60Hz) to `600` (10.0s): #612 traced a live match death to
+/// this window sitting far below any realistic WebRTC hiccup or renderer
+/// stall, with nothing on either side able to retry inside it. Transport
+/// truth (a real disconnect/ICE failure) surfaces on a scale of several
+/// seconds to tens of seconds, so the window has to clear that bar, not an
+/// animation-frame budget. [`START_RESEND_INTERVAL_TICKS`] gives the host
+/// several attempts inside this window rather than betting everything on one
+/// send.
+pub const START_ACK_TIMEOUT_TICKS: i64 = 600;
+/// Ticks between the host's periodic re-emissions of Start while any guest
+/// has not yet echoed it back. A resend is the identical wire (same
+/// `manifest_id`/`countdown_id`/`first_input_tick`, freshly sequenced) —
+/// re-arming the deadline is not part of it, only [`START_ACK_TIMEOUT_TICKS`]
+/// from the first emission governs when the host gives up.
+pub const START_RESEND_INTERVAL_TICKS: i64 = 60;
 /// Ticks a guest waits for the host's verdict on a pair request before giving up.
 pub const PREFERENCE_TIMEOUT_TICKS: i64 = 300;
 /// Stride used to derive a declared bot's deterministic seed from the manifest seed.
@@ -486,7 +507,7 @@ pub fn terminal_code(reason: TerminalReason) -> Option<&'static str> {
         ProtocolViolation => "malformed_message",
         ManifestMismatch | BuildMismatch => "manifest_mismatch",
         InvalidAssignment => "invalid_assignment",
-        StartAckTimeout | InputChannelFailure => "peer_disconnect",
+        StartAckTimeout | StartNeverArrived | InputChannelFailure => "peer_disconnect",
         LateInput | HashMismatch => "desync",
     })
 }
@@ -906,8 +927,15 @@ pub struct CoordinatorState {
     pub freeze: Option<Freeze>,
     /// Ticks left in the countdown, once started.
     pub countdown_remaining: Option<i64>,
-    /// Host only: the clock a pending start acknowledgement expires at.
-    pub start_deadline: Option<i64>,
+    /// The clock tick the start-boundary deadline was armed at: host-side,
+    /// when Start was first emitted and every guest's echo is awaited;
+    /// guest-side, when this peer's own countdown first reached zero and the
+    /// host's Start is awaited. `None` while nothing is pending. See
+    /// [`start_deadline_exceeded`] for how this becomes an actual deadline.
+    pub start_armed_at: Option<i64>,
+    /// Host only: the next clock tick Start is re-emitted at, for as long as
+    /// any guest has not yet echoed it. `None` while nothing is pending.
+    pub start_resend_at: Option<i64>,
     /// The simulation's reported progress, once running.
     pub progress: Option<MatchProgress>,
     /// The host-confirmed final result.
@@ -2167,7 +2195,8 @@ pub fn new(options: Options) -> Result<CoordinatorState> {
         preference: None,
         freeze: None,
         countdown_remaining: None,
-        start_deadline: None,
+        start_armed_at: None,
+        start_resend_at: None,
         progress: None,
         result: None,
         local_result: None,
@@ -2560,6 +2589,28 @@ fn handle_set_ready(state: &CoordinatorState, ready: bool) -> (CoordinatorState,
     (next_state, applied(actions))
 }
 
+/// Whether a start-boundary deadline armed at `armed_at`, for a window of
+/// `timeout_ticks`, has passed by `now`. [`handle_tick`] is the only caller
+/// in production and always passes [`START_ACK_TIMEOUT_TICKS`]; the window is
+/// a parameter here — not inlined at the call site — purely so a test can
+/// exercise the exact comparison the coordinator itself performs against a
+/// second value (AGENTS.md §9's knob-contract discipline: a widened window
+/// has to be shown moving the outcome, not just declared wider). See
+/// `tests/coordinator_driver.rs`'s widening test for #612.
+#[must_use]
+pub fn start_deadline_exceeded(armed_at: i64, now: i64, timeout_ticks: i64) -> bool {
+    now > armed_at + timeout_ticks
+}
+
+/// Send (or resend) the canonical Start boundary to every seated guest.
+///
+/// The wire is identical every time: `manifest_id`/`countdown_id`/
+/// `first_input_tick` all come from the one frozen `freeze`, so a resend is
+/// byte-for-byte the same announcement, just re-sequenced. Arms
+/// `start_armed_at` only on the first call (a resend must not push the
+/// overall deadline back — see [`START_ACK_TIMEOUT_TICKS`]'s doc) and always
+/// refreshes `start_resend_at` so the next periodic resend is scheduled from
+/// *this* send, not the first one.
 fn emit_start(next_state: &mut CoordinatorState, actions: &mut Vec<Action>) {
     let freeze = next_state.freeze.clone().expect("start requires a freeze");
     emit(
@@ -2574,11 +2625,15 @@ fn emit_start(next_state: &mut CoordinatorState, actions: &mut Vec<Action>) {
         actions,
     );
     next_state.countdown_remaining = Some(0);
-    next_state.start_deadline = Some(next_state.clock + START_ACK_TIMEOUT_TICKS);
+    if next_state.start_armed_at.is_none() {
+        next_state.start_armed_at = Some(next_state.clock);
+    }
+    next_state.start_resend_at = Some(next_state.clock + START_RESEND_INTERVAL_TICKS);
     let pending = next_state.peers[1..].iter().any(|p| !p.started);
     if !pending {
         next_state.phase = protocol::LifecyclePhase::Running;
-        next_state.start_deadline = None;
+        next_state.start_armed_at = None;
+        next_state.start_resend_at = None;
         actions.push(Action::StartMatch {
             freeze: Box::new(freeze),
         });
@@ -2697,33 +2752,54 @@ fn handle_tick(state: &CoordinatorState) -> (CoordinatorState, Outcome) {
         let remaining = next_state.countdown_remaining.unwrap_or(0);
         if remaining > 0 {
             next_state.countdown_remaining = Some(remaining - 1);
-            if next_state.countdown_remaining == Some(0) && next_state.role == Role::Host {
-                emit_start(&mut next_state, &mut actions);
+            if next_state.countdown_remaining == Some(0) {
+                if next_state.role == Role::Host {
+                    emit_start(&mut next_state, &mut actions);
+                } else {
+                    // The host has its own deadline armed by `emit_start`
+                    // above; a guest gets no Start of its own to send, so it
+                    // arms the same deadline here instead of never arming one
+                    // at all (#612).
+                    next_state.start_armed_at = Some(next_state.clock);
+                }
             }
-        } else if next_state.role == Role::Host
-            && next_state
-                .start_deadline
-                .is_some_and(|deadline| next_state.clock > deadline)
-        {
-            let missing = next_state.peers[1..]
-                .iter()
-                .find(|p| !p.started)
-                .map(|p| p.peer_id.clone());
-            terminate_session(
-                &mut next_state,
-                TerminationOptions {
-                    reason: TerminalReason::StartAckTimeout,
-                    origin: OriginOrDefault::Timeout,
-                    peer_id: missing,
-                    detail: Some(
+        } else if let Some(armed_at) = next_state.start_armed_at {
+            if start_deadline_exceeded(armed_at, next_state.clock, START_ACK_TIMEOUT_TICKS) {
+                let (reason, peer_id, detail) = match next_state.role {
+                    Role::Host => (
+                        TerminalReason::StartAckTimeout,
+                        next_state.peers[1..]
+                            .iter()
+                            .find(|p| !p.started)
+                            .map(|p| p.peer_id.clone()),
                         "a peer never acknowledged the canonical start boundary".to_string(),
                     ),
-                    announce: true,
-                    ..Default::default()
-                },
-                &mut actions,
-            );
-            return (next_state, applied(actions));
+                    Role::Guest => (
+                        TerminalReason::StartNeverArrived,
+                        Some(next_state.host_peer_id.clone()),
+                        "the host never confirmed the canonical start boundary".to_string(),
+                    ),
+                };
+                terminate_session(
+                    &mut next_state,
+                    TerminationOptions {
+                        reason,
+                        origin: OriginOrDefault::Timeout,
+                        peer_id,
+                        detail: Some(detail),
+                        announce: true,
+                        ..Default::default()
+                    },
+                    &mut actions,
+                );
+                return (next_state, applied(actions));
+            } else if next_state.role == Role::Host
+                && next_state
+                    .start_resend_at
+                    .is_some_and(|at| next_state.clock >= at)
+            {
+                emit_start(&mut next_state, &mut actions);
+            }
         }
     }
     (next_state, applied(actions))
@@ -3769,6 +3845,14 @@ fn apply_countdown(
         value_int(body, "first_input_tick"),
     );
     next_state.countdown_remaining = Some(value_int(body, "remaining_ticks"));
+    if next_state.countdown_remaining == Some(0) {
+        // A zero-length countdown reaches its own boundary immediately: the
+        // host emits Start synchronously from the same event
+        // (`handle_begin_countdown`), so this guest must arm its own
+        // countdown-zero deadline right here too, rather than waiting for a
+        // `Tick` decrement that will never happen (#612).
+        next_state.start_armed_at = Some(next_state.clock);
+    }
     next_state.phase = protocol::LifecyclePhase::Countdown;
     (next_state, applied(Vec::new()))
 }
@@ -3829,6 +3913,7 @@ fn apply_start(
         local_peer_mut(&mut next_state).started = true;
         next_state.countdown_remaining = Some(0);
         next_state.phase = protocol::LifecyclePhase::Running;
+        next_state.start_armed_at = None;
         actions.push(Action::StartMatch {
             freeze: Box::new(freeze),
         });
@@ -3845,7 +3930,8 @@ fn apply_start(
     let pending = next_state.peers[1..].iter().any(|p| !p.started);
     if !pending && next_state.countdown_remaining == Some(0) {
         next_state.phase = protocol::LifecyclePhase::Running;
-        next_state.start_deadline = None;
+        next_state.start_armed_at = None;
+        next_state.start_resend_at = None;
         actions.push(Action::StartMatch {
             freeze: Box::new(freeze),
         });
