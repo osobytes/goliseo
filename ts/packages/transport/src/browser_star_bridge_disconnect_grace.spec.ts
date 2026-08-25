@@ -220,22 +220,79 @@ describe("browser star bridge: disconnect grace (#612 part 3)", () => {
     expect(peerState(bridge, "guest_1")).toBe("disconnected");
   });
 
-  it("a pending grace timer is cancelled if the peer is closed outright", () => {
+  it("a pending grace timer is actually cancelled (not merely rendered harmless) when the peer is closed outright", () => {
+    // As originally written, this case only asserted `peer.state` stayed
+    // "closed" across the grace window -- which the timer callback's OWN
+    // `peer.state === "connected"` re-check would ALSO produce even with
+    // NO cancellation at all (closed is never "connected"), so it passed
+    // whether or not `closePeer` actually cleared the timer. Spying on
+    // `setTimeout`/`clearTimeout` distinguishes "the cancel call happened,
+    // synchronously, as an effect of `closePeer`" from "no report ever
+    // surfaced, for an unrelated reason" -- the bug this case used to miss.
+    const pcs: FakePeerConnection[] = [];
+    vi.stubGlobal("RTCPeerConnection", fakePeerConnectionCtor(pcs));
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const bridge = newGoliseoStarTransportBridge();
+    bridge.initialize("host", 64, 7, 65536);
+    const pc = openConnectedPeer(bridge, pcs, "guest_1");
+
+    setTimeoutSpy.mockClear(); // ignore any timers armed while connecting
+    pc.transitionTo("disconnected");
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+    const graceHandle: unknown = setTimeoutSpy.mock.results[0]?.value;
+
+    const outcome = bridge.close_peer("guest_1", "left the lobby");
+    expect(outcome).toBe("ok");
+
+    // The cancel is a direct, synchronous effect of `close_peer` -- proven
+    // BEFORE any timer is ever advanced, so a version that merely relies on
+    // the callback's own state re-check (and never calls `clearTimeout` at
+    // all) fails this assertion outright.
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(graceHandle);
+    expect(peerState(bridge, "guest_1")).toBe("closed");
+
+    // Advancing past the grace window afterward must not throw or change
+    // anything further -- the cancelled timer never fires at all.
+    expect(() => vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2)).not.toThrow();
+    expect(peerState(bridge, "guest_1")).toBe("closed");
+  });
+
+  it("a wire sent and received while a peer's disconnect grace is pending is still delivered", () => {
+    // The bridge's own state machine still considers the peer "connected"
+    // throughout the grace window (only the DELAYED report, if the grace
+    // elapses, flips that) -- `enqueue`'s `peer.state !== "connected"`
+    // guard and `receive`'s lack of any state check at all mean traffic
+    // was never blocked during a pending grace. Pinning that here, not
+    // just arguing it from the source.
     const pcs: FakePeerConnection[] = [];
     vi.stubGlobal("RTCPeerConnection", fakePeerConnectionCtor(pcs));
     const bridge = newGoliseoStarTransportBridge();
     bridge.initialize("host", 64, 7, 65536);
     const pc = openConnectedPeer(bridge, pcs, "guest_1");
+    const controlChannel = pc.channels.find((channel) => channel.label === "control");
+    if (!controlChannel) {
+      throw new Error("expected a control channel to have been attached");
+    }
 
     pc.transitionTo("disconnected");
-    const outcome = bridge.close_peer("guest_1", "left the lobby");
-    expect(outcome).toBe("ok");
-    expect(peerState(bridge, "guest_1")).toBe("closed");
+    vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2); // still within the grace window
+    expect(peerState(bridge, "guest_1")).toBe("connected");
 
-    // Advancing past the grace window must not throw, and (the timer having
-    // been cancelled by `closePeer`) must leave the already-closed peer
-    // alone rather than firing a stale callback against it.
-    expect(() => vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2)).not.toThrow();
-    expect(peerState(bridge, "guest_1")).toBe("closed");
+    // Send: addressed to the peer, over the control channel.
+    const outboundWire = ["1", "event", "1", "", "outbound"].join("|");
+    const sendOutcome = bridge.send(["guest_1", "control", outboundWire].join("|"));
+    expect(sendOutcome).toBe("ok");
+
+    // Receive: a real inbound message arriving over the same channel while
+    // the grace is still pending.
+    const inboundWire = ["1", "event", "1", "", "inbound"].join("|");
+    controlChannel.onmessage?.({ data: inboundWire } as MessageEvent);
+    expect(bridge.poll()).toBe(["guest_1", "control", inboundWire].join("|"));
+
+    // The grace itself is untouched by any of this -- it still elapses and
+    // reports loss on schedule if the connection never recovers.
+    vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
+    expect(peerState(bridge, "guest_1")).toBe("disconnected");
   });
 });
