@@ -126,10 +126,10 @@ describe("online_ports: production App wiring", () => {
     const app = new App(APP_CONTENT, { online: onlinePorts });
     expect(app.currentRoute()).toBe("title");
 
-    // Through the multiplayer front door, which is what the title offers now.
+    // PLAY ONLINE routes straight to the hosting screen now, already
+    // requesting a room code -- no intermediate front-door route (#610
+    // round-2 review, blocking finding 1).
     clickWidget(app, "multiplayer");
-    expect(app.currentRoute()).toBe("multiplayer");
-    clickWidget(app, "host");
 
     expect(app.currentRoute()).toBe("lobby");
     // A real `LobbyScreenState`, not a stub -- the model actually
@@ -187,7 +187,6 @@ describe("online_ports: production App wiring", () => {
     });
     const app = new App(APP_CONTENT, { online: onlinePorts });
     clickWidget(app, "multiplayer");
-    clickWidget(app, "host");
     expect(() => {
       app.update(1 / 60);
     }).not.toThrow();

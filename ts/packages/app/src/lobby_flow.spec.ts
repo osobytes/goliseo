@@ -93,14 +93,13 @@ describe("online lobby app routing", () => {
     const app = new App(APP_CONTENT, { online: fakeOnlinePorts() });
     expect(app.currentRoute()).toBe("title");
 
-    // Through the multiplayer front door, which is what the title offers now.
+    // PLAY ONLINE routes straight to the (fake) hosting screen now -- the
+    // front door folded into it, so there is no intermediate route to land
+    // on first any more (#610 round-2 review, blocking finding 1).
     clickWidget(app, "multiplayer");
-    expect(app.currentRoute()).toBe("multiplayer");
-
-    clickWidget(app, "host");
     expect(app.currentRoute()).toBe("lobby");
 
     app.event({ kind: "key", key: "escape" });
-    expect(app.currentRoute()).toBe("multiplayer");
+    expect(app.currentRoute()).toBe("title");
   });
 });

@@ -935,10 +935,14 @@ describe("online lobby screen", () => {
     expect(nextState.effects.length).toBe(0);
   });
 
-  it("leaves on back and on the leave control", () => {
+  it("CANCELs back to the role screen on Back, but LEAVE LOBBY still exits entirely (#610)", () => {
     const state = hosting();
+    // A host still in "handshake" restarts to the role screen on Back now
+    // (#610 round-2 review, blocking finding 1e) -- LEAVE LOBBY is the
+    // universal, unconditional exit; see `app.spec.ts`/`lobby_flow.spec.ts`
+    // (`packages/app`) for the app-level `restartLobby` this feeds.
     const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect(action?.go).toBe("main_menu");
+    expect(action?.go).toBe("lobby_restart");
     const [, clicked] = lobbyUpdate(state, clickOn(lobbyLayout(state), "leave"));
     expect(clicked?.go).toBe("main_menu");
   });
@@ -1944,19 +1948,43 @@ describe("room-code entry (#552)", () => {
   // all cover a room-code attempt still IN FLIGHT (`role` undefined). Once
   // `room_created` has actually resolved a role, the attempt is no longer
   // "pending" -- `update()`'s own `roomAttemptPending` guard requires
-  // `role === undefined` -- so Escape must fall back to the universal
-  // "leave" path and eject the whole lobby, exactly as it would for a
-  // manually-chosen role. Nothing here should route to `room_cancel`.
-  it("Escape on an ESTABLISHED room-code connection leaves the lobby, not room_cancel", () => {
+  // `role === undefined` -- so a GUEST's established connection still
+  // falls back to the universal "leave" path and ejects the whole lobby,
+  // unchanged. A HOST's established connection is different (#610 round-2
+  // review, blocking finding 1e, superseding this case's original "leaves,
+  // it does not cancel" premise): CANCEL/back must still reach the role
+  // screen even once the auto-hosted room is fully live, or #597's own
+  // manual-fallback acceptance criterion regresses the moment a room code
+  // actually appears.
+  it("Escape on an ESTABLISHED room-code HOST restarts to the role screen, not the universal leave", () => {
     let state = click(newState(VP, ports()), "room_code_host");
     state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
     expect(view(state).role).toBe("host");
     expect(view(state).room_active).toBe(true);
+    expect(view(state).phase).toBe("handshake");
 
     const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect(action?.go, "an established connection leaves, it does not cancel").toBe("main_menu");
-    // `leave()` closes the room-code link along with everything else.
+    expect(action?.go, "CANCEL/back from the auto-hosted screen restarts, it does not leave").toBe(
+      "lobby_restart",
+    );
+    // `leave()`'s own graceful-teardown effects still ran underneath it --
+    // the room-code link closes along with everything else.
     expect(next.effects.some((effect) => effect.kind === "room_close")).toBe(true);
+  });
+
+  it("Escape on an ESTABLISHED room-code GUEST still leaves the lobby, unchanged", () => {
+    const modelPorts = ports();
+    let state = click(newState(VP, modelPorts), "room_code_join");
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "lobby", command: { kind: "room_key", key: ch } });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_joined" } });
+    expect(view(state).role).toBe("guest");
+    expect(view(state).room_active).toBe(true);
+
+    const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action?.go).toBe("main_menu");
   });
 });
 

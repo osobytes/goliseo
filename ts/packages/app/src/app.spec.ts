@@ -235,11 +235,16 @@ describe("product application flow", () => {
     expect(app.quitRequested).toBe(true);
   });
 
-  it("opens the multiplayer front door instead of throwing at a dev lobby", () => {
+  // #610 round-2 review, blocking finding 1: the front door collapsed into
+  // the hosting screen itself, so "PLAY ONLINE" now routes straight into
+  // it -- there is no more intermediate card screen to land on harmlessly
+  // without online wiring. This case's ORIGINAL guarantee (predating a
+  // dev-only "ONLINE LOBBY" button that threw, `title.ts`'s own header)
+  // still has to hold: a build with no `OnlinePorts` injected must not
+  // crash the title menu.
+  it("PLAY ONLINE does nothing, instead of throwing, when no online ports are injected", () => {
     const app = newApp();
     clickWidget(app, "multiplayer");
-    expect(app.currentRoute()).toBe("multiplayer");
-    clickWidget(app, "back");
     expect(app.currentRoute()).toBe("title");
   });
 
@@ -487,30 +492,45 @@ describe("team persistence (#600)", () => {
     expect(rebooted.session.combatEnabled).toBe(false);
   });
 
-  it("seeds the multiplayer mode picker from the persisted last online mode, and re-saves it on a host commit", () => {
+  // #610 moved mode choice onto the hosting screen's own chips: there is no
+  // more separate front-door pick to "commit" before entering the lobby --
+  // the persisted mode is applied the instant PLAY ONLINE is clicked
+  // (`playOnline`'s own `mode: this.lastOnlineMode`), and a change made on
+  // the live hosting screen is read back on leaving, the same way
+  // `lastBotFill` always has been (see the next case).
+  it("seeds the auto-hosted lobby with the persisted last online mode, and re-saves a change made on it once left", () => {
     const storage = memoryStorage(
       teamSettings.serialize({ ...teamSettings.defaults(), lastOnlineMode: "2v2" }),
     );
+    const modelBox: { readonly bot_fill: boolean; mode: string } = { bot_fill: false, mode: "2v2" };
+    let capturedOptions: { readonly intent?: string; readonly mode?: string } | undefined;
     const onlinePorts: OnlinePorts = {
       matchManifestTemplate: undefined,
       requestMatchSession: () => ({ ok: false, error: "not exercised by this case" }),
-      newLobbyScreen: () => ({ state: { model: {} }, link: undefined }),
+      newLobbyScreen: (_onAction, options) => {
+        capturedOptions = options as typeof capturedOptions;
+        return { state: { model: modelBox }, link: undefined };
+      },
       newOnlineMatchScreen: () => {
         throw new Error("not exercised by this case");
       },
     };
     const app = new App(APP_CONTENT, { teamSettingsStorage: storage, online: onlinePorts });
     clickWidget(app, "multiplayer");
-    const layout = menuLayout(app.stack.current());
-    const modeWidget = layout ? hit.find(layout, "mode_2v2") : null;
-    expect(
-      (modeWidget as { readonly selected?: boolean } | null)?.selected,
-      "the persisted mode is pre-selected on the multiplayer front door",
-    ).toBe(true);
-
-    clickWidget(app, "mode_4v4");
-    clickWidget(app, "host");
     expect(app.currentRoute()).toBe("lobby");
+    expect(capturedOptions?.intent).toBe("host");
+    expect(capturedOptions?.mode, "the persisted mode reaches the auto-hosted lobby directly").toBe(
+      "2v2",
+    );
+
+    // The host changes the mode ON the live hosting screen itself
+    // (`lobby.ts`'s own mode chips) -- `App` has no `AppAction` for that
+    // (`lobby_model.ts`'s "mode" command stays internal to the screen), so
+    // leaving reads it straight off the departing screen's model, mirroring
+    // `bot_fill` below.
+    modelBox.mode = "4v4";
+    app.handleAction({ go: "main_menu" });
+    expect(app.currentRoute()).toBe("title");
     expect(app.lastOnlineMode).toBe("4v4");
     expect(teamSettings.load(storage).lastOnlineMode).toBe("4v4");
   });
@@ -539,8 +559,9 @@ describe("team persistence (#600)", () => {
     };
     const app = new App(APP_CONTENT, { teamSettingsStorage: storage, online: onlinePorts });
 
+    // PLAY ONLINE reaches the auto-hosted lobby directly (#610) -- no
+    // separate "host" card to click first.
     clickWidget(app, "multiplayer");
-    clickWidget(app, "host");
     expect(app.currentRoute()).toBe("lobby");
     expect(capturedOptions?.intent).toBe("host");
     expect(capturedOptions?.botFill).toBe(true);
@@ -558,6 +579,11 @@ describe("team persistence (#600)", () => {
     expect(saved.lastOnlineMode).toBe("2v2");
   });
 
+  // #610 removed the front door's own "JOIN" card -- with the front door
+  // folded into the hosting screen, the one app-level entry that resolves
+  // straight to a GUEST `currentLobbyRole` (with no click from the title
+  // at all, matching a real player) is the #598 join-link boot path
+  // (`AppOptions.presetRoomCode`), mirroring `join_link_boot.spec.ts`.
   it("never lets a guest's always-false bot fill overwrite a host's real preference", () => {
     const storage = memoryStorage(
       teamSettings.serialize({ ...teamSettings.defaults(), lastBotFill: true }),
@@ -570,9 +596,11 @@ describe("team persistence (#600)", () => {
         throw new Error("not exercised by this case");
       },
     };
-    const app = new App(APP_CONTENT, { teamSettingsStorage: storage, online: onlinePorts });
-    clickWidget(app, "multiplayer");
-    clickWidget(app, "join"); // role: guest
+    const app = new App(APP_CONTENT, {
+      teamSettingsStorage: storage,
+      online: onlinePorts,
+      presetRoomCode: "A3F9K2",
+    });
     expect(app.currentRoute()).toBe("lobby");
     app.handleAction({ go: "main_menu" });
     expect(teamSettings.load(storage).lastBotFill).toBe(true);
