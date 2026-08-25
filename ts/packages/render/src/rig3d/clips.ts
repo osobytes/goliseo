@@ -762,6 +762,29 @@ const CHARGE_RAW: RawClip = {
 // ---------------------------------------------------------------------------
 // Clip 5: KEEPER_GATHER -- both arms wrapped around a held ball
 // ---------------------------------------------------------------------------
+//
+// AUTHORED AROUND THE BALL, not around an idea of one. The ball a keeper is
+// holding is drawn at the `socket_ball` bone (`held_ball.ts`), so where the
+// fists end up is checkable rather than a matter of taste, and
+// `held_ball.spec.ts` checks it: both fists within a fist's width of the
+// ball's surface, on opposite sides of it, and no higher than its middle.
+//
+// The previous angles were authored while nothing drew the ball at all, and
+// they left the fists 0.585 m apart around a ball 0.218 m across -- 2.7 ball
+// diameters, with each fist 0.37 m from a ball centre it would have to be
+// within 0.17 m of to touch at all. Read as "arms held out in front", not
+// "hands wrapped around something", which is exactly what it looked like once
+// the ball was restored between them. What closes them is not more shoulder
+// flexion but LESS: the elbows drop to the ribs (`upper_arm` -72 deg -> -30
+// deg) and the forearms come up and inward across the chest (`forearm` -58 deg
+// -> -85 deg, plus the roll that turns them in), which is how a keeper actually
+// clutches a ball -- against the body, not at arm's length.
+//
+// The roll is MIRRORED (`.L` negative, `.R` positive) where the old keys used
+// +2 on both arms: `upper_arm`'s own rest roll is already mirrored
+// (`sign * 8`, see `skeleton.ts`), so one shared value put the two arms at
+// different angles from the body's midline -- harmless when the arms held
+// nothing, visible the moment they have to meet on a ball.
 const KEEPER_GATHER_RAW: RawClip = {
   name: "keeper_gather",
   loop: true,
@@ -774,23 +797,25 @@ const KEEPER_GATHER_RAW: RawClip = {
         spine: [6, 0, 0],
         chest: [4, 0, 0],
         head: [6, 0, 0],
-        "upper_arm.R": [-72, 0, 2],
-        "forearm.R": [-58, 0, 0],
-        "upper_arm.L": [-72, 0, 2],
-        "forearm.L": [-58, 0, 0],
+        "upper_arm.R": [-30, 0, 10],
+        "forearm.R": [-85, 0, 25],
+        "upper_arm.L": [-30, 0, -10],
+        "forearm.L": [-85, 0, -25],
       },
       move: {},
     },
     {
+      // The carry breathes; it does not re-grip. Two degrees at the shoulder
+      // moves a fist under a centimetre, so the ball stays held through it.
       t: 1.0,
       rot: {
         spine: [8, 0, 0],
         chest: [5, 0, 0],
         head: [5, 0, 0],
-        "upper_arm.R": [-75, 0, 2],
-        "forearm.R": [-60, 0, 0],
-        "upper_arm.L": [-75, 0, 2],
-        "forearm.L": [-60, 0, 0],
+        "upper_arm.R": [-32, 0, 10],
+        "forearm.R": [-86, 0, 25],
+        "upper_arm.L": [-32, 0, -10],
+        "forearm.L": [-86, 0, -25],
       },
       move: {},
     },
@@ -800,10 +825,10 @@ const KEEPER_GATHER_RAW: RawClip = {
         spine: [6, 0, 0],
         chest: [4, 0, 0],
         head: [6, 0, 0],
-        "upper_arm.R": [-72, 0, 2],
-        "forearm.R": [-58, 0, 0],
-        "upper_arm.L": [-72, 0, 2],
-        "forearm.L": [-58, 0, 0],
+        "upper_arm.R": [-30, 0, 10],
+        "forearm.R": [-85, 0, 25],
+        "upper_arm.L": [-30, 0, -10],
+        "forearm.L": [-85, 0, -25],
       },
       move: {},
     },
