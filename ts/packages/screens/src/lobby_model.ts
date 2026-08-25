@@ -102,6 +102,56 @@
 // the currently pending invitation (correct routing, but previously silent
 // -- see that function's own doc), it now records why, muted (no `error`,
 // no `room_error`) for a details/terminal card to surface later (#566).
+//
+// ## The two-click START collapse (#610)
+//
+// Starting a friendly match used to need three separate host actions (LOCK
+// MATCH, READY, START COUNTDOWN) plus a READY from every guest -- five
+// clicks of protocol ceremony a player cannot tell apart. The coordinator's
+// own wire protocol is UNCHANGED by this: peers still exchange exactly the
+// same `propose_manifest` / `assign_slots` / `set_ready` / `begin_countdown`
+// events, in the same order (`crates/gc-netcode`'s `coordinator.rs`). What
+// changes is who issues them, and when.
+//
+// A single host "start" command (`requestStart`) now drives all four in
+// one going. Some of those steps cannot complete synchronously: a peer's
+// manifest acceptance, then its own readiness, each arrive over the wire as
+// a separate `control` event, so `advanceStart` is a small state machine
+// rather than a straight-line function -- it is called again after EVERY
+// `control` event (the point every inbound wire message lands,
+// `online_lobby.ts`'s `update()`), each time re-attempting whichever step
+// the coordinator's CURRENT phase now allows. `model.start_requested`
+// records that a start is in flight so those later calls know to keep
+// advancing rather than starting a fresh one.
+//
+// A guest's own readiness collapses the same way, but unconditionally: a
+// room-code guest's admission link IS its consent to play (owner decision,
+// every match mode), so `autoReadyGuest` dispatches `set_ready` itself the
+// moment the guest's own phase reaches "assigned" -- the same `control`
+// hook, since assignment is the only way a guest's phase gets there
+// (`apply_assignments` in `coordinator.rs`). This applies to every guest,
+// not only ones that arrived through a room code: the manual copy/paste
+// flow shares the same coordinator events, and its guest's own READY
+// widget is gone too (`lobby.ts`), so it needs the same automatic
+// advancement to ever become ready at all.
+//
+// Neither hook second-guesses `lockSession`/`setReady`/`beginCountdown`
+// themselves -- they call the exact same functions the old three-click flow
+// used, unedited. The collapse is additive orchestration on top, which is
+// also why the old primitives (`"lock"`, `"ready"` as individual
+// `LobbyCommand`s) still work exactly as they did.
+
+// The room-code composer's editing primitives (#610: shared with the
+// multiplayer front door's own inline entry) -- re-exported further down,
+// by name, so nothing importing them from this module has to change.
+import {
+  newRoomCodeEntry,
+  roomCodeCursor,
+  roomCodeCycle,
+  roomCodeKey,
+  roomCodeText,
+  type RoomCodeEntry,
+} from "./room_code_entry.ts";
 
 export type LobbyRole = "host" | "guest";
 export type LobbySignalDirection = "offer" | "answer";
@@ -438,6 +488,15 @@ export interface LobbyModel {
   readonly error?: string;
   /** A synchronized start action has been observed. */
   readonly started: boolean;
+  /** Host-only: `true` once the collapsed START MATCH command (#610) has
+   * been issued. Lock, publish, host-ready, and begin-countdown each need
+   * the coordinator to be in a specific phase, and every phase past the
+   * first is only reached after a remote round trip (a peer's manifest
+   * acceptance, then its own readiness) -- this flag is what tells
+   * `advanceStart` there is a start in flight to keep advancing, on every
+   * later event that could have moved the coordinator closer to `ready`.
+   * See this module's header addendum on the two-click collapse. */
+  readonly start_requested: boolean;
   readonly template: (mode: SessionMatchMode) => SessionManifest;
 
   // --- Room-code signaling (#552) -- see this module's header. ---------
@@ -490,28 +549,13 @@ export interface LobbyDroppedSignal {
   readonly reason: "no_pending_invite" | "sender_unknown" | "sender_mismatch";
 }
 
-/** A guest's in-progress room-code composer: `ROOM_CODE_LENGTH` character
- * slots (empty string until typed) plus the cursor position being edited.
- * Keyboard input types a character and advances the cursor; a controller
- * cycles the character at the cursor (up/down) and moves it (left/right) --
- * `lobby.ts`'s `update()` is where both are wired. */
-export interface RoomCodeEntry {
-  readonly chars: readonly string[];
-  readonly cursor: number;
-}
+// The composer type and its editing primitives now live in
+// `room_code_entry.ts` (#610), shared with the multiplayer front door's own
+// inline entry -- re-exported here so nothing importing them from this
+// module (`lobby.ts`, `@gc/screens`'s `index.ts`) has to change.
+export { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, type RoomCodeEntry } from "./room_code_entry.ts";
 
 export type RoomSignalingStatus = "connecting" | "connected" | "failed";
-
-// Mirrors `infra/src/room_code.ts`'s own alphabet and length exactly --
-// see `@gc/online`'s `room_signaling.ts` for the identical, independently
-// disclosed duplication on the wire-protocol side. `infra/` must stay
-// outside the game's dependency graph (AGENTS.md §8/§11) and `@gc/screens`
-// must stay outside `@gc/online`'s (this module's header), so the same
-// constant is duplicated a second time here, for the code composer's
-// character-cycling UI alone -- if the Worker's alphabet or length ever
-// changes, this needs a matching update too.
-export const ROOM_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-export const ROOM_CODE_LENGTH = 6;
 
 export const DEFAULT_MODE: SessionMatchMode = "4v4";
 export const COUNTDOWN_ID = "countdown.1";
@@ -686,6 +730,7 @@ export function newLobbyModel(ports: LobbyModelPorts, options?: LobbyModelOption
     guests: 0,
     status: "Host a session or join one with a pasted offer.",
     started: false,
+    start_requested: false,
     template,
     room_active: false,
     room_guest_map: {},
@@ -1214,6 +1259,121 @@ function beginCountdown(
   return next;
 }
 
+// --- the two-click START collapse (#610) -- see this module's header ------
+
+/** The local peer's own entry in `state.peers` -- present for host and
+ * guest alike (`coordinator.rs`'s `create` always seats the local peer at
+ * index 0); both halves of the collapse below need it. */
+function localPeer(state: CoordinatorState): CoordinatorPeer | undefined {
+  return state.peers.find((peer) => peer.peer_id === state.peer_id);
+}
+
+/** Guest side: readiness is automatic once assigned, in every match mode
+ * (owner decision, #610) -- not a separate click. Runs after every
+ * `control` event because assignment is the ONLY way a guest's own phase
+ * reaches "assigned" (`apply_assignments` in `coordinator.rs`), whether
+ * that is a fresh admission or a later reseat (a 2v2 TAKE swap republishes
+ * ownership and clears readiness the same way a first publish does) -- so
+ * this fires again after a swap too, exactly matching "TAKE remains
+ * available before the host starts" with no extra state to track. */
+function autoReadyGuest(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
+  const state = model.coordinator;
+  if (!state || state.role !== "guest" || state.phase !== "assigned") {
+    return model;
+  }
+  const peer = localPeer(state);
+  if (peer === undefined || peer.ready) {
+    return model;
+  }
+  return setReady(model, ports, true, effects);
+}
+
+/** Host side: keeps the collapsed START flow moving as far as the CURRENT
+ * coordinator phase allows, one already-existing step at a time -- propose
+ * (+ the publish `lockSession` already attempts inline), publish again
+ * (idempotent, safe to retry -- covers the case where the first attempt
+ * above landed before any peer had accepted), host readiness, and finally
+ * the countdown itself. Each `if` is exactly one of the old three clicks;
+ * none of them but the first can fire before its own remote round trip
+ * (this module's header) actually lands, which is why this function gets
+ * called again on every later `control` event rather than looping here. */
+function advanceStart(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (!model.start_requested || model.role !== "host") {
+    return model;
+  }
+  let next = model;
+  let state = next.coordinator;
+  if (!state) {
+    return next;
+  }
+  if (state.manifest_id === undefined) {
+    const [stepped, outcome] = step(
+      next,
+      ports,
+      { kind: "propose_manifest", manifest: manifestFor(next, next.mode) },
+      effects,
+    );
+    next = stepped;
+    if (outcome?.accepted) {
+      next = { ...next, status: "Manifest proposed. Waiting for peers to accept." };
+    }
+    state = next.coordinator;
+  }
+  if (state && (state.phase === "manifest" || state.phase === "assigned")) {
+    next = publishAssignments(next, ports, effects);
+    state = next.coordinator;
+  }
+  if (state && state.phase === "assigned") {
+    const peer = localPeer(state);
+    if (peer !== undefined && !peer.ready) {
+      next = setReady(next, ports, true, effects);
+      state = next.coordinator;
+    }
+  }
+  if (state && state.phase === "ready") {
+    next = beginCountdown(next, ports, effects);
+  }
+  return next;
+}
+
+/** The single START MATCH command (#610): the host's side of the collapse.
+ * Validated once, the same way `lockSession` always was -- once
+ * `start_requested` is set, only `advanceStart` drives it further, so a
+ * stray repeat (a synthetic dispatch after the button should already be
+ * disabled; a raw model-level re-send) just re-attempts the same in-flight
+ * intent rather than re-running this check against a stale snapshot. */
+function requestStart(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
+  if (model.role !== "host") {
+    return { ...model, error: "only the host starts the match" };
+  }
+  const state = model.coordinator;
+  if (!state) {
+    throw new Error("the host must have a coordinator before starting");
+  }
+  if (state.manifest_id === undefined) {
+    const required = requiredHumans(ports, model);
+    if (state.peers.length < required && !model.bot_fill) {
+      return {
+        ...model,
+        error: `${effectiveMode(model)} needs ${required} humans; ${state.peers.length} are connected`,
+      };
+    }
+  }
+  return advanceStart({ ...model, start_requested: true }, ports, effects);
+}
+
 function leave(model: LobbyModel, ports: LobbyModelPorts, effects: LobbyEffect[]): LobbyModel {
   const state = model.coordinator;
   let next = model;
@@ -1346,10 +1506,6 @@ function withoutPendingLink(model: LobbyModel): LobbyModel {
 // Room-code signaling (#552) -- see this module's header.
 // ---------------------------------------------------------------------------
 
-function roomEntry(chars: readonly string[], cursor: number): RoomCodeEntry {
-  return { chars, cursor };
-}
-
 function roomPick(
   model: LobbyModel,
   ports: LobbyModelPorts,
@@ -1373,7 +1529,7 @@ function roomPick(
     const { room_error: _roomError, ...rest } = model;
     return {
       ...rest,
-      room_entry: roomEntry(new Array(ROOM_CODE_LENGTH).fill(""), 0),
+      room_entry: newRoomCodeEntry(),
       status: "Enter the room code your host is showing.",
     };
   }
@@ -1387,33 +1543,17 @@ function roomPick(
   };
 }
 
+// The character-editing rules themselves live in `room_code_entry.ts`
+// (#610) -- these four stay as the model-level wiring: read `model.room_entry`,
+// guard on `unknown` command payloads (the `LobbyCommand` boundary), and
+// write the result back onto the model.
+
 function roomKey(model: LobbyModel, key: string): LobbyModel {
   const entry = model.room_entry;
   if (!entry) {
     return model;
   }
-  if (key === "Backspace") {
-    if (entry.chars[entry.cursor] === "" && entry.cursor === 0) {
-      return model;
-    }
-    const chars = [...entry.chars];
-    const cursor = chars[entry.cursor] !== "" ? entry.cursor : entry.cursor - 1;
-    chars[cursor] = "";
-    return { ...model, room_entry: roomEntry(chars, cursor) };
-  }
-  if (key.length !== 1) {
-    return model;
-  }
-  const upper = key.toUpperCase();
-  if (!ROOM_CODE_ALPHABET.includes(upper) || entry.cursor >= ROOM_CODE_LENGTH) {
-    return model;
-  }
-  const chars = [...entry.chars];
-  chars[entry.cursor] = upper;
-  return {
-    ...model,
-    room_entry: roomEntry(chars, Math.min(ROOM_CODE_LENGTH - 1, entry.cursor + 1)),
-  };
+  return { ...model, room_entry: roomCodeKey(entry, key) };
 }
 
 function roomCursor(model: LobbyModel, delta: unknown): LobbyModel {
@@ -1421,8 +1561,7 @@ function roomCursor(model: LobbyModel, delta: unknown): LobbyModel {
   if (!entry || typeof delta !== "number") {
     return model;
   }
-  const cursor = Math.max(0, Math.min(ROOM_CODE_LENGTH - 1, entry.cursor + delta));
-  return { ...model, room_entry: roomEntry(entry.chars, cursor) };
+  return { ...model, room_entry: roomCodeCursor(entry, delta) };
 }
 
 function roomCycle(model: LobbyModel, delta: unknown): LobbyModel {
@@ -1430,21 +1569,14 @@ function roomCycle(model: LobbyModel, delta: unknown): LobbyModel {
   if (!entry || typeof delta !== "number") {
     return model;
   }
-  const current = entry.chars[entry.cursor] ?? "";
-  const n = ROOM_CODE_ALPHABET.length;
-  const index = current === "" ? -1 : ROOM_CODE_ALPHABET.indexOf(current);
-  const nextIndex = (((index + delta) % n) + n) % n;
-  const chars = [...entry.chars];
-  chars[entry.cursor] = ROOM_CODE_ALPHABET[nextIndex] as string;
-  return { ...model, room_entry: roomEntry(chars, entry.cursor) };
+  return { ...model, room_entry: roomCodeCycle(entry, delta) };
 }
 
 function roomSubmit(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
-  const entry = model.room_entry;
-  if (!entry || entry.chars.some((ch) => ch === "")) {
+  const code = model.room_entry !== undefined ? roomCodeText(model.room_entry) : undefined;
+  if (code === undefined) {
     return { ...model, error: "enter all six characters of the room code" };
   }
-  const code = entry.chars.join("");
   effects.push({ kind: "room_open_guest", code });
   const { room_entry: _entry, room_error: _roomError, ...rest } = model;
   return {
@@ -1794,7 +1926,7 @@ export function command(
       next = setReady(next, ports, cmd.ready, effects);
       break;
     case "start":
-      next = beginCountdown(next, ports, effects);
+      next = requestStart(next, ports, effects);
       break;
     case "leave":
       next = leave(next, ports, effects);
@@ -1816,7 +1948,17 @@ export function command(
           { kind: "control", link_id: cmd.link_id, wire: cmd.wire },
           effects,
         );
-        return publishAssignments(stepped, ports, effects);
+        // Retrying the publish here is unconditional and pre-dates #610 --
+        // a host that only ever used the individual "lock" command still
+        // needs it, since the FIRST attempt (inside `lockSession`) usually
+        // runs before any peer has accepted. The two hooks below are new:
+        // one advances a host's own in-flight "start" collapse, the other
+        // auto-readies a guest the instant its own assignment lands -- see
+        // this module's header addendum.
+        const published = publishAssignments(stepped, ports, effects);
+        return published.role === "guest"
+          ? autoReadyGuest(published, ports, effects)
+          : advanceStart(published, ports, effects);
       })();
       break;
     case "link_lost":
@@ -1946,11 +2088,22 @@ export interface LobbyView {
   readonly status: string;
   readonly error?: string;
   readonly can_invite: boolean;
-  readonly can_lock: boolean;
-  /** Host-side ownership can still be republished. */
+  /** Host-side ownership can still be republished (also gates the TAKE
+   * seat-swap control and the START MATCH button's own visibility -- see
+   * `can_start`'s own doc, #610). */
   readonly can_configure: boolean;
-  readonly can_ready: boolean;
+  /** The local peer has been marked ready by the coordinator -- for a
+   * guest, that happens automatically the moment it is assigned a seat
+   * (#610); a host readies itself as the third step of its own START
+   * MATCH command. No control toggles this any more; it is read-only
+   * presentation. */
   readonly ready: boolean;
+  /** Host-only: the single START MATCH command is available. Folds in what
+   * used to be `can_lock` -- the same "enough humans, or bot-fill" gate --
+   * because START now performs that lock itself (#610); it is `false`
+   * again the instant the collapse is under way (`phase` has left
+   * "handshake"), which is exactly what a disabled-but-still-visible
+   * button (`can_configure`) communicates as "starting...". */
   readonly can_start: boolean;
   readonly started: boolean;
   /** Whether the SHARE (native share sheet) control should render next to
@@ -2176,12 +2329,19 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
       phase === "handshake" &&
       model.pending_link === undefined &&
       connected < required,
-    can_lock:
-      model.role === "host" && phase === "handshake" && (connected >= required || model.bot_fill),
     can_configure: model.role === "host" && configurable(model),
-    can_ready: phase === "assigned" || phase === "ready",
     ready,
-    can_start: model.role === "host" && phase === "ready",
+    // The same "enough humans, or bot-fill" gate the old `can_lock` used --
+    // START now performs that lock itself, so this is the whole of what
+    // used to be two separately-gated buttons (#610). A host alone with
+    // bot-fill on can still start: `connected` never drops below 1 (the
+    // host itself), so `bot_fill` is what carries that case exactly as it
+    // did for `can_lock`.
+    can_start:
+      model.role === "host" &&
+      phase === "handshake" &&
+      (connected >= required || model.bot_fill) &&
+      (connected >= 1 || model.bot_fill),
     started: model.started,
     can_share: model.role === "host" && model.room_code !== undefined && ports.joinLink.canShare,
     ...(model.room_entry !== undefined ? { room_entry: model.room_entry } : {}),
