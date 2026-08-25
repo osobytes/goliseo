@@ -395,6 +395,7 @@ const TERMINAL_CODES: Readonly<Record<CoordinatorTerminalReason, string>> = {
   build_mismatch: "manifest_mismatch",
   invalid_assignment: "invalid_assignment",
   start_ack_timeout: "peer_disconnect",
+  start_never_arrived: "peer_disconnect",
   input_channel_failure: "peer_disconnect",
   late_input: "desync",
   hash_mismatch: "desync",

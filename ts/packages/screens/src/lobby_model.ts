@@ -122,6 +122,7 @@ export type CoordinatorTerminalReason =
   | "build_mismatch"
   | "invalid_assignment"
   | "start_ack_timeout"
+  | "start_never_arrived"
   | "input_channel_failure"
   | "late_input"
   | "hash_mismatch";
@@ -537,6 +538,7 @@ export const TERMINAL_TEXT: Readonly<Record<CoordinatorTerminalReason, string>> 
   build_mismatch: "The peers are running different builds. Install the same build on both.",
   invalid_assignment: "Published slot ownership was unusable.",
   start_ack_timeout: "A peer never reached the start boundary.",
+  start_never_arrived: "The host never confirmed the start.",
   input_channel_failure: "The input channel failed.",
   late_input: "Input arrived too late to resimulate.",
   hash_mismatch: "Peers disagreed about the simulation.",
