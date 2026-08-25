@@ -44,6 +44,7 @@ import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { App, type OnlineLobbyScreen } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { APP_CONTENT, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
+import { createSimHost } from "./sim_host.ts";
 
 // Mirrors `lobby.spec.ts`'s (`@gc/screens`) own `fakeGraphicsBackend` -- a
 // headless `GraphicsBackend` stand-in, since no real implementation exists
@@ -764,5 +765,132 @@ describe("online_ports: realMatchDriverPort, directly", () => {
 
     hostDriverPort.dispose(hostDriver);
     guestDriverPort.dispose(guestDriver);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #611: the online frame carried no `roster` at all -- `realMatchDriverPort.frame`
+// returned a bare `frameBuffer.decode(...)`, while the offline path
+// (`browser_sim_host.ts`) always embeds one via `frameBuffer.toRenderFrame`.
+// The real render path (`browser_main.ts`'s `RenderPort.draw`, `@gc/render`'s
+// `pitch.ts`) reads `frame.roster.ids`/`.radius`/... unconditionally, so a
+// roster-less frame is not a smaller frame, it is one the real renderer
+// cannot draw at all -- both peers' first `draw()` call threw at
+// countdown-zero and the canvas never recovered. No prior spec caught this:
+// every match-phase spec elsewhere in this tree drives a hand-rolled fake
+// `MatchDriverPort`, never the production `realMatchDriverPort` AND the
+// production offline `SimHostPort` side by side. This spec drives both, with
+// real `@gc/wasm` on each side, and asserts the ONLINE frame product carries
+// the same structural keys the OFFLINE one does -- so the next shape
+// divergence fails HERE, headlessly, instead of at a friend's kickoff.
+// ---------------------------------------------------------------------------
+
+describe("online_ports: the online frame matches the offline frame's shape (#611)", () => {
+  it("embeds a roster on the online frame, with the same top-level keys and roster size as the offline frame", () => {
+    const { host, guest, stars } = runTwoPeerHandshake();
+    host.dispatch({ kind: "start" });
+    pump([host, guest], stars, 250);
+
+    const hostCoordinator = requireDefined(
+      host.state.model.coordinator,
+      "the host must have a coordinator by the time it starts",
+    );
+    const manifest = requireDefined(hostCoordinator.manifest, "the host must have a manifest");
+    const hostFreeze = requireDefined(
+      (hostCoordinator as unknown as { readonly freeze?: unknown }).freeze,
+      "the host coordinator must carry a freeze once countdown began",
+    );
+
+    const wasm = nodeWasmHost();
+    const hostStar = requireDefined(stars[0], "the host star must have been created");
+    const hostDriverPort = realMatchDriverPort(wasm, hostStar);
+    const hostDriver = hostDriverPort.create({
+      role: "host",
+      peer_id: "host",
+      freeze: hostFreeze,
+      manifest,
+      transport: undefined,
+      initial_snapshot: undefined,
+    });
+
+    const sample = { move_x: 0, move_y: 0, held: 0, edges: 0 };
+    for (let i = 0; i < 5; i += 1) {
+      for (const star of stars) {
+        star.pump();
+      }
+      hostDriverPort.advance(hostDriver, sample);
+    }
+
+    const onlineFrame = hostDriverPort.frame(hostDriver) as unknown as Record<string, unknown>;
+
+    // The offline product this must now structurally match --
+    // `browser_sim_host.ts`'s own `frameBuffer.toRenderFrame` call,
+    // exercised here through the Node-target `sim_host.ts` (identical Rust
+    // ABI on both targets -- see that file's own header).
+    const offlineHost = createSimHost("nebula", "orion", 1, 120, 99);
+    const offlineFrame = offlineHost.frame() as unknown as Record<string, unknown>;
+
+    // `Object.keys(offlineFrame)`, not a hand-maintained list -- both
+    // products are built by the SAME `frameBuffer.toRenderFrame` call, so
+    // every top-level field it produces today, or ever adds
+    // (`hud`/`possession`/`events`/a future `combat`), is covered by
+    // construction rather than by remembering to extend a literal here.
+    for (const key of Object.keys(offlineFrame)) {
+      expect(offlineFrame[key], `the offline frame must carry '${key}'`).toBeDefined();
+      expect(onlineFrame[key], `the online frame must carry '${key}' (#611)`).toBeDefined();
+    }
+
+    // Not just present -- the right size. The manifest's own `teams[].roster`
+    // is the ten-player (two five-player squads) identity a live match
+    // actually fields; a roster present but empty or truncated would pass
+    // the key check above and still leave the renderer drawing nobody.
+    const expectedRosterSize = manifest.teams.reduce((sum, team) => sum + team.roster.length, 0);
+    const onlineRoster = onlineFrame["roster"] as {
+      readonly ids: readonly string[];
+      readonly teams: readonly unknown[];
+      readonly radius: readonly unknown[];
+      readonly is_keeper: readonly unknown[];
+      readonly species_shape: readonly unknown[];
+      readonly species_color: readonly unknown[];
+      readonly presentation_ids: readonly unknown[];
+      readonly loadout_ids: readonly unknown[];
+    };
+    expect(onlineRoster.ids.length).toBe(expectedRosterSize);
+    expect(onlineRoster.ids.length).toBe(offlineHost.roster().ids.length);
+
+    // Every roster sub-array is genuinely parallel to `ids`, not just
+    // present -- a roster with `ids.length === 10` but a 0-length
+    // `species_shape` would still pass the key/size checks above and still
+    // leave `@gc/render`'s `pitch.ts` reading past the end of a short array
+    // for every player after the first.
+    for (const field of [
+      "teams",
+      "radius",
+      "is_keeper",
+      "species_shape",
+      "species_color",
+      "presentation_ids",
+      "loadout_ids",
+    ] as const) {
+      expect(
+        onlineRoster[field].length,
+        `online roster.${field} must be parallel to roster.ids`,
+      ).toBe(onlineRoster.ids.length);
+    }
+
+    // And the per-tick players SoA must be parallel to the roster too --
+    // exactly what `frame_view_players.ts`'s `rosterPlayersView` reads
+    // (`roster.ids[index]` paired with `players.x[index]`/`.y[index]`), and
+    // exactly what its `?? 0` fallback would silently paper over if
+    // `players.x`/`.y` were ever shorter than the roster.
+    const onlinePlayers = onlineFrame["players"] as {
+      readonly x: readonly unknown[];
+      readonly y: readonly unknown[];
+    };
+    expect(onlinePlayers.x.length).toBe(onlineRoster.ids.length);
+    expect(onlinePlayers.y.length).toBe(onlineRoster.ids.length);
+
+    offlineHost.dispose();
+    hostDriverPort.dispose(hostDriver);
   });
 });

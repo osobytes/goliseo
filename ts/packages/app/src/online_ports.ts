@@ -55,6 +55,7 @@
 import { ok, err, type Result } from "@gc/core";
 import type { KeyboardState } from "@gc/input";
 import { frameBuffer } from "@gc/render";
+import type { frameBufferTypes } from "@gc/render";
 import {
   LobbyLink,
   newFrameBuffer as newLobbyFrameBuffer,
@@ -113,6 +114,7 @@ import {
   type OnlineMatchState,
   type ProtocolFixturePort,
   type LobbyProtocolPort,
+  type RenderFrameRoster,
   type RenderPort,
   type RoomSignalingFactory,
   type SessionManifest,
@@ -673,10 +675,19 @@ function bytesFromByteString(value: string): Uint8Array {
 interface RealOnlineDriver {
   readonly bridge: OnlineMatchDriverHandle;
   readonly session: { readonly free: () => void };
-  readonly roster: {
-    readonly ids: readonly string[];
-    readonly teams: readonly ("home" | "away")[];
-  };
+  /**
+   * The match-constant decoded roster, built once in `create()` -- see
+   * `frame`'s own comment below (#611) for why this must be the FULL
+   * decoded roster (`radius`/`species_shape`/`species_color`/
+   * `presentation_ids`/... included), not an ids/teams-only identity slice.
+   * Sourced from `bridge.rosterNumeric()`/`.rosterIdsAndNames()`
+   * (`OnlineMatchDriverHandle`, mirroring `Session`'s identically-named
+   * pair field-for-field -- `crates/gc-wasm/src/match_driver_bridge.rs`'s
+   * own `roster_numeric`/`roster_ids_and_names` doc), the SAME real
+   * `gc-data` content `browser_sim_host.ts`'s `rosterInternal()` decodes for
+   * the offline path -- not a fallback reconstructed from the manifest.
+   */
+  readonly roster: frameBufferTypes.DecodedRenderFrameRoster;
   tickCount: number;
 }
 
@@ -701,27 +712,6 @@ interface RealOnlineBatch {
   readonly control: readonly RawTransportEnvelopeJson[];
   readonly checkpoints: readonly RealOnlineCheckpoint[];
   readonly live: Readonly<Record<string, string>>;
-}
-
-function rosterFromManifestJson(manifestJson: string): {
-  readonly ids: readonly string[];
-  readonly teams: readonly ("home" | "away")[];
-} {
-  const manifest = JSON.parse(manifestJson) as {
-    readonly teams: readonly {
-      readonly team: "home" | "away";
-      readonly roster: readonly { readonly player_id: string }[];
-    }[];
-  };
-  const ids: string[] = [];
-  const teams: ("home" | "away")[] = [];
-  for (const team of manifest.teams) {
-    for (const player of team.roster) {
-      ids.push(player.player_id);
-      teams.push(team.team);
-    }
-  }
-  return { ids, teams };
 }
 
 // Mirrors `gc_netcode::match_driver`'s own slot -> roster-player mapping:
@@ -900,7 +890,12 @@ export function realMatchDriverPort(
           bridge.setPeerConnected(peerId);
         }
       }
-      return { bridge, session, roster: rosterFromManifestJson(manifestJson), tickCount: 0 };
+      // The FULL match-constant roster, decoded off the bridge's own
+      // `rosterNumeric()`/`rosterIdsAndNames()` -- see `RealOnlineDriver.roster`'s
+      // own doc (#611) for why this, not a manifest-derived identity slice,
+      // is what a live match needs.
+      const roster = frameBuffer.decodeRoster(bridge.rosterNumeric(), bridge.rosterIdsAndNames());
+      return { bridge, session, roster, tickCount: 0 };
     },
     status: (d) => JSON.parse(d.bridge.statusJson()) as string,
     advance: (d, sample) => {
@@ -951,17 +946,40 @@ export function realMatchDriverPort(
     // (`online_ports.spec.ts`'s match-phase continuation case is what
     // caught this). `frameBuffer.decode` is the same decode step
     // `browser_sim_host.ts`'s own `frame()` runs for the offline path.
-    // `toRenderFrame` is not needed here: `MatchScreen.onlineFrame` reads
-    // `frame.players`/`.control` directly and gets `roster` from a
-    // SEPARATE `.roster()` call, never from inside the frame object, and
-    // `DecodedRenderFrame` already carries `players`/`control` structurally
-    // matching `OnlineRenderFramePlayers`/`OnlineRenderFrameControl`.
+    //
+    // `toRenderFrame` IS needed here (#611), despite `MatchScreen.onlineFrame`
+    // fetching its OWN `roster` separately (`match.ts`'s `onlineFrame`/
+    // `onlineState` read `ids`/`teams`/`is_keeper` off the `.roster()` call
+    // below, never off the frame object): the real render path this frame
+    // is ALSO handed to (`browser_main.ts`'s `RenderPort.draw`, and beneath
+    // it `@gc/render`'s `pitch.ts`) reads `frame.roster.ids`/`.radius`/
+    // `.species_shape`/... directly off the frame object, unconditionally,
+    // with no route to `MatchDriverPort.roster()` at all. A frame built
+    // without an embedded roster is therefore not a smaller frame, it is
+    // one the real renderer cannot draw: `draw`'s first call threw inside
+    // the rAF callback the instant the countdown reached zero, dropping
+    // BOTH peers' canvas to the background color with no recovery. This is
+    // exactly the embedding `browser_sim_host.ts`'s own `frame()` already
+    // does for the offline path -- see `RealOnlineDriver.roster`'s doc for
+    // where this driver's roster argument comes from.
     // `0, 0`: neither the release follow-through window nor the
     // dispossession flinch window (#591) is wired for online play yet -- no
     // production caller here supplies either, same as before this second
     // parameter existed.
-    frame: (d) => frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0, 0)),
-    roster: (d) => d.roster,
+    frame: (d) =>
+      frameBuffer.toRenderFrame(
+        frameBuffer.decode(wasm.buildMatchDriverRenderFrame(d.bridge, 0, 0)),
+        d.roster,
+      ),
+    // `RenderFrameRoster` (`@gc/screens`'s deliberately narrow declared
+    // type) needs a generic string index signature `DecodedRenderFrameRoster`
+    // structurally lacks, even though the real object is a strict superset
+    // of it field-for-field -- the identical cast `browser_sim_host.ts`'s
+    // own `roster()` documents for the offline path (`sim_host.ts`'s own
+    // `RenderFrameRoster` alias is `@gc/render`'s full type directly, not
+    // `@gc/screens`'s narrow one, so that module's `roster()` needs no cast
+    // at all).
+    roster: (d) => d.roster as unknown as RenderFrameRoster,
     tick: (d) => d.tickCount,
     dispose: (d) => {
       d.session.free();
@@ -1006,17 +1024,22 @@ interface ObserverPort {
 }
 
 // `OnlineMatchState.players` (`online_match.ts`) carries `id`/`team`/`pos`/
-// `facing` only -- no `is_keeper` (confirmed by reading `MatchScreen.onlineState`'s
-// own builder in `match.ts`: it derives `players[]` from `roster().ids`/
-// `.teams` and `frame().players`, neither of which threads `is_keeper`
-// through for the ONLINE construction mode, unlike the offline path's
-// `RealMatchScreenPort.state.roster`). A disclosed simplification, not a
+// `facing` only -- no `is_keeper`. That is NOT a data gap any more (#611):
+// the roster this file builds now carries real `is_keeper` per slot, the
+// same as the offline path (`onlineHost.roster().is_keeper`, decoded off
+// the bridge's own `rosterNumeric()`/`.rosterIdsAndNames()`). The remaining
+// gap is entirely on the `@gc/screens` side of the seam: `MatchScreen.onlineState`'s
+// builder (`match.ts`) derives `players[]` from `roster().ids`/`.teams` and
+// `frame().players` only, never reading `roster().is_keeper`, so
+// `OnlineMatchState.players` never carries it through to a caller here --
+// and this port hardcodes `is_keeper: false` below for exactly that reason,
+// not because the value is unavailable. A disclosed simplification, not a
 // silent one: every online player observes as a non-keeper, so keeper-only
 // stats (saves, claims) under-count for whichever slot is actually the
-// keeper. Reported as a residual gap in this issue's PR rather than solved
-// here -- fixing it needs `OnlineHostPort.roster()`/`RenderFrameRoster` to
-// carry keeper identity for the online path too, a `@gc/screens`/`@gc/render`
-// change outside this issue's scope.
+// keeper. Left as a follow-up rather than fixed here -- threading it
+// through needs `OnlineMatchState.players` and `match.ts`'s `onlineState`
+// builder to carry/populate `is_keeper`, a `@gc/screens` change outside
+// this PR's scope.
 function observerPortFor(): ObserverPort {
   return {
     create: (state) =>
