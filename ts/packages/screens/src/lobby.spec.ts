@@ -904,6 +904,16 @@ describe("online lobby screen", () => {
     expect(nextState.effects[0]?.kind).toBe("paste_request");
   });
 
+  // #610 round-2 re-review: the honesty note `multiplayer.ts`'s own header
+  // explained the reason for (peer to peer, no server, so a player does
+  // not wait for a matchmaking queue that does not exist) died with that
+  // screen and existed nowhere a player could see it. Restated on the
+  // hosting screen a player actually lands on now.
+  it("says out loud that this is peer to peer, so nobody waits for matchmaking", () => {
+    const layout = lobbyLayout(hosting());
+    expect(hit.find(layout, "peer_to_peer_note")?.text).toContain("PEER TO PEER");
+  });
+
   it("emits transport effects for an invitation", () => {
     let state = hosting();
     state = click(state, "mode_1v1");

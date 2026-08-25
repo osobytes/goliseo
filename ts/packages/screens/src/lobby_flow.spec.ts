@@ -3318,6 +3318,17 @@ describe("a late room-code join after admission closes (#610)", () => {
     // The note is quiet, not urgent -- it only surfaces once nothing more
     // pressing is showing (`troubleText`'s own fallback chain, `lobby.ts`).
     expect(view(modelPorts, host).error).toBeUndefined();
+
+    // Persistent, not tick-cleared: unlike `error` (which `command()`'s own
+    // top strips on every dispatch, "tick" included -- `room_error`'s own
+    // doc on `LobbyModel`), `late_joiner_note` is a plain model field
+    // nothing ever clears, and it has to survive the SAME tick traffic a
+    // real session keeps generating for as long as the lobby stays
+    // mounted.
+    driver.tick(60);
+    expect(view(modelPorts, host).late_joiner_note).toBe(
+      "A player tried to join after the match started.",
+    );
   });
 
   it("drops every already-queued late joiner too, once admission closes mid-queue", () => {

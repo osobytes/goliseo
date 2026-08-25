@@ -858,6 +858,19 @@ function layoutComposer(state: LobbyScreenState, view: LobbyView): Layout {
 function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
   const widgets: Widget[] = [];
   headerWidgets(widgets, state, view);
+  // The honesty note `multiplayer.ts`'s own header explained the reason
+  // for: peer to peer, no server, so a player does not sit waiting for a
+  // matchmaking queue that does not exist. It died with that screen
+  // (#610 round-2 re-review) -- restated here, on the screen a player
+  // actually lands on now, in the gap `headerWidgets` already leaves above
+  // `CONTENT_TOP`.
+  text(
+    widgets,
+    "peer_to_peer_note",
+    "PEER TO PEER  •  NO SERVER",
+    { x: 0, y: 64, w: 960, h: 16 },
+    { align: "center", kind: "eyebrow" },
+  );
   const LX = LEFT_X;
   const LW = LEFT_COL_W;
   let ly = CONTENT_TOP;
