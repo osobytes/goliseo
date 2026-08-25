@@ -32,6 +32,17 @@
 // Every widget id below still maps to a `LobbyCommand` the model already
 // accepts (`commandFor`) -- ids are presentation, not contract, but the
 // commands they dispatch are the two-way contract with `lobby_model.ts`.
+//
+// # The two-click START collapse (#610)
+//
+// LOCK MATCH, the host's own READY toggle, and the guest's READY toggle are
+// gone as separate widgets. A single START MATCH button (`footerWidgets`'s
+// `showStart`) does all three, plus starting the countdown, from one host
+// click; a guest becomes ready automatically the moment it is assigned a
+// seat, with nothing to click at all. See `lobby_model.ts`'s own header for
+// the collapse itself -- this file only ever renders what `view.can_start`/
+// `view.can_configure` already say, same as it did for the individual
+// commands before.
 
 import { focus, type Layout, type Widget } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -383,7 +394,6 @@ function headerWidgets(widgets: Widget[], state: LobbyScreenState, view: LobbyVi
 // LEAVE, and the phase's own primary actions ------------------------------
 
 interface FooterOptions {
-  readonly showReady?: boolean;
   readonly showStart?: boolean;
   readonly showDetails?: boolean;
   readonly leaveText?: string;
@@ -426,23 +436,20 @@ function footerWidgets(
     { align: "center" },
   );
   footerX += btnW + gap;
-  if (opts.showReady) {
-    control(
-      widgets,
-      state,
-      "ready",
-      view.ready ? "NOT READY" : "READY",
-      { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
-      { selected: view.ready, disabled: !view.can_ready, align: "center" },
-    );
-    footerX += btnW + gap;
-  }
   if (opts.showStart) {
+    // Two different reasons can disable this button, and they read
+    // differently: "handshake" but not enough players yet is still
+    // START MATCH, just disabled (`can_start`'s own gate); past
+    // "handshake" the collapse is genuinely under way, so the button stays
+    // visible (this footer keeps rendering it through manifest / assigned /
+    // ready -- #610's own doc on `LobbyView.can_start`) but reads
+    // "STARTING…" right up to the countdown screen taking over entirely.
+    const starting = view.phase !== "handshake";
     control(
       widgets,
       state,
       "start",
-      "START COUNTDOWN",
+      starting ? "STARTING…" : "START MATCH",
       { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
       { disabled: !view.can_start, align: "center" },
     );
@@ -804,8 +811,9 @@ function layoutComposer(state: LobbyScreenState, view: LobbyView): Layout {
 }
 
 // --- handshake: the room code as the hero (or the manual signaling it
-// replaces), mode chips, bot-fill, LOCK MATCH. The eight slot rows are
-// cut -- ownership is unpublished, so every one would read "unassigned". --
+// replaces), mode chips, bot-fill, and the footer's own START MATCH button
+// (#610). The eight slot rows are cut -- ownership is unpublished, so
+// every one would read "unassigned". --
 
 function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
   const widgets: Widget[] = [];
@@ -928,23 +936,26 @@ function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
       { x: LX, y: ly, w: 220, h: 38 },
       { selected: view.bot_fill, align: "center" },
     );
-    control(
-      widgets,
-      state,
-      "lock",
-      "LOCK MATCH",
-      { x: LX + 230, y: ly, w: 230, h: 38 },
-      { disabled: !view.can_lock, align: "center" },
-    );
   }
 
   playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
-  footerWidgets(widgets, state, view, { showDetails: true });
+  // START MATCH -- the single prominent action (#610): it locks the mode,
+  // publishes ownership, marks the host ready, and begins the countdown in
+  // one command. `showStart` is `view.can_configure` (host, any phase short
+  // of countdown/terminal), so the same button keeps rendering -- disabled,
+  // reading as "starting..." -- through the collapse's own brief manifest/
+  // assigned/ready window (`layoutRoster`, below).
+  footerWidgets(widgets, state, view, {
+    showDetails: true,
+    showStart: view.can_configure,
+  });
   return widgets;
 }
 
 // --- manifest / assigned / ready: the mode-dependent roster, the players
-// strip, and READY / START once they apply. -------------------------------
+// strip, and the same START MATCH button from `layoutHandshake` -- shown
+// disabled here (`can_start` is only true in "handshake") while the
+// collapse's own round trips are in flight (#610). ------------------------
 
 function layoutRoster(state: LobbyScreenState, view: LobbyView): Layout {
   const widgets: Widget[] = [];
@@ -961,8 +972,7 @@ function layoutRoster(state: LobbyScreenState, view: LobbyView): Layout {
   }
   playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
   footerWidgets(widgets, state, view, {
-    showReady: view.phase === "assigned" || view.phase === "ready",
-    showStart: view.role === "host" && view.phase === "ready",
+    showStart: view.can_configure,
     showDetails: true,
   });
   return widgets;
@@ -1124,7 +1134,7 @@ export function layout(state: LobbyScreenState): Layout {
   }
 }
 
-function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
+function commandFor(id: string): LobbyCommand | undefined {
   switch (id) {
     case "role_host":
       return { kind: "role", role: "host" };
@@ -1144,10 +1154,6 @@ function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
       return { kind: "share_link" };
     case "paste_signal":
       return { kind: "paste_request" };
-    case "lock":
-      return { kind: "lock" };
-    case "ready":
-      return { kind: "ready", ready: !view.ready };
     case "start":
       return { kind: "start" };
     case "leave":
@@ -1228,8 +1234,8 @@ function dispatchCommand(
   // directly -- every network-driven event (`room_created`, `signal`,
   // `control`, `tick`, ...) arrives this way, not through a click -- can
   // change phase just as a click can. Without this, a guest whose screen
-  // flips handshake -> assigned the moment the host clicks LOCK keeps focus
-  // on a widget that no longer exists until their own next input.
+  // flips handshake -> assigned the moment the host clicks START keeps
+  // focus on a widget that no longer exists until their own next input.
   nextState = {
     ...nextState,
     focus: focus.ensure(layout(nextState), nextState.focus) ?? nextState.focus,
@@ -1317,7 +1323,7 @@ export function update(
   if (id === "details") {
     return [{ ...state, focus: id, details: !state.details, effects: [] }, undefined];
   }
-  const cmd = commandFor(id, lobbyView(state.ports, state.model));
+  const cmd = commandFor(id);
   if (!cmd) {
     return [advance(state, state.model, id, []), undefined];
   }
