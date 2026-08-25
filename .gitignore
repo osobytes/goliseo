@@ -80,3 +80,14 @@ dist/
 # investigation, regenerated on demand — the CONCLUSIONS belong in code comments
 # and docs/, not multi-megabyte traces in the tree.
 v2-frame-profile/
+
+# Where the browser-evidence tooling writes: driver logs and captured PNGs from
+# scripts/browser_match_harness.py, browser_render_bench.py and
+# browser_online_peers.py, the artifact directory web_serve.py serves, and —
+# the reason this is measured in gigabytes rather than megabytes — the whole git
+# WORKTREE that browser_match_harness.py builds per `--rev`, each with its own
+# rust/target and node_modules. Same argument as .bench/ and v2-frame-profile/
+# above: regenerated on demand by one command, and the conclusions belong in the
+# PR that cites them. Root-anchored, so a nested `build/` anywhere else stays a
+# deliberate decision rather than being swept up by this line.
+/build/
