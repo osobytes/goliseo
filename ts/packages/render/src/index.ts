@@ -65,8 +65,8 @@ export { drawUnderCommands, drawOverCommands, drawUnder, drawOver } from "./comb
 export { matchHudCommands, drawMatchHud } from "./match_hud.ts";
 export { SceneRoot } from "./scene.ts";
 // The world-space coliseum stadium (bowl, crowd, sky, goals) rendered as
-// `SceneRoot`'s world layer under `camera.perspective_mode` -- see scene.ts's
-// `setWorldLayer` and stadium.ts's own header.
+// `SceneRoot`'s world layer -- see scene.ts's `setWorldLayer` and stadium.ts's
+// own header.
 export { Stadium } from "./stadium.ts";
 
 export type * as cameraTypes from "./camera.ts";
