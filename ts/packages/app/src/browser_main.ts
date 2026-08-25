@@ -54,6 +54,7 @@ import { fetchTurnCredentials } from "./turn_credentials.ts";
 import { connectRoomGuest, connectRoomHost } from "./room_signaling_port.ts";
 import { APP_CONTENT } from "./browser_content.ts";
 import { buildInfo } from "./build_info.ts";
+import { createNetworkHeartbeat } from "./network_heartbeat.ts";
 
 // `buildInfo.identity` ("goliseo") namespaces every key this shell persists
 // in `localStorage` -- see build_info.ts's header for why. `team_settings.ts`
@@ -398,6 +399,22 @@ async function main(): Promise<void> {
     },
   });
 
+  // #612 part 1: keeps the online network pump (`App.update` -> the
+  // current screen's `update`, which drains `LobbyLink.poll()`/the room
+  // signaling channel and steps the online coordinator's fixed tick clock)
+  // breathing when the rAF loop below stalls -- see `network_heartbeat.ts`'s
+  // own header for the full design and the no-double-pump argument. Scoped
+  // to the lobby/online-match routes only; every other route is untouched.
+  const heartbeat = createNetworkHeartbeat({
+    now: () => performance.now(),
+    hidden: () => document.hidden,
+    currentRoute: () => app.currentRoute(),
+    update: (dt) => app.update(dt),
+    setInterval: (callback, ms) => window.setInterval(callback, ms),
+    clearInterval: (handle) => window.clearInterval(handle),
+  });
+  heartbeat.start();
+
   // Dev-only inspection hook (stripped from a production `vite build` along
   // with every other `import.meta.env.DEV`-gated branch): lets a driver
   // script read live app/screen state (e.g. to compute an exact widget
@@ -542,6 +559,11 @@ async function main(): Promise<void> {
     const delta = now - lastFrameTime;
     lastFrameTime = now;
     lastFrameDtSeconds = dt;
+    // Tells the heartbeat rAF is alive right now -- see
+    // `network_heartbeat.ts`'s header for why this is a separate clock from
+    // this function's own `lastFrameTime`/`dt` (which keep the pre-existing,
+    // unrelated post-stall clamp for rendering-side smoothing).
+    heartbeat.notifyRafFrame(now);
 
     for (const evt of keyboard.drainKeyEvents()) {
       app.event(evt);
