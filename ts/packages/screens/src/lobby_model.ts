@@ -535,6 +535,19 @@ export interface LobbyModel {
    * (no `error`/`room_error`): a future details/terminal card renders it
    * (#566), it does not interrupt the player. */
   readonly last_dropped_signal?: LobbyDroppedSignal;
+  /** Host-only: set once a room-code guest tried to join after admission
+   * closed (the manifest was already proposed) -- #610 round-2 review,
+   * blocking finding 3. A quiet, persistent record shown alongside the
+   * roster (`troubleText`'s own fallback chain); it does not clear on its
+   * own, since there is nothing to resolve (the guest was correctly
+   * turned away, not queued). */
+  readonly late_joiner_note?: string;
+  /** Guest-only: ticks remaining before "no offer arrived" is treated as
+   * "the match already started" (#610 round-2 review, blocking finding 3),
+   * set by `roomJoined` and counted down on every `"tick"`. Cleared the
+   * moment a coordinator exists (an offer arrived) or a real relay failure
+   * already explained itself -- see `checkRoomJoinDeadline`'s own doc. */
+  readonly room_join_deadline?: number;
 }
 
 /** Why `roomPeerSignal`'s host branch dropped a signal instead of routing
@@ -563,6 +576,19 @@ export const COUNTDOWN_TICKS = 180;
 export const FIRST_INPUT_TICK = 0;
 export const MAX_SIGNAL_BYTES = 16384;
 export const GUEST_LINK_PREFIX = "guest_";
+// A room-code guest admitted after the host already proposed a manifest
+// (mid #610 collapse, or later) is never invited -- `invite()`'s own
+// "admission closed" guard -- and there is no clean host -> guest channel
+// to tell it so before any offer exists (#610 round-2 review, blocking
+// finding 3: `room_send` only ever carries a real SDP signal, and abusing
+// it for anything else would have the guest try to parse the rejection AS
+// one). 10 seconds is generous room-code-relay-plus-WebRTC admission
+// latency (the coordinator's own `PREFERENCE_TIMEOUT_TICKS`,
+// `crates/gc-netcode`, gives an ordinary in-session request 5s; this
+// crosses one extra hop, the room-code Worker itself, before any offer
+// can even be attempted) while still telling a genuinely late guest
+// something within a session, not a hang.
+export const ROOM_JOIN_TIMEOUT_TICKS = 600;
 export const MODES: readonly SessionMatchMode[] = ["1v1", "2v2", "4v4"];
 
 // Human-readable equivalents of the coordinator's terminal reasons. The wire
@@ -666,6 +692,11 @@ export const ROOM_FAILURE_TEXT: Readonly<Record<string, string>> = {
   unknown_sender: "The room service did not recognize the sender.",
   invalid_envelope: "The room service could not read that message.",
   binary_not_supported: "The room service does not support that message type.",
+  // Not a relay-reported token -- a LOCAL deadline (`ROOM_JOIN_TIMEOUT_TICKS`,
+  // `checkRoomJoinDeadline`) for the one admission-rejection reason the
+  // relay itself can never carry: the host already started, so no offer is
+  // ever coming (#610 round-2 review, blocking finding 3).
+  match_started: "That match already started — ask for a new code.",
 };
 
 function defaultTemplate(ports: LobbyModelPorts): (mode: SessionMatchMode) => SessionManifest {
@@ -1117,6 +1148,12 @@ function lockSession(
   let next = stepped;
   if (outcome?.accepted) {
     next = { ...next, status: "Manifest proposed. Waiting for peers to accept." };
+    // Flush anything already queued for admission -- once the manifest is
+    // proposed, `admissionClosed` makes every one of them unreachable
+    // forever (#610 round-2 review, blocking finding 3), and nothing else
+    // would otherwise touch the queue until some LATER peer-connection
+    // event happened to drain it.
+    next = drainRoomQueue(next, ports, effects);
   }
   return publishAssignments(next, ports, effects);
 }
@@ -1324,6 +1361,9 @@ function advanceStart(
     next = stepped;
     if (outcome?.accepted) {
       next = { ...next, status: "Manifest proposed. Waiting for peers to accept." };
+      // Flush anything already queued for admission -- see `lockSession`'s
+      // identical call for why (#610 round-2 review, blocking finding 3).
+      next = drainRoomQueue(next, ports, effects);
     }
     state = next.coordinator;
   }
@@ -1342,6 +1382,28 @@ function advanceStart(
     next = beginCountdown(next, ports, effects);
   }
   return next;
+}
+
+/** Runs after every event that steps the coordinator and could therefore
+ * have moved its phase -- today that is `"control"` (an inbound wire
+ * message) and `"link_lost"` (a local transport-level drop, #610 round-2
+ * review, blocking finding 2). Both need the exact same three follow-ups:
+ * retry the publish (pre-dates #610 -- a host using the individual "lock"
+ * command still needs it, since the first attempt inside `lockSession`
+ * usually runs before any peer has accepted), then either advance a host's
+ * own in-flight "start" collapse or auto-ready a guest the instant its own
+ * assignment lands. A caller that steps the coordinator through some OTHER
+ * event and skips this is exactly how a link drop mid-collapse used to
+ * strand a host on a permanently disabled "STARTING…" button. */
+function advanceAfterCoordinatorEvent(
+  model: LobbyModel,
+  ports: LobbyModelPorts,
+  effects: LobbyEffect[],
+): LobbyModel {
+  const published = publishAssignments(model, ports, effects);
+  return published.role === "guest"
+    ? autoReadyGuest(published, ports, effects)
+    : advanceStart(published, ports, effects);
 }
 
 /** The single START MATCH command (#610): the host's side of the collapse.
@@ -1452,6 +1514,23 @@ function onSignal(
   };
 }
 
+// #610 round-2 review, blocking finding 3: once the manifest is proposed,
+// `invite()`'s own guard refuses admission FOREVER, not just for the
+// instant it is called -- so any caller that reacts to a refusal by
+// re-queuing (as `roomGuestJoined`/`drainRoomQueue` both used to,
+// unconditionally) sends a late joiner into a queue that will retry, and
+// fail, for the rest of the session. This is the one true condition that
+// distinguishes "wait and retry" from "will never succeed, stop asking."
+function admissionClosed(model: LobbyModel): boolean {
+  return model.coordinator?.manifest_id !== undefined;
+}
+
+// A quiet, persistent host-side record that a late joiner was turned away
+// -- see `LobbyModel.late_joiner_note`'s own doc.
+function lateJoinerTurnedAway(model: LobbyModel): LobbyModel {
+  return { ...model, late_joiner_note: "A player tried to join after the match started." };
+}
+
 function drainRoomQueue(
   model: LobbyModel,
   ports: LobbyModelPorts,
@@ -1464,11 +1543,18 @@ function drainRoomQueue(
   if (nextGuestId === undefined) {
     return model;
   }
+  if (admissionClosed(model)) {
+    // Drop this ONE queued guest with the quiet note and keep draining --
+    // an earlier queue entry closing admission mid-collapse must not
+    // strand every guest still behind it in the queue forever either.
+    return drainRoomQueue(lateJoinerTurnedAway({ ...model, room_queue: rest }), ports, effects);
+  }
   const invited = invite({ ...model, room_queue: rest }, ports, effects);
   if (invited.pending_link === undefined) {
-    // `invite()` refused (capacity, admission closed, ...) -- keep the
-    // guest queued rather than dropping it; the next event that clears
-    // `pending_link` will try again.
+    // `invite()` refused for a genuinely transient reason (capacity, a
+    // pending link already in flight) -- keep the guest queued rather than
+    // dropping it; the next event that clears `pending_link` will try
+    // again.
     return { ...invited, room_queue: [nextGuestId, ...invited.room_queue] };
   }
   return {
@@ -1635,7 +1721,41 @@ function roomJoined(model: LobbyModel): LobbyModel {
     role: "guest",
     room_status: "connected",
     status: "Waiting for the host to assign your seat.",
+    // #610 round-2 review, blocking finding 3: starts the deadline that
+    // catches "the host already started, no offer is ever coming" --
+    // `checkRoomJoinDeadline`'s own doc.
+    room_join_deadline: ROOM_JOIN_TIMEOUT_TICKS,
   };
+}
+
+/** Counts down `LobbyModel.room_join_deadline` on every `"tick"` --
+ * see its own doc and `ROOM_JOIN_TIMEOUT_TICKS`'s. Deliberately separate
+ * from `step()`'s own `"tick"` handling: a guest waiting for an offer has
+ * NO coordinator yet, which is exactly the state `step()` treats as
+ * nothing-to-do (`if (!state) return [model, undefined];`), so this is the
+ * only clock that ever runs for it. */
+function checkRoomJoinDeadline(model: LobbyModel, effects: LobbyEffect[]): LobbyModel {
+  if (model.room_join_deadline === undefined) {
+    return model;
+  }
+  if (model.coordinator !== undefined || model.room_status === "failed" || !model.room_active) {
+    // An offer arrived and resolved into a coordinator, a real relay
+    // failure already explained itself (must not be overwritten by the
+    // generic timeout copy below), or this guest is no longer even in a
+    // room-code attempt -- the deadline no longer applies either way.
+    const { room_join_deadline: _deadline, ...rest } = model;
+    return rest;
+  }
+  const remaining = model.room_join_deadline - 1;
+  if (remaining > 0) {
+    return { ...model, room_join_deadline: remaining };
+  }
+  if (model.room_active) {
+    effects.push({ kind: "room_close" });
+  }
+  const text = ROOM_FAILURE_TEXT["match_started"] as string;
+  const { room_join_deadline: _deadline, room_entry: _entry, ...rest } = model;
+  return { ...rest, room_status: "failed", room_active: false, error: text, room_error: text };
 }
 
 function roomGuestJoined(
@@ -1647,12 +1767,19 @@ function roomGuestJoined(
   if (model.role !== "host") {
     return model;
   }
+  // #610 round-2 review, blocking finding 3: a guest admitted by the room
+  // relay after the manifest was already proposed can NEVER be invited --
+  // see `admissionClosed`'s own doc. Turn it away right here, quietly,
+  // instead of queueing it to fail forever.
+  if (admissionClosed(model)) {
+    return lateJoinerTurnedAway(model);
+  }
   if (model.pending_link !== undefined) {
     return { ...model, room_queue: [...model.room_queue, guestId] };
   }
   const invited = invite(model, ports, effects);
   if (invited.pending_link === undefined) {
-    // `invite()` refused (capacity, admission closed, ...) -- keep the
+    // `invite()` refused for a genuinely transient reason -- keep the
     // guest queued; a later `drainRoomQueue` call retries it.
     return { ...invited, room_queue: [...invited.room_queue, guestId] };
   }
@@ -1922,6 +2049,16 @@ export function command(
     case "pair":
       next = requestPair(next, ports, cmd.slot, effects);
       break;
+    // Still a fully working, independent command (#610 round-2 review):
+    // `autoReadyGuest` calls the SAME `setReady` helper internally rather
+    // than reaching back through `command()`, so this case is never
+    // required for the collapse to work -- no widget in `lobby.ts` emits
+    // it any more. It remains reachable directly (raw model dispatch, a
+    // test, a future non-UI caller) and, if used, simply bypasses the
+    // auto-ready guarantee for that one manual call: a guest that manually
+    // un-readies itself (`ready: false`) stays not-ready until IT is
+    // assigned again (a swap, a reseat), which re-fires `autoReadyGuest`
+    // exactly as it would for any other not-yet-ready guest.
     case "ready":
       next = setReady(next, ports, cmd.ready, effects);
       break;
@@ -1931,40 +2068,49 @@ export function command(
     case "leave":
       next = leave(next, ports, effects);
       break;
-    case "tick":
-      [next] = step(next, ports, { kind: "tick" }, effects);
+    case "tick": {
+      const [stepped] = step(next, ports, { kind: "tick" }, effects);
+      next = checkRoomJoinDeadline(stepped, effects);
       break;
+    }
     case "signal":
       next = onSignal(next, ports, cmd, effects);
       break;
     case "peer_connected":
       next = onPeerConnected(next, ports, cmd, effects);
       break;
-    case "control":
-      next = (() => {
-        const [stepped] = step(
-          next,
-          ports,
-          { kind: "control", link_id: cmd.link_id, wire: cmd.wire },
-          effects,
-        );
-        // Retrying the publish here is unconditional and pre-dates #610 --
-        // a host that only ever used the individual "lock" command still
-        // needs it, since the FIRST attempt (inside `lockSession`) usually
-        // runs before any peer has accepted. The two hooks below are new:
-        // one advances a host's own in-flight "start" collapse, the other
-        // auto-readies a guest the instant its own assignment lands -- see
-        // this module's header addendum.
-        const published = publishAssignments(stepped, ports, effects);
-        return published.role === "guest"
-          ? autoReadyGuest(published, ports, effects)
-          : advanceStart(published, ports, effects);
-      })();
+    case "control": {
+      const [stepped] = step(
+        next,
+        ports,
+        { kind: "control", link_id: cmd.link_id, wire: cmd.wire },
+        effects,
+      );
+      next = advanceAfterCoordinatorEvent(stepped, ports, effects);
       break;
-    case "link_lost":
-      [next] = step(next, ports, { kind: "link_lost", link_id: cmd.link_id }, effects);
+    }
+    case "link_lost": {
+      // #610 round-2 review, blocking finding 2: this event can ALSO move
+      // the coordinator's phase (dropping a not-yet-accepted or
+      // not-yet-ready guest can be exactly what makes `all_ready` true for
+      // everyone left) -- it needs the identical follow-up chain "control"
+      // gets, or a link drop mid-collapse leaves `start_requested` stuck
+      // `true` with nothing left to ever call `advanceStart` again, and the
+      // host stares at a permanently disabled "STARTING…" with LEAVE as the
+      // only way out. See `advanceAfterCoordinatorEvent`'s own doc.
+      const [stepped] = step(next, ports, { kind: "link_lost", link_id: cmd.link_id }, effects);
+      next = advanceAfterCoordinatorEvent(stepped, ports, effects);
       break;
+    }
     case "link_error":
+      // Deliberately NOT run through `advanceAfterCoordinatorEvent`: this
+      // is a local "a send failed" diagnostic (`online_lobby.ts`'s `run()`,
+      // `this.link.apply(effect)` returning an error) that never calls
+      // `step()` at all, so it cannot have moved the coordinator's phase --
+      // there is nothing new for `publishAssignments`/`advanceStart`/
+      // `autoReadyGuest` to react to. Investigated for the same asymmetry
+      // as "link_lost" (#610 round-2 review, blocking finding 2) and found
+      // not to need it.
       next = { ...next, error: cmd.detail ?? "the transport reported a failure" };
       break;
     case "room_pick":
@@ -2123,6 +2269,8 @@ export interface LobbyView {
   readonly room_active: boolean;
   /** See `LobbyModel.last_dropped_signal`'s own doc (#601). */
   readonly last_dropped_signal?: LobbyDroppedSignal;
+  /** See `LobbyModel.late_joiner_note`'s own doc (#610). */
+  readonly late_joiner_note?: string;
 }
 
 function visibleAssignments(
@@ -2334,14 +2482,15 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     // The same "enough humans, or bot-fill" gate the old `can_lock` used --
     // START now performs that lock itself, so this is the whole of what
     // used to be two separately-gated buttons (#610). A host alone with
-    // bot-fill on can still start: `connected` never drops below 1 (the
-    // host itself), so `bot_fill` is what carries that case exactly as it
-    // did for `can_lock`.
+    // bot-fill on can still start: `connected` is always at least 1 (the
+    // host itself is always one of its own peers), so `bot_fill` is what
+    // carries that case exactly as it did for `can_lock`. (#610 round-2
+    // review: an earlier draft also required `connected >= 1 || bot_fill`
+    // here -- redundant, since `required` is never 0 for any real match
+    // mode and `connected >= required` already implies `connected >= 1`;
+    // removed rather than kept as decoration.)
     can_start:
-      model.role === "host" &&
-      phase === "handshake" &&
-      (connected >= required || model.bot_fill) &&
-      (connected >= 1 || model.bot_fill),
+      model.role === "host" && phase === "handshake" && (connected >= required || model.bot_fill),
     started: model.started,
     can_share: model.role === "host" && model.room_code !== undefined && ports.joinLink.canShare,
     ...(model.room_entry !== undefined ? { room_entry: model.room_entry } : {}),
@@ -2352,5 +2501,6 @@ export function view(ports: LobbyModelPorts, model: LobbyModel): LobbyView {
     ...(model.last_dropped_signal !== undefined
       ? { last_dropped_signal: model.last_dropped_signal }
       : {}),
+    ...(model.late_joiner_note !== undefined ? { late_joiner_note: model.late_joiner_note } : {}),
   };
 }

@@ -72,6 +72,8 @@ import {
   COUNTDOWN_TICKS,
   DEPARTURE_TEXT,
   PREFERENCE_TEXT,
+  ROOM_FAILURE_TEXT,
+  ROOM_JOIN_TIMEOUT_TICKS,
   TERMINAL_TEXT,
 } from "./lobby_model.ts";
 import type {
@@ -2281,6 +2283,67 @@ describe("lobby readiness and countdown", () => {
     expect(freeze.live["host"]).toBe("home_1");
   });
 
+  // #610 round-2 review, "also": update()/command() purity applies to the
+  // collapse's own commands exactly as it does everywhere else in this
+  // module -- `requestStart`/`advanceStart` return a fresh model on every
+  // step rather than mutating the one they were handed.
+  it("requestStart/advanceStart never mutate the model they were given", () => {
+    const modelPorts = ports();
+    const { driver, host } = seatedLobby(modelPorts, "1v1", 1);
+    const before = host.model;
+    expect(before.start_requested).toBe(false);
+
+    driver.send(host, { kind: "start" });
+
+    // The object captured BEFORE dispatch is untouched -- if `requestStart`
+    // had mutated it in place instead of returning a fresh model, this
+    // would already read `true` too.
+    expect(before.start_requested).toBe(false);
+    expect(host.model).not.toBe(before);
+    expect(host.model.start_requested).toBe(true);
+  });
+
+  // #610 round-2 review, "also": a 2v2 TAKE swap landing WHILE the
+  // collapse's own round trips are still in flight (not yet at
+  // "countdown") must not strand it -- every guest re-readies itself once
+  // it processes the swap's republished ownership, and the host's own
+  // `advanceStart` keeps advancing on each later `control` event exactly
+  // as it would have without the swap.
+  it("a mid-collapse 2v2 TAKE swap still reaches countdown once the collapse's own round trips catch up", () => {
+    const modelPorts = ports();
+    const { driver, host, guests } = seatedLobby(modelPorts, "2v2", 3);
+
+    driver.send(host, { kind: "start" });
+    // A single, small pump -- not enough for every peer's manifest-accept
+    // and auto-ready round trip to finish, so the collapse is still
+    // mid-flight (not yet "ready"/"countdown").
+    driver.pump(1);
+    expect(view(modelPorts, host).phase).not.toBe("countdown");
+    expect(view(modelPorts, host).phase).not.toBe("ready");
+
+    driver.send(host, { kind: "swap", index: 2 });
+
+    driver.pump(30);
+    expect(view(modelPorts, host).phase).toBe("countdown");
+    for (const guest of guests) {
+      expect(view(modelPorts, guest).phase).toBe("countdown");
+    }
+  });
+
+  // #610 round-2 review, BLOCKING finding 2: `case "link_lost"` used to skip
+  // the follow-up chain `case "control"` gets, so a link dropping
+  // mid-collapse left `start_requested` stuck `true` with nothing left to
+  // ever call `advanceStart` again -- the host would show a permanently
+  // disabled "STARTING…" with LEAVE as the only way out. NOT reproduced
+  // here: this file's `fakeCoordinatorPort` never implemented
+  // `"link_lost"` at all (falls through to a no-op `default` case), so it
+  // cannot exercise the real Rust `handle_link_lost`/`drop_guest` behavior
+  // the fix depends on -- testing it here would only prove the fake
+  // matches itself. Covered instead over the REAL production wiring in
+  // `room_code_lobby.spec.ts`'s "a link dying mid-collapse" describe
+  // block, using `StarTransportAdapter.closePeer` to drop a guest's
+  // connection for real.
+
   it("a START before enough humans are connected errors, and touches nothing", () => {
     const modelPorts = ports();
     // 1v1 needs two humans; bot-fill is off and no guest has connected.
@@ -3219,5 +3282,101 @@ describe("room-code guest slot assignment (#601)", () => {
     });
     expect(model.last_dropped_signal).toBeUndefined();
     expect(lobbyModelView(modelPorts, model).last_dropped_signal).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #610 round-2 review, BLOCKING finding 3: a guest joining right after the
+// host starts (the manifest already proposed) used to be silently
+// stranded on both sides -- `invite()`'s guard refuses it forever,
+// `roomGuestJoined` re-queued it forever, and the guest itself sat at
+// "Waiting for the host to assign your seat" with no coordinator and no
+// timeout. Both sides now have an honest, persistent answer instead.
+// ---------------------------------------------------------------------------
+
+describe("a late room-code join after admission closes (#610)", () => {
+  it("turns the late joiner away instead of queueing it forever, and leaves the host a quiet note", () => {
+    const modelPorts = ports();
+    const { driver, host } = seatedLobby(modelPorts, "1v1", 1);
+    driver.send(host, { kind: "lock" });
+    driver.pump(6);
+    expect(host.model.coordinator?.manifest_id).not.toBeUndefined();
+    expect(view(modelPorts, host).late_joiner_note).toBeUndefined();
+
+    // A second guest arrives over the room-code relay after admission
+    // already closed.
+    driver.send(host, { kind: "room_guest_joined", guest_id: "late-guest" });
+
+    expect(view(modelPorts, host).late_joiner_note).toBe(
+      "A player tried to join after the match started.",
+    );
+    // Not queued: retrying `invite()` for this guest could never succeed
+    // (`admissionClosed`'s own doc), so nothing was ever added to
+    // `room_queue` for it to be retried out of.
+    expect(host.model.room_queue.length).toBe(0);
+
+    // The note is quiet, not urgent -- it only surfaces once nothing more
+    // pressing is showing (`troubleText`'s own fallback chain, `lobby.ts`).
+    expect(view(modelPorts, host).error).toBeUndefined();
+  });
+
+  it("drops every already-queued late joiner too, once admission closes mid-queue", () => {
+    const modelPorts = ports();
+    const { driver, host } = seatedLobby(modelPorts, "1v1", 1);
+    // A guest arrives while an unrelated invitation is still pending, so it
+    // queues normally first (the transient, legitimate case `room_queue`
+    // exists for).
+    driver.send(host, { kind: "invite" });
+    driver.send(host, { kind: "room_guest_joined", guest_id: "queued-guest" });
+    expect(host.model.room_queue).toEqual(["queued-guest"]);
+
+    // Admission closes before that queued guest is ever drained.
+    driver.send(host, { kind: "lock" });
+    driver.pump(6);
+
+    expect(view(modelPorts, host).late_joiner_note).toBe(
+      "A player tried to join after the match started.",
+    );
+    expect(host.model.room_queue.length).toBe(0);
+  });
+
+  it("tells a room-code guest the match already started if no offer arrives within the deadline", () => {
+    const modelPorts = ports();
+    const driver = new Driver(modelPorts);
+    const guest = driver.roomGuest("late");
+    expect(view(modelPorts, guest).role).toBe("guest");
+    expect(guest.model.coordinator).toBeUndefined();
+    expect(view(modelPorts, guest).room_active).toBe(true);
+
+    driver.tick(ROOM_JOIN_TIMEOUT_TICKS - 1);
+    // Not yet -- the deadline has not elapsed.
+    expect(view(modelPorts, guest).room_error).toBeUndefined();
+    expect(view(modelPorts, guest).room_active).toBe(true);
+
+    driver.tick(4);
+    expect(view(modelPorts, guest).room_error).toBe(ROOM_FAILURE_TEXT["match_started"]);
+    expect(view(modelPorts, guest).room_active).toBe(false);
+    expect(guest.model.coordinator).toBeUndefined();
+  });
+
+  it("clears the deadline once a real offer resolves a coordinator before it elapses", () => {
+    const modelPorts = ports();
+    const driver = new Driver(modelPorts);
+    const host = driver.roomHost();
+    driver.send(host, { kind: "mode", mode: "1v1" });
+    const guest = driver.roomGuest("on-time");
+    driver.send(host, { kind: "room_guest_joined", guest_id: guest.id });
+    driver.pump(16);
+    // The room-code handshake resolved a real coordinator well within the
+    // deadline -- the same path `room_code_lobby.spec.ts` proves end to
+    // end over the real production wiring.
+    expect(guest.model.coordinator).not.toBeUndefined();
+
+    // Long past the deadline -- since a coordinator already exists, it
+    // must never fire a stale "match already started" over a perfectly
+    // healthy session.
+    driver.tick(ROOM_JOIN_TIMEOUT_TICKS + 60);
+    expect(view(modelPorts, guest).room_error).toBeUndefined();
+    expect(view(modelPorts, host).phase).not.toBe("terminal");
   });
 });

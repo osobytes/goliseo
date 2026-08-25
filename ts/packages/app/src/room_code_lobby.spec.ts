@@ -452,3 +452,87 @@ describe("room_code_lobby: failure states", () => {
     expect(host.state.model.room_code).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #610 round-2 review, BLOCKING finding 2: `case "link_lost"` in
+// `lobby_model.ts`'s `command()` used to skip the follow-up chain
+// `case "control"` gets (`publishAssignments`/`advanceStart`/
+// `autoReadyGuest`), so a link dropping mid-collapse left `start_requested`
+// stuck `true` with nothing left to ever call `advanceStart` again -- the
+// host would show a permanently disabled "STARTING…" with LEAVE as the
+// only way out. Reproduced here over the REAL production wiring: a guest's
+// star connection dies mid-collapse (`StarTransportAdapter.closePeer`, the
+// host's OWN transport detecting it -- never a wire message from the dying
+// guest, which can no longer send one), and bot-fill covers the vacated
+// 2v2 seat.
+// ---------------------------------------------------------------------------
+
+describe("room_code_lobby: a link dying mid-collapse (#610 round-2 review, blocking finding 2)", () => {
+  it("still completes the start with the remaining peer and a bot fill, instead of stranding it", () => {
+    const starRendezvous = fakeStarRendezvous();
+    const stars: TestStar[] = [];
+    const starFactory: OnlinePortsDeps["starFactory"] = (role, peerId) => {
+      const star = fakeStar({ role, rendezvous: starRendezvous, peer_id: peerId });
+      if (!star.initialize().ok) {
+        return undefined;
+      }
+      stars.push(star);
+      return star;
+    };
+    const roomRendezvous = fakeRoomRendezvous();
+    const hostPorts = newTestOnlinePorts(starFactory, roomRendezvous);
+    const host = newDispatchableLobby(hostPorts, () => {});
+
+    host.dispatch({ kind: "room_pick", role: "host" });
+    pump([host], stars);
+    const code = host.state.model.room_code;
+    if (code === undefined) {
+      throw new Error("the host must have a room code after room_pick(host) + a pump cycle");
+    }
+    host.dispatch({ kind: "mode", mode: "2v2" });
+    // 2v2 needs 4 humans; only 3 are connected (host + 2 guests) -- bot
+    // fill covers the vacated seat once guestB's connection dies below.
+    host.dispatch({ kind: "bot_fill" });
+
+    const guestAPorts = newTestOnlinePorts(starFactory, roomRendezvous);
+    const guestA = newDispatchableLobby(guestAPorts, () => {});
+    guestA.dispatch({ kind: "room_pick", role: "guest" });
+    typeCode(guestA, code);
+    guestA.dispatch({ kind: "room_submit" });
+    pump([host, guestA], stars, 60);
+    expect(guestA.state.model.coordinator?.role).toBe("guest");
+
+    const guestBPorts = newTestOnlinePorts(starFactory, roomRendezvous);
+    const guestB = newDispatchableLobby(guestBPorts, () => {});
+    guestB.dispatch({ kind: "room_pick", role: "guest" });
+    typeCode(guestB, code);
+    guestB.dispatch({ kind: "room_submit" });
+    pump([host, guestA, guestB], stars, 60);
+    expect(guestB.state.model.coordinator?.role).toBe("guest");
+    const guestBPeerId = guestB.state.model.peer_id;
+    expect(host.state.model.coordinator?.peers.length).toBe(3);
+
+    // The collapse: one host command.
+    host.dispatch({ kind: "start" });
+
+    // guestB's connection dies immediately, before its own manifest-accept
+    // round trip can complete -- `stars[0]` is the host's own star (the
+    // first one `starFactory` ever created, for `room_pick(host)` above),
+    // and `closePeer` is the star transport's own connection-level drop,
+    // never a wire message.
+    const hostStar = stars[0];
+    if (hostStar === undefined) {
+      throw new Error("the host must have opened a star");
+    }
+    const closed = hostStar.closePeer(guestBPeerId);
+    if (!closed.ok) {
+      throw new Error(`closePeer(${guestBPeerId}) failed: ${closed.error.message}`);
+    }
+
+    pump([host, guestA, guestB], stars, 120);
+
+    expect(host.state.model.coordinator?.phase).toBe("countdown");
+    expect(guestA.state.model.coordinator?.phase).toBe("countdown");
+    expect(host.state.model.coordinator?.peers.length).toBe(2);
+  });
+});
