@@ -44,6 +44,7 @@ import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { App, type OnlineLobbyScreen } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
 import { APP_CONTENT, fakeKeyboard, noopRenderPort } from "./test_support/fixtures.ts";
+import { createSimHost } from "./sim_host.ts";
 
 // Mirrors `lobby.spec.ts`'s (`@gc/screens`) own `fakeGraphicsBackend` -- a
 // headless `GraphicsBackend` stand-in, since no real implementation exists
@@ -764,5 +765,86 @@ describe("online_ports: realMatchDriverPort, directly", () => {
 
     hostDriverPort.dispose(hostDriver);
     guestDriverPort.dispose(guestDriver);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #611: the online frame carried no `roster` at all -- `realMatchDriverPort.frame`
+// returned a bare `frameBuffer.decode(...)`, while the offline path
+// (`browser_sim_host.ts`) always embeds one via `frameBuffer.toRenderFrame`.
+// The real render path (`browser_main.ts`'s `RenderPort.draw`, `@gc/render`'s
+// `pitch.ts`) reads `frame.roster.ids`/`.radius`/... unconditionally, so a
+// roster-less frame is not a smaller frame, it is one the real renderer
+// cannot draw at all -- both peers' first `draw()` call threw at
+// countdown-zero and the canvas never recovered. No prior spec caught this:
+// every match-phase spec elsewhere in this tree drives a hand-rolled fake
+// `MatchDriverPort`, never the production `realMatchDriverPort` AND the
+// production offline `SimHostPort` side by side. This spec drives both, with
+// real `@gc/wasm` on each side, and asserts the ONLINE frame product carries
+// the same structural keys the OFFLINE one does -- so the next shape
+// divergence fails HERE, headlessly, instead of at a friend's kickoff.
+// ---------------------------------------------------------------------------
+
+describe("online_ports: the online frame matches the offline frame's shape (#611)", () => {
+  it("embeds a roster on the online frame, with the same top-level keys and roster size as the offline frame", () => {
+    const { host, guest, stars } = runTwoPeerHandshake();
+    host.dispatch({ kind: "start" });
+    pump([host, guest], stars, 250);
+
+    const hostCoordinator = requireDefined(
+      host.state.model.coordinator,
+      "the host must have a coordinator by the time it starts",
+    );
+    const manifest = requireDefined(hostCoordinator.manifest, "the host must have a manifest");
+    const hostFreeze = requireDefined(
+      (hostCoordinator as unknown as { readonly freeze?: unknown }).freeze,
+      "the host coordinator must carry a freeze once countdown began",
+    );
+
+    const wasm = nodeWasmHost();
+    const hostStar = requireDefined(stars[0], "the host star must have been created");
+    const hostDriverPort = realMatchDriverPort(wasm, hostStar);
+    const hostDriver = hostDriverPort.create({
+      role: "host",
+      peer_id: "host",
+      freeze: hostFreeze,
+      manifest,
+      transport: undefined,
+      initial_snapshot: undefined,
+    });
+
+    const sample = { move_x: 0, move_y: 0, held: 0, edges: 0 };
+    for (let i = 0; i < 5; i += 1) {
+      for (const star of stars) {
+        star.pump();
+      }
+      hostDriverPort.advance(hostDriver, sample);
+    }
+
+    const onlineFrame = hostDriverPort.frame(hostDriver) as unknown as Record<string, unknown>;
+
+    // The offline product this must now structurally match --
+    // `browser_sim_host.ts`'s own `frameBuffer.toRenderFrame` call,
+    // exercised here through the Node-target `sim_host.ts` (identical Rust
+    // ABI on both targets -- see that file's own header).
+    const offlineHost = createSimHost("nebula", "orion", 1, 120, 99);
+    const offlineFrame = offlineHost.frame() as unknown as Record<string, unknown>;
+
+    for (const key of ["players", "control", "field", "ball", "roster"] as const) {
+      expect(offlineFrame[key], `the offline frame must carry '${key}'`).toBeDefined();
+      expect(onlineFrame[key], `the online frame must carry '${key}' (#611)`).toBeDefined();
+    }
+
+    // Not just present -- the right size. The manifest's own `teams[].roster`
+    // is the ten-player (two five-player squads) identity a live match
+    // actually fields; a roster present but empty or truncated would pass
+    // the key check above and still leave the renderer drawing nobody.
+    const expectedRosterSize = manifest.teams.reduce((sum, team) => sum + team.roster.length, 0);
+    const onlineRoster = onlineFrame["roster"] as { readonly ids: readonly string[] };
+    expect(onlineRoster.ids.length).toBe(expectedRosterSize);
+    expect(onlineRoster.ids.length).toBe(offlineHost.roster().ids.length);
+
+    offlineHost.dispose();
+    hostDriverPort.dispose(hostDriver);
   });
 });
