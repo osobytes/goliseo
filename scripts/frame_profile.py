@@ -119,7 +119,14 @@ def find_chromedriver() -> Path:
     raise SystemExit("no chromedriver found")
 
 
-def launch(binary: Path, driver_path: Path, log_path: Path, gpu_mode: str, window: str) -> Any:
+def launch(
+    binary: Path,
+    driver_path: Path,
+    log_path: Path,
+    gpu_mode: str,
+    window: str,
+    headful: bool = False,
+) -> Any:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
@@ -127,7 +134,19 @@ def launch(binary: Path, driver_path: Path, log_path: Path, gpu_mode: str, windo
     log_path.parent.mkdir(parents=True, exist_ok=True)
     options = Options()
     options.binary_location = str(binary)
-    options.add_argument("--headless=new")
+    # HEADLESS IS NOT VALID EVIDENCE FOR A FRAME-PACING QUESTION, and this flag
+    # exists because issue #403 could not be settled without it. Headless Chrome
+    # does not force a GL sync: #403 records it reporting 8.2 ms / 60 fps for the
+    # identical build a real window showed at 26.3 ms / 37.5 fps. Every number
+    # this script prints under the default is therefore a lower bound, useful for
+    # comparing two builds against each other and useless for asking whether a
+    # frame fits inside a real refresh interval.
+    #
+    # Default stays headless so CI and every existing caller are unchanged. Pass
+    # --headful, on a machine with a real display, to answer the frame-budget
+    # question -- it opens a real window and takes over that display.
+    if not headful:
+        options.add_argument("--headless=new")
     for argument in CHROME_HARDWARE_GL_ARGS if gpu_mode == "hardware" else CHROME_SOFTWARE_GL_ARGS:
         options.add_argument(argument)
     options.add_argument("--no-sandbox")
@@ -407,6 +426,13 @@ def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL, help="dev-server URL of the app (default %(default)s)")
     parser.add_argument("--seconds", type=float, default=25.0, help="profile duration (default %(default)s)")
     parser.add_argument("--gpu-mode", choices=("hardware", "software"), default="hardware")
+    parser.add_argument(
+        "--headful",
+        action="store_true",
+        help="run in a REAL window instead of headless. Required for any frame-budget "
+        "claim: headless does not force a GL sync and under-reports frame cost "
+        "(see #403). Needs a display and will take it over for the run.",
+    )
     parser.add_argument("--window", default="1600x900", help="browser window size (default %(default)s)")
     parser.add_argument("--out", type=Path, default=None, help="output directory for raw artifacts")
     parser.add_argument("--no-trace", action="store_true", help="skip the devtools trace (CPU profile only)")
@@ -416,7 +442,14 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     log(f"==> chrome ({args.gpu_mode}) -> {args.url}")
-    driver = launch(find_chrome(), find_chromedriver(), out / "chromedriver.log", args.gpu_mode, args.window)
+    driver = launch(
+        find_chrome(),
+        find_chromedriver(),
+        out / "chromedriver.log",
+        args.gpu_mode,
+        args.window,
+        headful=args.headful,
+    )
     report: dict[str, Any] = {"url": args.url, "gpuMode": args.gpu_mode, "seconds": args.seconds, "window": args.window}
     try:
         renderer = None
