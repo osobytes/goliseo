@@ -80,10 +80,11 @@
 //!
 //! The squash is also at the *back*, where the term is already dominant and a
 //! teammate is already losing. `PASS_ANGULAR_WEIGHT`'s unit is therefore
-//! authored as `px/chord`, not `px/rad`, and its declared range is the
-//! issue's metric prior converted at this project's pitch scale (960 px over
-//! a full-size pitch is about 9 px per metre) and then widened — a range
-//! quoted in radian units would not transfer.
+//! authored as `px/chord`, not `px/rad` — a range quoted in radian units
+//! would not transfer. Its declared range began as a metric prior converted
+//! at a mistaken pitch scale and was then widened by play-testing; see
+//! `gc_data::tunables`'s Passing note for why the conversion is not worth
+//! reconstructing and the widened range is the real authority.
 //!
 //! ## The charge range is a distance TARGET, not a distance
 //!

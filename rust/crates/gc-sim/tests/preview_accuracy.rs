@@ -181,7 +181,10 @@ fn fresh_kickoff_state(seed: f64) -> (MatchState, Roster) {
     let mut state = sim_match::new(NewMatchOptions {
         home,
         away,
-        field: PitchSize { w: 960.0, h: 540.0 },
+        field: PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,
@@ -395,7 +398,7 @@ fn build_pass_tape(seed: f64, tie_t: f64, tie_offset: f64, tune: &Tuning) -> Inp
         source: "gc491-scripted-pass-preview-v1".to_string(),
         content: "nebula-orion-showcase-content-v1".to_string(),
         tuning: tune.serialize(),
-        config: format!("field=960x540;duration=10;max_goals=99;tick_rate=60;aim_t={aim_t}"),
+        config: format!("field=1648x927;duration=10;max_goals=99;tick_rate=60;aim_t={aim_t}"),
         fixture: "gc491-scripted-pass-preview".to_string(),
         seed,
         tick_rate: fixed_clock::TICK_RATE as i64,

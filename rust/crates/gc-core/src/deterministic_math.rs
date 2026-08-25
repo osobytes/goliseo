@@ -271,12 +271,20 @@ const LN_MAX_HALVINGS: u32 = 10;
 /// #517's domain audit of `ai::pass_intercept`'s `(launch_speed / v).ln()`
 /// found the ratio can legitimately reach about `195` -- not the `< 20`
 /// an unaudited guess would assume -- from a corner-to-corner pass on the
-/// default 960x540 field with `PASS_SPEED_MAX` authored to `930` (a valid,
+/// then-default 960x540 field with `PASS_SPEED_MAX` authored to `930` (a valid,
 /// step-aligned value inside its own `[450, 1000]` range): the pass's
 /// launch speed clamps to `930`, friction sheds it down to `v ~= 4.78` by
 /// the last sampled interception fraction, and `930 / 4.78 ~= 194.6`. `4096`
 /// is roughly 21x that measured worst case -- headroom, not a guess, since
 /// the audit is what makes the real number known.
+///
+/// The pitch has since moved to 1648x927, whose diagonal is 1.72x longer, so
+/// a corner-to-corner pass sheds more speed and the true worst-case ratio is
+/// higher than the audited `195`. The 21x headroom is wide enough that the
+/// bound is near-certainly still sound, but say plainly what this is now: an
+/// argument from margin, not the measured result it was when written. If this
+/// clamp ever binds, re-run #517's audit on the current field rather than
+/// widening the constant.
 const LN_MAX_RATIO: f64 = 4096.0;
 
 /// `ln(x)` for `x` in `[1.0, `[`LN_MAX_RATIO`]`]`, computed identically on

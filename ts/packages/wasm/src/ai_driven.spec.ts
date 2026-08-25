@@ -35,8 +35,30 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // still gate is the claim that never depended on Lua and is the urgent one
 // today: the COMPILED WASM module and the native build produce the same bits
 // from the same source. See #517.
-const NATIVE_FINAL_HASH = "4c76e26c95cea2e8";
-const NATIVE_SEQUENCE_DIGEST = "c375257acf952cdf";
+//
+// Re-recorded for the 2026-08-25 pitch re-dimensioning (960x540 -> 1648x927,
+// docs/design/fun_metrics.md's drift log), alongside `session_ai_driven_baseline.txt`
+// and `ai_driven_evidence.rs`'s own `EXPECTED_*` constants, in the same commit.
+// The frozen input frames are untouched, but the match they replay against is
+// a different-sized pitch from tick 0, so this scenario's whole trajectory
+// moves, the same reason `determinism.spec.ts`'s OMP-1 pair moved together
+// this round.
+//
+// Re-recorded a second time the same day: LOCO_PACE_REF_HI settled at 280
+// (down from the 300 in place when the pair above was first captured), so
+// the reference match's whole trajectory moves again.
+//
+// THE DISCRIMINATING MEASUREMENT THIS FILE'S OWN HEADER DEMANDS WAS RUN
+// FIRST, because a moved digest here is exactly as consistent with #405/#517
+// (wasm and native disagreeing) as with a geometry-driven trajectory shift --
+// wasm, `node -e` against the freshly built `dist/pkg/gc_wasm.cjs`
+// (`runAiDrivenEvidence()`, the same export `loadSimHost().runAiDrivenEvidence`
+// wraps): final `9308135889bead2b`, sequence `3bd60753ef065fb7`; native, via
+// `cargo test -p gc-sim --test ai_driven_evidence`
+// (`ai_driven_evidence::EXPECTED_FINAL_HASH`/`EXPECTED_SEQUENCE_DIGEST`), the
+// same two. They AGREE, so this is not #517.
+const NATIVE_FINAL_HASH = "9308135889bead2b";
+const NATIVE_SEQUENCE_DIGEST = "3bd60753ef065fb7";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {

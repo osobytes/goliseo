@@ -400,7 +400,10 @@ mod tests {
         sim_match::new(sim_match::NewMatchOptions {
             home,
             away,
-            field: SimPitchSize { w: 960.0, h: 540.0 },
+            field: SimPitchSize {
+                w: 1648.0,
+                h: 927.0,
+            },
             home_formation: None,
             tactic: None,
             away_tactic: None,
@@ -420,8 +423,8 @@ mod tests {
         let state = fixture_state();
         let json = match_state_to_json(&state);
         let field = json.get("field").expect("field present");
-        assert_eq!(field.field_i64("w"), Some(960));
-        assert_eq!(field.field_i64("h"), Some(540));
+        assert_eq!(field.field_i64("w"), Some(1648));
+        assert_eq!(field.field_i64("h"), Some(927));
         assert!(json.get("goal_home").is_some());
         assert!(json.get("goal_away").is_some());
         let score = json.get("score").expect("score present");
@@ -466,7 +469,10 @@ mod tests {
         let state = sim_match::new(sim_match::NewMatchOptions {
             home,
             away,
-            field: SimPitchSize { w: 960.0, h: 540.0 },
+            field: SimPitchSize {
+                w: 1648.0,
+                h: 927.0,
+            },
             home_formation: None,
             tactic: Some(press_high),
             away_tactic: None,

@@ -30,7 +30,10 @@ pub const DEFAULT_DURATION: f64 = 30.0;
 /// `docs/online/match_flow.md`.
 pub const DEFAULT_MAX_GOALS: i64 = 99;
 /// Default pitch size.
-pub const DEFAULT_FIELD: EnvFieldSize = EnvFieldSize { w: 960.0, h: 540.0 };
+pub const DEFAULT_FIELD: EnvFieldSize = EnvFieldSize {
+    w: 1648.0,
+    h: 927.0,
+};
 /// Default tactic id for both sides.
 pub const DEFAULT_TACTIC_ID: &str = "balanced";
 /// Default home team id.

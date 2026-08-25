@@ -258,11 +258,44 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // have been a finding rather than a re-pin. Re-pinned in the SAME commit
     // as `gc_data::outfield_ai_baseline`'s v14 -> v15 re-freeze, per this
     // file's own coupling rule.
-    assert_eq!(total.candidates, 9775);
-    assert_eq!(total.agree_true, 3415);
-    assert_eq!(total.agree_false, 6066);
-    assert_eq!(total.disagree_deferred, 268);
-    assert_eq!(total.disagree_height, 26);
+    // candidates 9775 -> 11760: the 2026-08-25 pitch re-dimensioning
+    // (960x540 -> 1648x927, docs/design/fun_metrics.md's drift log) is not a
+    // possession-invariant change like the entries above it -- it is a much
+    // bigger pitch with a widened `AI_SHOOT_RANGE`/`AI_HEADER_RANGE` and a
+    // faster pace band, so possession sequences run longer and cover more
+    // ground before a shot resolves, and far more of them reach a keeper for
+    // judgement (the same shape `outfield_ai_baseline`'s own re-freeze shows
+    // in `shots`/`goals_total`). The agree/disagree split moves with the
+    // volume, not against it this time: agree_true 3415 -> 6886 and
+    // agree_false 6066 -> 4020 absorb almost all of the rise;
+    // disagree_deferred more than triples (268 -> 848) while disagree_height
+    // falls sharply (26 -> 6) -- consistent with a bigger pitch producing
+    // more one-tick-later resolutions relative to genuine height
+    // disagreements, not more disagreements outright. `new_only` stays
+    // structurally 0, which is the assertion that would have been a finding
+    // rather than a re-pin. Re-pinned in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v15 -> v16 re-freeze, per this
+    // file's own coupling rule.
+    // candidates 11760 -> 11693: `LOCO_PACE_REF_HI`'s default settled at
+    // 280.0 (down from the 300.0 the pitch re-dimensioning above picked),
+    // per the netcode ceiling recorded beside the tunable in
+    // `gc_data::tunables` -- a slower top speed, not a possession-invariant
+    // or geometry change, so possession sequences cover less ground per
+    // tick and slightly fewer of them still produce a save candidate.
+    // agree_true 6886 -> 6832 and agree_false 4020 -> 4036 barely move;
+    // disagree_deferred falls with the candidate count (848 -> 824) and
+    // disagree_height falls much further in proportion (6 -> 1) -- a slower
+    // ball-to-keeper closing speed leaves fewer genuine height
+    // disagreements and more of what remains landing in the one-tick-later
+    // bucket. `new_only` stays structurally 0, which is the assertion that
+    // would have been a finding rather than a re-pin. Re-pinned in the SAME
+    // commit as `gc_data::outfield_ai_baseline`'s v16 -> v17 re-freeze, per
+    // this file's own coupling rule.
+    assert_eq!(total.candidates, 11693);
+    assert_eq!(total.agree_true, 6832);
+    assert_eq!(total.agree_false, 4036);
+    assert_eq!(total.disagree_deferred, 824);
+    assert_eq!(total.disagree_height, 1);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -365,7 +398,23 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // `disagree_deferred` rising above as the served recovery shifts when
     // presses happen rather than how often shots reach the keeper. No
     // historical byte-divergent split to compare against.
-    assert_eq!(matches_with_disagree, 15);
-    assert_eq!(matches_with_deferred, 33);
-    assert_eq!(matches_with_either, 38);
+    // Re-pinned by the 2026-08-25 pitch re-dimensioning alongside the counts
+    // above: `disagree_height` alone touches only 4/60 matches (7%) -- a
+    // sharp drop -- while folding in `disagree_deferred` reaches 51/60
+    // (85%), the widest split this file has recorded. Both moves track the
+    // same story as the candidate-count jump above: a much bigger pitch
+    // means far more save candidates per match, almost all of them landing
+    // in the deferred (one-tick-later resolution) bucket rather than the
+    // genuine-height-disagreement bucket. No historical byte-divergent
+    // split to compare against.
+    // Re-pinned by `LOCO_PACE_REF_HI` settling at 280 (see the counts above)
+    // alongside the counts above: `disagree_height` alone now touches just
+    // 1/60 matches (2%), down from 4/60 -- consistent with the sharp
+    // disagree_height fall above -- while folding in `disagree_deferred`
+    // still reaches 46/60 (77%), down from 51/60 but still by far the
+    // dominant bucket. No historical byte-divergent split to compare
+    // against.
+    assert_eq!(matches_with_disagree, 1);
+    assert_eq!(matches_with_deferred, 46);
+    assert_eq!(matches_with_either, 46);
 }

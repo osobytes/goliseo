@@ -112,7 +112,10 @@ const HOME_OUTFIELD: [i64; 4] = [2, 3, 4, 5];
 
 /// Playable pitch dimensions every scenario shares. Mirrors
 /// `combat_phases.FIELD`.
-const FIELD: PitchSize = PitchSize { w: 960.0, h: 540.0 };
+const FIELD: PitchSize = PitchSize {
+    w: 1648.0,
+    h: 927.0,
+};
 /// Long enough that no scenario can reach full time and turn a correction
 /// question into a settle question. Mirrors `combat_phases.DURATION_SECONDS`.
 const DURATION_SECONDS: f64 = 14.0;

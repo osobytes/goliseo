@@ -212,10 +212,11 @@ const SWEEP_WINDOWS: [f64; 5] = [0.4, 0.6, 0.8, 1.0, 1.2];
 ///
 /// The whole 3 x 5 x 5 grid runs here and the disagreement set is pinned
 /// exactly, rather than four hand-picked rows standing in for a sweep run
-/// once and thrown away. Ten of the 75 (angle, distance, window) combinations
-/// have the flat model saying **yes** and the body, stepped through the real
-/// locomotion primitive, **not arriving** — including purely lateral
-/// 90-degree redirects, so the over-promise is not a reversal-only curiosity.
+/// once and thrown away. Eleven of the 75 (angle, distance, window)
+/// combinations have the flat model saying **yes** and the body, stepped
+/// through the real locomotion primitive, **not arriving** — including purely
+/// lateral 90-degree redirects, so the over-promise is not a reversal-only
+/// curiosity.
 ///
 /// It also pins the asymmetry, which is the part that makes this a defect
 /// rather than a difference: the disagreement runs in **one direction only**.
@@ -277,6 +278,7 @@ fn the_flat_cap_model_over_promises_where_the_locomotion_model_refuses() {
         vec![
             (180, 60, 400),
             (180, 100, 600),
+            (180, 100, 800),
             (180, 140, 1000),
             (180, 180, 1200),
             (135, 60, 400),

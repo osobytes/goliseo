@@ -84,8 +84,8 @@ fn js_err(message: impl Into<String>) -> JsValue {
 /// already is, for the same reason: nothing here depends on `crate::session`
 /// beyond its `ownership` helper, and this module's field size has no
 /// occasion to differ from it.
-const FIELD_W: f64 = 960.0;
-const FIELD_H: f64 = 540.0;
+const FIELD_W: f64 = 1648.0;
+const FIELD_H: f64 = 927.0;
 
 /// `pub(crate)`, not private: [`crate::player_pose_bridge`] needs the exact
 /// same `{"x": ..., "y": ...}` decode for its own `pos`/`run_vel`/`facing`

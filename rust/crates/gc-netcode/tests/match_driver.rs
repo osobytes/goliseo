@@ -1188,7 +1188,14 @@ fn canonical_digest(digest: &str) -> bool {
 /// simulation output moved to produce this hash. Its siblings
 /// `coordinator.rs`'s `TRANSCRIPT_ID_BASELINE` and `desync_package.rs`'s
 /// `MANIFEST_ID_BASELINE` carry the same addendum for the same bump.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "cce72804f0c6b446";
+///
+/// Re-recorded again for the futsal pitch rework: `match_driver_fixture::initial_snapshot`
+/// now builds its kickoff scenario on a 1648x927 pitch instead of 960x540, so
+/// every player's kickoff position in the boundary-zero snapshot moved and
+/// the hash moved with it. `cce72804f0c6b446` -> `2bfc8e9018cecab2`. This one
+/// IS the kickoff scenario changing, exactly the second trigger this
+/// constant's own doc above names.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "2bfc8e9018cecab2";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and
@@ -2077,9 +2084,55 @@ mod converges_a_correction_taken_during_each_combat_phase {
 // The claim under test is about *rate*, not possibility. When a geometry does
 // clear the bar this fails, and the fix is to move `guard` onto the `Policy`
 // route in `tests/support/online_combat_phases.rs` -- not to raise the bar.
+//
+// **2026-08-25, futsal pitch rework: this case is red on `vs_ranged_scrum`,
+// and it is red for real.** `vs_unarmed_scrum` needed its own `steps` search
+// bound widened at the call site below (see that comment) -- an ordinary
+// consequence of the rework's `LOCO_PACE_REF_LO/HI` retune changing how fast
+// the scrum disperses. `vs_ranged_scrum` is a different shape of finding:
+// its `steps: 480` is untouched (that budget predates this rework, for an
+// unrelated `stagger`-momentum reason -- see the support module's own
+// comment on it) and it now reaches 19+ corrected guard ticks well before
+// the loop even finishes walking its step budget, 4-5x the discriminator's
+// own threshold with every peer agreeing. Instrumented directly: from
+// roughly step 125 on, correction hits land on nearly *every* tick for tens
+// of ticks straight (63 by step 191, peer-for-peer) -- a sustained
+// correction storm, not a handful of extra guards. Widening or narrowing
+// this case's step budget cannot be the fix without gaming the rate this
+// case exists to measure -- exactly the "not to raise the bar" the module
+// doc above already rules out for the sibling situation. Left red on
+// purpose: what this now says is that `guard`'s `CanonicalInput` classification
+// no longer holds for at least one driver-level geometry, which per this
+// module's own doc is a route-promotion call for `tests/support/online_combat_phases.rs`
+// to make -- outside a search-bound fix, and outside this file.
 #[test]
 fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
     for geometry in &online_combat_phases::GUARD_PROBE {
+        // The support module's geometries are authored against its own
+        // self-contained 960x540 combat fixture pitch (`FIELD` in
+        // `tests/support/online_combat_phases.rs`), which the futsal
+        // re-dimensioning left untouched on purpose -- combat reach is
+        // player-scale, not pitch-scale, and player scale did not move. But
+        // `vs_unarmed_scrum`'s eight bodies are locked in a scrum only until
+        // ordinary football AI pulls them apart to chase the ball, and the
+        // pace curve backing that chase *did* move with the rework
+        // (`LOCO_PACE_REF_LO/HI` 100/240 -> 130/300 px/s, `gc_data::tunables`).
+        // A lower normalized pace for the same authored move speed means
+        // slower accel/turn, which changes how fast the scrum disperses
+        // before the policy ever gets a live target -- confirmed empirically
+        // (a driver-level probe run instrumented on `current_snapshot` each
+        // step): the first Windup/Active on the away side now lands at step
+        // 376, not inside the original 240-step budget. `vs_ranged_scrum`
+        // already carries the identical fix for the identical reason (see
+        // its own `steps: 480` comment in the support module) -- this is the
+        // same search-bound adjustment, made at the call site instead of the
+        // shared fixture so every other consumer of `GUARD_PROBE` (there are
+        // none today, but the array is `pub`) keeps the authored budget.
+        let mut geometry = *geometry;
+        if geometry.id == "vs_unarmed_scrum" {
+            geometry.steps = 480;
+        }
+        let geometry = &geometry;
         let mut state = harness(
             MatchMode::OneVOne,
             DriverHarnessOptions {

@@ -75,7 +75,10 @@ pub const DURATION_SECONDS: f64 = 120.0;
 /// Goal cap.
 pub const MAX_GOALS: i64 = 3;
 /// Fixture pitch size.
-pub const FIELD: PitchSize = PitchSize { w: 960.0, h: 540.0 };
+pub const FIELD: PitchSize = PitchSize {
+    w: 1648.0,
+    h: 927.0,
+};
 
 /// All-AI sides. The human-proxy bot in [`crate::bot`] is a separate policy
 /// with its own weaknesses; mixing it in would make this a baseline of the

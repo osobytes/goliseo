@@ -66,6 +66,36 @@
 //! the fixture (a real, self-correcting divergence, not a no-op), so this
 //! also proves this Rust implementation lands on the *new* bits, not merely
 //! on *some* stable bits.
+//!
+//! **Re-pinned 2026-08-25** for the pitch re-dimensioning (960×540 →
+//! 1648×927, regulation futsal proportions; `docs/design/fun_metrics.md`'s
+//! drift log). `initial_snapshot`'s scenario field moved to match, same as
+//! `session_legacy_differential.rs`, `match_differential.rs` and
+//! `session_ai_driven_differential.rs`. Every one of the 33 recorded hashes
+//! in `fixtures/rollback_session_baseline.txt` moved as a result — a bigger
+//! field changes kickoff placement (`KICKOFF_CLEAR` also moved, 120 → 123)
+//! and, once ticks step, the roughly-tripled keeper depth constants
+//! (`CLAIM_DEPTH` 160 → 275, `MIDFIELD_DEPTH` 480 → 824) put every player on
+//! a different float, so every downstream boundary hash differs from the
+//! byte up. Nothing about the state machine itself moved: `correction.*`,
+//! `reconcile.changed`/`causal_tick`/`old_present_boundary`/
+//! `new_present_boundary`, and every `final.*` diagnostic are byte-identical
+//! to the pre-re-dimensioning fixture, which is exactly what a purely
+//! geometric shift should do to a scripted-input state machine that never
+//! reads the field size to decide *whether* to roll back, only *what* the
+//! resulting bodies look like.
+//!
+//! **Re-pinned again, same day**, for `LOCO_PACE_REF_HI`'s default settling
+//! at 280.0 (was 300.0 for the re-dimensioning pass above; see the tunable's
+//! own comment in `gc-data/src/tunables.rs` for why 280 is the only value in
+//! the neighbourhood where the whole `match_driver` suite is green). Every
+//! trajectory-derived hash (`pre.*`, `post.*`, `reconcile.old_present_hash`,
+//! `reconcile.new_present_hash`) moved again as a result; `initial_hash`,
+//! `correction.*`, `reconcile.changed`/`causal_tick`/`old_present_boundary`/
+//! `new_present_boundary`, and every `final.*` diagnostic stayed
+//! byte-identical to the 300.0 fixture, same signature as before: a scalar
+//! locomotion constant changes what every body does per tick, never whether
+//! this state machine rolls back.
 
 use gc_sim::input_frame::{self, InputSampleOptions};
 use gc_sim::r#match::{self as sim_match, NewMatchOptions};
@@ -126,7 +156,10 @@ fn initial_snapshot() -> match_snapshot::MatchSnapshot {
     let state = sim_match::new(NewMatchOptions {
         home,
         away,
-        field: PitchSize { w: 960.0, h: 540.0 },
+        field: PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,

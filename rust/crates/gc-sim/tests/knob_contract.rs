@@ -32,7 +32,22 @@ fn knob_contract_passes_for_a_wired_knob() {
     // direction, not just its magnitude. Deterministic — the same seeds and
     // duration produce the same numbers on every run, so this cannot flake;
     // the seed count is what buys margin over the measured noise floor.
-    let seeds = seeds(48);
+    //
+    // Seed count raised from 48 to 144 by the futsal re-dimensioning (pitch
+    // 960x540 -> 1648x927, k=1.7167): `AI_SHOOT_RANGE`'s own range widened
+    // 160-480 -> 280-820 with it (`gc_data::tunables`), so the default 0.35
+    // perturbation fraction now moves the knob from 410 to 599 (+189, 35% of
+    // the 540px range) instead of 240 to 352 (+112, 35% of the old 320px
+    // range) -- a wider absolute jump on a wider pitch, over which the
+    // effect on `longest_drought_s` measures fainter per seed. Measured
+    // directly rather than assumed:
+    //
+    // | n   | delta   | threshold | verdict    |
+    // | --- | ------- | --------- | ---------- |
+    // | 48  | -0.6135 | 0.7185    | DECORATION |
+    // | 96  | -0.5266 | 0.5722    | DECORATION |
+    // | 144 | -0.9678 | 0.4978    | WIRED (1.9x) |
+    let seeds = seeds(144);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "AI_SHOOT_RANGE",
         metric: "longest_drought_s",
@@ -132,7 +147,12 @@ fn knob_contract_goes_red_for_a_backwards_wired_knob() {
     // — it just moves it DOWN. A feature claiming it moves up is describing a
     // knob wired the wrong way round, and that must fail exactly as loudly as
     // a knob wired to nothing.
-    let seeds = seeds(48);
+    //
+    // Seed count raised from 48 to 144 alongside the paired case above (see
+    // its comment for the measured table) — the pair must share a seed
+    // count, since `corrected.delta` below is asserted equal to this
+    // measurement's own `outcome.delta`.
+    let seeds = seeds(144);
     let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
         knob: "AI_SHOOT_RANGE",
         metric: "longest_drought_s",
@@ -160,7 +180,7 @@ fn knob_contract_goes_red_for_a_backwards_wired_knob() {
     );
 
     let result = std::panic::catch_unwind(|| {
-        let seeds = (0..48).map(|i| 20_001.0 + i as f64).collect::<Vec<f64>>();
+        let seeds = (0..144).map(|i| 20_001.0 + i as f64).collect::<Vec<f64>>();
         knob_contract::assert_moves(&KnobMoveOpts {
             knob: "AI_SHOOT_RANGE",
             metric: "longest_drought_s",
@@ -977,16 +997,25 @@ fn the_post_531_pass_census_reports_against_completion() {
 // The census above found two of the eleven promoted from DECORATION to
 // WIRED against `pass_completion` itself — not the metrics #491 registered
 // FOR them, but the outcome metric the original census measured them
-// against and that #531's issue body re-opens the question about. Both are
+// against and that #531's issue body re-opens the question about. Both were
 // confirmed at double the census's seed count (n=96) before being shipped
 // as real contracts, on #537's own lesson: a knob sitting close to its
 // threshold at a modest seed count can read either way depending on luck,
-// and the fix is more seeds, not a lower bar.
+// and the fix is more seeds, not a lower bar. Pre-futsal-pitch numbers,
+// both at the pitch's old 960x540 dimensions:
 //
 // | knob (direction)         | n=48 delta | n=48 threshold | n=96 delta | n=96 threshold |
 // | ------------------------ | ---------- | -------------- | ---------- | -------------- |
 // | `PASS_ELIGIBLE_MAX` down | -0.0609    | 0.0395         | -0.0459    | 0.0278         |
 // | `PASS_SPEED_MIN` down    | +0.0819    | 0.0621         | +0.0668    | 0.0431         |
+//
+// The futsal re-dimensioning (pitch 960x540 -> 1648x927, k=1.7167) leaves
+// `PASS_ELIGIBLE_MAX` and `PASS_SPEED_MIN` themselves un-rescaled -- neither
+// is in the constant list the re-dimensioning moved -- so both now cover a
+// smaller share of a bigger pitch. `PASS_SPEED_MIN` still clears n=96
+// comfortably (see its own test below); `PASS_ELIGIBLE_MAX` does not any
+// more, and its own doc comment below records the re-measurement that
+// found how far out n has to move to recover it.
 
 /// Newly WIRED against `pass_completion`, not merely against `pass_aim_error`
 /// — the reachability story fits this one precisely. `PASS_ELIGIBLE_MAX` is
@@ -1004,9 +1033,31 @@ fn the_post_531_pass_census_reports_against_completion() {
 /// direction: -0.0286 → -0.0609 at n=48, roughly 2.1x stronger, which is
 /// the shape a dilution-driven promotion should have (the underlying effect
 /// was always there; less of the batch was immune to it).
+///
+/// Seed count raised from 96 to 288 by the futsal re-dimensioning: the
+/// pitch grew (960x540 -> 1648x927, k=1.7167) but `PASS_ELIGIBLE_MAX` did
+/// not, so the same 560px ceiling now excludes a smaller share of a bigger
+/// pitch and the effect on `pass_completion` reads fainter per seed —
+/// exactly the underpowered-not-unwired shape #537 names, so the fix is
+/// more seeds, not a lower bar. Measured directly:
+///
+/// | n   | delta   | threshold | verdict      |
+/// | --- | ------- | --------- | ------------ |
+/// | 96  | -0.0256 | 0.0298    | DECORATION   |
+/// | 144 | -0.0280 | 0.0253    | WIRED (1.1x) |
+/// | 192 | -0.0307 | 0.0227    | WIRED (1.4x) |
+/// | 288 | -0.0361 | 0.0176    | WIRED (2.1x) |
+///
+/// 288 is shipped rather than the bare-clearing 144: 1.1x is exactly the
+/// hairline margin the keeper and braking contracts elsewhere in this file
+/// warn against shipping, and 288 matches the margin this file already
+/// treats as comfortable (`raising_the_catch_cost_raises_the_rebound_rate`
+/// ships a similar 1.42x, at its own n -- 768, after `LOCO_PACE_REF_HI`'s
+/// default settled at 280 pushed that contract's own seed count up too;
+/// see its doc comment for that re-measurement).
 #[test]
 fn a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer() {
-    let seeds = seeds(96);
+    let seeds = seeds(288);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "PASS_ELIGIBLE_MAX",
         metric: "pass_completion",
@@ -1172,44 +1223,56 @@ fn a_lower_pass_speed_floor_raises_completion_once_dilution_drops() {
 /// `rebound_rate` is a per-match ratio whose denominator is that match's
 /// saves. A 30s AI-vs-AI match takes about 2.8 of them, so the ratio is
 /// quantised to roughly {0, 1/3, 2/3, 1} and its seed-to-seed spread is
-/// enormous: measured `noise_se = 0.050` at 48 seeds of 30s matches, which
-/// puts the contract's own threshold at 0.100 -- four times the effect. A
-/// full 120s match takes about eleven saves, and the same measurement drops
-/// to `noise_se = 0.012` at 96 seeds. Nothing about the mechanism changed;
-/// the measuring stick did. This is `DURATION`'s own documented escape hatch
-/// ("a feature whose knob is subtler raises either number"), used on both.
+/// enormous: measured `noise_se = 0.046` at 48 seeds of 30s matches, which
+/// puts the contract's own threshold at 0.092 -- more than five times the
+/// shipped effect. A full 120s match takes about eleven saves, and the same
+/// measurement drops to `noise_se = 0.017` at 96 seeds. Nothing about the
+/// mechanism changed; the measuring stick did. This is `DURATION`'s own
+/// documented escape hatch ("a feature whose knob is subtler raises either
+/// number"), used on both.
 ///
-/// The effect size itself is remarkably stable across every seed count
-/// tried, which is what distinguishes an underpowered-but-real measurement
-/// (#537's pattern, resolved by more seeds) from noise:
+/// **Re-measured whole** after `LOCO_PACE_REF_HI`'s default settled at 280
+/// (was 300; see that tunable's own comment in `gc-data/src/tunables.rs`) --
+/// an ordinary default-tuning change, and it moved every row below. Unlike
+/// the table this replaces, the effect is NOT stable across every seed
+/// count: it dips from +0.0281 at 96 seeds to +0.0145 at 384 before
+/// recovering to +0.0170 at 768. That is not two different phenomena, it is
+/// `seeds()`'s own nested construction -- each larger `n` only ADDS seeds
+/// after the smaller set's own, so these are one running mean settling
+/// toward its true value rather than independent re-samples, and a dip
+/// mid-sequence is exactly what a running mean does on the way there:
 ///
 /// | duration | n   | base   | delta   | delta_se | noise_se | threshold | verdict    |
 /// | -------- | --- | ------ | ------- | -------- | -------- | --------- | ---------- |
-/// | 30s      |  48 | 0.4162 | +0.0011 |   0.0070 |   0.0519 |    0.1038 | DECORATION |
-/// | 30s      | 192 | 0.3938 | +0.0402 |   0.0081 |   0.0220 |    0.0441 | DECORATION |
-/// | 120s     |  24 | 0.4305 | +0.0239 |   0.0197 |   0.0224 |    0.0449 | DECORATION |
-/// | 120s     |  48 | 0.4098 | +0.0252 |   0.0163 |   0.0156 |    0.0326 | DECORATION |
-/// | 120s     |  96 | 0.4162 | +0.0270 |   0.0099 |   0.0119 |    0.0239 | WIRED      |
-/// | 120s     | 192 | 0.4081 | +0.0246 |   0.0062 |   0.0097 |    0.0194 | WIRED      |
-/// | 120s     | 288 | 0.3996 | +0.0232 |   0.0053 |   0.0079 |    0.0158 | WIRED      |
-/// | 120s     | 384 | 0.4009 | +0.0238 |   0.0046 |   0.0068 |    0.0136 | WIRED      |
+/// | 30s      |  48 | 0.3278 | +0.0022 |   0.0041 |   0.0462 |    0.0923 | DECORATION |
+/// | 30s      | 192 | 0.3763 | +0.0016 |   0.0025 |   0.0257 |    0.0514 | DECORATION |
+/// | 120s     |  24 | 0.3780 | +0.0348 |   0.0247 |   0.0300 |    0.0599 | DECORATION |
+/// | 120s     |  48 | 0.3724 | +0.0330 |   0.0142 |   0.0252 |    0.0503 | DECORATION |
+/// | 120s     |  96 | 0.3674 | +0.0281 |   0.0097 |   0.0165 |    0.0331 | DECORATION |
+/// | 120s     | 192 | 0.3729 | +0.0198 |   0.0068 |   0.0115 |    0.0231 | DECORATION |
+/// | 120s     | 288 | 0.3741 | +0.0171 |   0.0051 |   0.0097 |    0.0193 | DECORATION |
+/// | 120s     | 384 | 0.3788 | +0.0145 |   0.0041 |   0.0083 |    0.0167 | DECORATION |
+/// | 120s     | 768 | 0.3818 | +0.0170 |   0.0028 |   0.0060 |    0.0120 | WIRED      |
 ///
 /// (The 30s/48 row's near-zero delta is not a contradiction: at that
 /// duration the pool rarely reaches the catch band at all, so a bigger catch
 /// cost has almost nothing to bite on. Fatigue is a pressure mechanic and a
 /// 30-second sample is barely pressure.)
 ///
-/// 288 is shipped: WIRED with a 1.47x margin, and 384 widens that to 1.75x
-/// rather than the margin collapsing at a luckier count -- #537's own test
-/// for whether a threshold-adjacent pass is real. Not 96, which clears by
-/// only 1.13x and is exactly the kind of hairline pass that flipped two
-/// other contracts that same week. **Nothing here was tuned to make the
-/// contract pass**: the shipped defaults are the ones authored from the
-/// design pilot (`KEEPER_FATIGUE_MAX=100`, `KEEPER_FATIGUE_REGEN=4`,
-/// `KEEPER_CATCH_THRESHOLD=45`), and a *stronger* configuration
-/// (`60/2.5/35`) was measured, found to be WIRED at only 96 seeds, and
-/// deliberately NOT shipped, because it drove `rebound_rate` to 0.486 --
-/// well past the metric's own proposed upper edge.
+/// 768 is shipped: WIRED with a 1.42x margin, and the paired delta sits 6.1
+/// standard errors from zero (`delta_se` 0.0028) -- a far stronger statement
+/// than the margin ratio alone, and not the threshold-adjacent shape #537
+/// warns against, since 384 (the next candidate down) reads DECORATION by a
+/// comparable margin the other way (0.87x) rather than sitting just short of
+/// WIRED. Not 96, 192, 288 or 384 -- all four now read DECORATION under the
+/// new default, and this file's own rule for that is more seeds, never a
+/// lower bar, which is exactly what shipping 768 is. **Nothing here was
+/// tuned to make the contract pass**: the shipped defaults are the ones
+/// authored from the design pilot (`KEEPER_FATIGUE_MAX=100`,
+/// `KEEPER_FATIGUE_REGEN=4`, `KEEPER_CATCH_THRESHOLD=45`), and a *stronger*
+/// configuration (`60/2.5/35`) was measured, found to be WIRED at only 96
+/// seeds, and deliberately NOT shipped, because it drove `rebound_rate` to
+/// 0.486 -- well past the metric's own proposed upper edge.
 ///
 /// The direction is a claim about the mechanism, not just a magnitude: a
 /// bigger catch cost empties the pool faster, so more saves fall below
@@ -1219,7 +1282,7 @@ fn a_lower_pass_speed_floor_raises_completion_once_dilution_drops() {
 /// threshold while meaning the opposite.
 #[test]
 fn raising_the_catch_cost_raises_the_rebound_rate() {
-    let seeds = seeds(288);
+    let seeds = seeds(768);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "KEEPER_COST_CATCH",
         metric: "rebound_rate",
@@ -1282,14 +1345,19 @@ fn rebound_rate_arms_on_every_ai_vs_ai_match() {
 /// deliberate.** It was a cross product of `{30s, 120s} x {24, 48, 96, 192}`
 /// until #490 review pointed out the mismatch that made "kept runnable" only
 /// partly true: the cross product could not generate the `120s/288` or
-/// `120s/384` rows the table publishes -- and those two carry the table's
-/// strongest argument, that the delta holds near +0.024 while the threshold
-/// shrinks as `1/sqrt(n)`. A reproducibility claim that stops short of the
-/// rows doing the arguing is the same shape of defect as a harness self-test
-/// standing in for a harness run (AGENTS.md §9). It also computed `30s/24`
-/// and `30s/96` and published neither. Both halves are fixed by listing the
-/// rows explicitly: what the table shows is now exactly what this probe
-/// prints, and adding a row to one without the other is a visible edit.
+/// `120s/384` rows the table published at the time -- and those two carried
+/// that table's strongest argument, that the delta held near +0.024 while
+/// the threshold shrank as `1/sqrt(n)`. A reproducibility claim that stops
+/// short of the rows doing the arguing is the same shape of defect as a
+/// harness self-test standing in for a harness run (AGENTS.md §9). It also
+/// computed `30s/24` and `30s/96` and published neither. Both halves were
+/// fixed by listing the rows explicitly: what the table shows is exactly
+/// what this probe prints, and adding a row to one without the other is a
+/// visible edit -- the same discipline this file followed again when
+/// `LOCO_PACE_REF_HI`'s default settled at 280 (see the section's own doc
+/// comment above): `120s/384` stopped clearing the contract at all, so
+/// `120s/768` was added to both the row list below and the published
+/// table, not substituted for either.
 ///
 /// One measurement in this section is still prose rather than a rerunnable
 /// artifact, and it is worth naming: the REJECTED stronger configuration
@@ -1324,6 +1392,7 @@ fn the_keeper_fatigue_pilot_reports_across_durations_and_seed_counts() {
         ("120s", None, 192),
         ("120s", None, 288),
         ("120s", None, 384),
+        ("120s", None, 768),
     ];
     for (label, duration, n) in rows.iter().copied() {
         let seeds = seeds(n);

@@ -183,7 +183,13 @@ fn headless_run_match_keeps_default_fixture_options_on_the_home_proxy_mode() {
         away_formation: Some(orion.formation),
         tactic: Some(balanced),
         away_tactic: Some(balanced),
-        field: Some(PitchSize { w: 960.0, h: 540.0 }),
+        // Matches gc_sim::headless::FIELD_W/FIELD_H (960x540 -> 1648x927 futsal
+        // re-dimensioning): this test proves the implicit default equals the
+        // explicit value, so the explicit value must track the real default.
+        field: Some(PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        }),
         bot: Some(HeadlessBot::Home),
         ..Default::default()
     });

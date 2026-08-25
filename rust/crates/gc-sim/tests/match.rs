@@ -1388,9 +1388,9 @@ fn does_not_get_priority_outside_its_box_closer_attacker_wins() {
     let att = away_outfielders(&s)[0];
     s.owner = None;
     s.pickup_cd = 0.0;
-    s.players[(ki - 1) as usize].pos = Vec2::new(175.0, 270.0); // ball at x=180 is outside the box (depth > 160)
-    s.players[(att - 1) as usize].pos = Vec2::new(182.0, 270.0); // strictly closer to the ball
-    s.ball = Vec2::new(180.0, 270.0);
+    s.players[(ki - 1) as usize].pos = Vec2::new(290.0, 270.0); // ball at x=295 is outside the box (depth > 275)
+    s.players[(att - 1) as usize].pos = Vec2::new(297.0, 270.0); // strictly closer to the ball
+    s.ball = Vec2::new(295.0, 270.0);
     s.ball_vel = Vec2::new(0.0, 0.0);
     step(&mut s, 0.016, &no_input(), &tune);
     assert_eq!(
@@ -1543,7 +1543,10 @@ fn a_shot_over_the_crossbar_is_not_a_goal_under_the_bar_scores() {
         }
         s.score.home
     };
-    assert_eq!(shoot_at_line(80.0), 0, "over the bar: no goal");
+    // 80.0 cleared the bar until the futsal re-dimensioning raised CROSSBAR
+    // 70 -> 82 (real futsal is 2.00 m); 95 is over the new bar by the same
+    // margin 80 had over the old one. See fun_metrics.md, 2026-08-25.
+    assert_eq!(shoot_at_line(95.0), 0, "over the bar: no goal");
     assert_eq!(shoot_at_line(10.0), 1, "under the bar: goal");
 }
 

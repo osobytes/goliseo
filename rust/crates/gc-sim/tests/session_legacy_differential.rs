@@ -448,7 +448,7 @@ fn distinctive_slots(tick: i64) -> [input_frame::InputSample; 8] {
 /// Mirrors `crates/gc-wasm/src/session.rs`'s `Session::new` construction of
 /// its LIVE state exactly: no `input_ownership` (legacy mode), no
 /// `human_controlled` override (defaults `true`, so one player really does
-/// take the human-input branch), teams nebula/orion, seed 5, a 960x540
+/// take the human-input branch), teams nebula/orion, seed 5, a 1648x927
 /// field, and `match.step`'s default duration/goal limit (120 seconds, no
 /// goal cap).
 ///
@@ -460,7 +460,10 @@ fn new_ordinary_session() -> MatchState {
     sim_match::new(NewMatchOptions {
         home,
         away,
-        field: PitchSize { w: 960.0, h: 540.0 },
+        field: PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,
@@ -1087,7 +1090,7 @@ fn record_session_legacy_ordinary_baseline() {
     println!("# by the goalkeeper forward-prediction rework for #490.");
     println!("#");
     println!(
-        "# Scenario: teams nebula/orion, seed {MATCH_SEED}, 960x540 field, default \
+        "# Scenario: teams nebula/orion, seed {MATCH_SEED}, 1648x927 field, default \
          duration/goal-limit,"
     );
     println!(

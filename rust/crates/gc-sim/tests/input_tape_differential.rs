@@ -132,6 +132,16 @@ use indexmap::IndexMap;
 
 /// Self-recorded baseline, NOT the retired Lua vector — see this file's
 /// module doc ("retired under #536").
+// `boundary_hash[0]` re-recorded 1abb6dd64f3c95fa -> e56293e838fe3ff1 by the
+// futsal re-dimensioning. NOT a serialization or digest regression, which is
+// what this hash exists to catch: `match_snapshot`'s field order and
+// `match_snapshot::hash` are both untouched. `KICKOFF_CLEAR` moved 120 -> 123
+// with the pitch, and this recording's own `PitchSize` is still 960x540, so
+// `place_kickoff` pushes the away side to fractionally different floats before
+// any tick is stepped -- the same mechanism `match_snapshot.rs` documents for
+// its own fixed-960x540 fixture. The stepped boundaries [1..5] are unaffected
+// here because this file no longer folds a trajectory claim into a format test
+// (#520).
 const FIXTURE: &str = include_str!("fixtures/input_tape_baseline.txt");
 
 fn reference() -> IndexMap<&'static str, &'static str> {
@@ -525,12 +535,34 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 ///
 /// Re-recorded by reading the assertion's own failure output — four values,
 /// so no recorder is warranted. Any deliberate simulation change moves these.
+///
+/// **Re-pinned 2026-08-25** for the pitch re-dimensioning
+/// (`docs/design/fun_metrics.md`'s drift log). This fixture's own
+/// `PitchSize` stays 960×540 on purpose (see `recording()`), so none of the
+/// five moved because the pitch itself grew here — two field-size-independent
+/// constants from the same re-dimensioning did it instead, exactly as traced
+/// for the sibling fixture in `match_snapshot.rs`'s
+/// `boundary_hash[0]`-equivalent byte-count comment: `KICKOFF_CLEAR` 120 →
+/// 123 (`place_kickoff`'s centre-circle push radius) lands the away slot's
+/// kickoff-cleared players on different floats before a single tick steps,
+/// so even boundary_hash[1] (one frame past that altered start) moves; and
+/// the keeper depth constants roughly tripling (`CLAIM_DEPTH` 160 → 275,
+/// `MIDFIELD_DEPTH` 480 → 824) put the keeper on a different approach
+/// target on every subsequent tick, compounding into boundary_hash[2..5].
+/// Re-derived by running this build (`cargo test -p gc-sim --test
+/// input_tape_differential the_stepped_boundaries_reproduce_their_recorded_baseline
+/// -- --nocapture` with a temporary `eprintln!` of `tape.boundary_hashes`,
+/// reverted after capture) and confirmed reproducible across two runs.
+///
+/// **Re-pinned again, same day**: `LOCO_PACE_REF_HI`'s default settled at
+/// 280 (`gc-data/src/tunables.rs`), moving all five values once more.
+/// Re-derived and confirmed the same way.
 const STEPPED_BASELINE: [&str; 5] = [
-    "637c1926f87fc3bc",
-    "5785c4efdbfa9a23",
-    "3cc1b7992c4f11a2",
-    "cc72b2e93a3cb331",
-    "40f0e9bfb8b17212",
+    "f629336cfa7f0a33",
+    "8c324349669ec26f",
+    "b4dcf06f5c4d1c48",
+    "a84351131a3b445c",
+    "071b6f33ca353367",
 ];
 
 #[test]

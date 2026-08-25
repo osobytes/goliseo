@@ -750,10 +750,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Pace window low",
         cat: "Locomotion",
-        default: 100.0,
+        default: 130.0,
         unit: "px/s",
-        min: 60.0,
-        max: 200.0,
+        min: 80.0,
+        max: 250.0,
         step: 10.0,
         desc: "Base move speed mapped to normalized pace 0.",
     },
@@ -762,10 +762,45 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Pace window high",
         cat: "Locomotion",
-        default: 240.0,
+        // 280, and the ceiling here is netcode rather than feel. The futsal
+        // re-dimensioning wants roughly 289-329 px/s to cross the 1648px pitch
+        // in real futsal's 5.0-5.7 s, so 300 was the natural pick -- but
+        // gc-netcode's
+        // `finds_no_driver_level_geometry_where_the_policy_guards_often_enough`
+        // goes red between 290 and 295: at 295+ the `vs_ranged_scrum` geometry
+        // produces a sustained rollback-correction storm, corrections on nearly
+        // every tick for 60+ consecutive ticks, far past that test's
+        // GUARD_POLICY_ROUTE_MINIMUM of 4. Bisected on the default alone, with
+        // min/max held fixed because they feed the tape identity: 240/260/280
+        // green, 290 and 310 break two combat-phase scenarios whose scripted
+        // bursts stop landing inside their windup/contact windows, 295/300 trip
+        // the guard storm. 280 is the only value in this neighbourhood where
+        // the whole match_driver suite is green.
+        //
+        // It crosses in 5.89 s against futsal's 5.0-5.7 s -- about 3% slower
+        // than this re-dimensioning aimed at, a deliberate concession to the
+        // netcode ceiling rather than a miss. The real fix is the one that
+        // test's own module doc prescribes: move `guard` onto the `Policy`
+        // route. Raise this only after that lands.
+        //
+        // Do NOT read 292 as a clean threshold. A follow-up sweep of speed x
+        // authored network profile found the effect is not monotonic in speed:
+        // under the guard test's own delivery cadence plus the MILDEST authored
+        // profile (Omp0Parity -- 3-tick delay, 1% loss, no jitter), 280 storms
+        // (11 corrected guard ticks, 3/3 seeds) while 292 stays clean. The
+        // likely cause is that the guard probe pumps its transport only every
+        // 5th step, and that artificial batching aliases against movement
+        // speed. Production does not batch: per docs/online/network_architecture.md
+        // it sends every driver tick. Under a per-tick relay 280 stayed clean
+        // against all four authored profiles, and 300+ stormed under every one
+        // of them. So 280 is sound for how the game actually ships -- but the
+        // guard probe is testing a worse-than-production delivery pattern over
+        // a better-than-production wire, and no single number here is a hard
+        // edge.
+        default: 280.0,
         unit: "px/s",
-        min: 140.0,
-        max: 320.0,
+        min: 180.0,
+        max: 420.0,
         step: 10.0,
         desc: "Base move speed mapped to normalized pace 1.",
     },
@@ -947,11 +982,23 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
     // many knobs is a tab, and a designer piloting the soft cone should not
     // have to hunt for them between shot charge and header pace.
     //
-    // Every range below is a PRIOR, converted from the metric ranges the
-    // issue proposed at this project's pitch scale (960 px across a
-    // full-size pitch is about 9 px per metre). `PASS_ANGULAR_WEIGHT` in
-    // particular is feel-critical, and a harness cannot feel frustration —
-    // see `gc_sim::passing`'s module doc.
+    // Every range below STARTED as a prior converted from the metric ranges
+    // the issue proposed, at a pitch scale of "960 px across a full-size
+    // pitch, about 9 px per metre". That conversion was wrong and the note
+    // claiming it has been removed rather than repaired. The renderer is the
+    // only thing in this repository that ties a world unit to a metre: it
+    // draws a player `PLAYER_RADIUS * HEIGHT_IN_RADII * 2` = 72 px tall, so
+    // at a 1.75 m player one px is 24.31 mm and the pitch is about 41 px per
+    // metre — 4.5x finer than the figure these ranges were converted at, and
+    // the pitch was never full-size anyway. It is now 1648 px across a 40.1 m
+    // futsal court.
+    //
+    // So treat these as EMPIRICAL values that survived play-testing, not as
+    // metric priors: the numbers are load-bearing, the derivation behind them
+    // is not. `PASS_ELIGIBLE_MAX`'s 560 px is 13.6 m, a sensible long pass on
+    // a 40 m court, which is why re-deriving them was not worth the balance
+    // churn. `PASS_ANGULAR_WEIGHT` in particular is feel-critical, and a
+    // harness cannot feel frustration — see `gc_sim::passing`'s module doc.
     TunableDef {
         id: "PASS_ANGULAR_WEIGHT",
         tier: Tier::Sim,
@@ -1342,10 +1389,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Max punt range",
         cat: "Keeper",
-        default: 640.0,
+        default: 1100.0,
         unit: "px",
-        min: 400.0,
-        max: 900.0,
+        min: 680.0,
+        max: 1540.0,
         step: 20.0,
         desc: "Range of a fully charged keeper punt.",
     },
@@ -1355,12 +1402,13 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "AI shoot range",
         cat: "AI",
-        default: 240.0,
+        default: 410.0,
         unit: "px",
-        min: 160.0,
-        // max widened 340 -> 480 (half pitch): the balance search's optimum
-        // sat on the old fence (docs/design/fun_metrics.md, phase 3).
-        max: 480.0,
+        min: 280.0,
+        // max widened 340 -> 480 (half pitch), then rescaled 480 -> 820 with
+        // the pitch itself: the balance search's optimum sat on the old fence
+        // (docs/design/fun_metrics.md, phase 3).
+        max: 820.0,
         step: 10.0,
         desc: "Distance from goal inside which the AI shoots.",
     },
@@ -1369,12 +1417,13 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "AI header range",
         cat: "AI",
-        default: 200.0,
+        default: 340.0,
         unit: "px",
-        min: 120.0,
-        // max widened 300 -> 420: the balance search's optimum sat on the
-        // old fence (docs/design/fun_metrics.md, phase 3).
-        max: 420.0,
+        min: 210.0,
+        // max widened 300 -> 420, then rescaled 420 -> 720 with the pitch
+        // itself: the balance search's optimum sat on the old fence
+        // (docs/design/fun_metrics.md, phase 3).
+        max: 720.0,
         step: 10.0,
         desc: "Distance from goal inside which the AI attacks a cross with its head.",
     },

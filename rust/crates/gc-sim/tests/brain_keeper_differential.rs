@@ -26,8 +26,11 @@
 //! (`keeper::travel_time`, exercised across seven distance/speed/friction
 //! combinations spanning near-zero and near-the-0.95-cutoff ratios), plus
 //! the downstream chip-solving arithmetic
-//! (`chip_launch`/`committed_chip_launch`/`goal_line_height`) and the
-//! `sqrt`-based positioning geometry (`arc_target`/`base_target`).
+//! (`chip_launch`/`committed_chip_launch`/`goal_line_height`). The
+//! `sqrt`-based positioning geometry (`arc_target`/`base_target`) used to be
+//! covered here too; that case is gone now that the futsal pitch rework
+//! moved the `CLAIM_DEPTH`/`MIDFIELD_DEPTH` constants it reads — see the
+//! comment where it used to live, further down this file.
 
 use gc_core::vec2::Vec2;
 use gc_sim::brain;
@@ -295,27 +298,17 @@ fn reaction_reach_and_commit_lead_match_the_reference_lua() {
     assert_matches_reference(keeper::commit_lead(0.37, 0.24), &reference, "commit_lead.a");
 }
 
-#[test]
-fn arc_target_and_base_target_match_the_reference_lua_sqrt_based_geometry() {
-    let reference = reference();
-    let context = keeper::KeeperPositionContext {
-        keeper_pos: Vec2::new(12.0, 270.0),
-        ball_pos: Vec2::new(233.0, 341.0),
-        goal: keeper::Rect {
-            x: -30.0,
-            y: 215.0,
-            w: 30.0,
-            h: 110.0,
-        },
-        team: keeper::Team::Home,
-        aggression: 57.0,
-        in_1v1: false,
-    };
-    let arc = keeper::arc_target(&context);
-    assert_matches_reference(arc.x, &reference, "arc_target.x");
-    assert_matches_reference(arc.y, &reference, "arc_target.y");
-
-    let base = keeper::base_target(&context);
-    assert_matches_reference(base.x, &reference, "base_target.x");
-    assert_matches_reference(base.y, &reference, "base_target.y");
-}
+// `arc_target_and_base_target_match_the_reference_lua_sqrt_based_geometry`,
+// which used to live here, is deleted: `arc_target`/`base_target` read the
+// module-level `CLAIM_DEPTH`/`MIDFIELD_DEPTH` constants directly rather than
+// taking them through `KeeperPositionContext`, and the futsal pitch rework
+// moved both (160->275, 480->824), so the captured Lua geometry no longer
+// applies — a real, intended change, not a defect. There is no Lua build
+// left to re-capture against and nothing else in this file depends on the
+// four `arc_target.*`/`base_target.*` lines still sitting unread in
+// `fixtures/brain_keeper_lua_reference.txt`, which is otherwise still live
+// evidence for the other ten cases in this file and is left untouched.
+// `gc-sim/tests/keeper.rs` already covers both functions' actual geometry
+// (monotonic advance, midfield hold, one-on-one depth, lateral clamping,
+// the degenerate-ray fallback) with plain property assertions against the
+// current pitch, independent of Lua, so no replacement is added here.

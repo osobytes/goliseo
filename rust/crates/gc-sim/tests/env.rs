@@ -79,7 +79,14 @@ fn direct_match(seed: f64, duration: f64) -> match_snapshot::MatchState {
     sim_match::new(sim_match::NewMatchOptions {
         home,
         away,
-        field: PitchSize { w: 960.0, h: 540.0 },
+        // env_config::DEFAULT_FIELD since the futsal re-dimensioning: the
+        // reference fixture's field is DEFAULT_FIELD (1648x927), not the old
+        // 960x540, and this independent reconstruction must match it or the
+        // equivalence it exists to check is meaningless.
+        field: PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: Some(balanced),
         away_tactic: Some(balanced),

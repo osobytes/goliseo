@@ -157,6 +157,17 @@ interface RealPeer {
   readonly session: SimSession;
   readonly presentation: OnlineMatchPresentation<WasmRollbackEventsTimeline>;
   readonly confirmed: Map<string, number>;
+  /** Ids currently revoked -- i.e. absent from the timeline's live state as
+   * of the most recent diff that mentioned them. An id's `event_id`
+   * (`{tick}|{domain_len}:{domain}|{ordinal}`, `rollback_events.rs`'s
+   * `event_id`) names a *slot*, not a specific piece of content: a further
+   * correction can legally reoccupy a revoked slot with a different event
+   * (even, as observed, a different player) before the tick confirms, and
+   * `record` below removes an id from this set the moment that happens. A
+   * currently-revoked id (one still in this set with no later `added`
+   * un-revoking it) must never reach `confirmed` -- `rollback_events::apply`
+   * can never correct an already-confirmed tick, so anything that *stays*
+   * revoked through confirmation was dropped for good. */
   readonly revoked: Set<string>;
   readonly latest: Map<string, unknown>;
   readonly checkpoints: Map<number, string>;
@@ -331,6 +342,11 @@ function record(peer: RealPeer, batch: RollbackPlayableLabBatch): void {
   for (const diffEntry of batch.event_diffs) {
     for (const event of diffEntry.added) {
       peer.latest.set(event.id, event.payload);
+      // A slot a prior correction revoked can be legally reoccupied by a
+      // later one before the tick confirms (see `revoked`'s doc) -- an
+      // `added` entry for a currently-revoked id is exactly that
+      // reoccupation, not a reuse of dead identity.
+      peer.revoked.delete(event.id);
       if (isCombat(event.domain)) {
         peer.addedCombat += 1;
       }
@@ -556,11 +572,17 @@ const PHASE_STEPS = 480;
 // each step, before the driver evicts its retained boundaries -- checks
 // whether a correction actually resimulated a tick that ran through the
 // named phase. Returns, per peer, how many corrected ticks did.
-function runPhase(host: SimHost, harness: RealHarness, phaseId: PhaseId): number[] {
+function runPhase(
+  host: SimHost,
+  harness: RealHarness,
+  phaseId: PhaseId,
+  steps: number = PHASE_STEPS,
+  period: number = PHASE_DELIVER_PERIOD,
+): number[] {
   const observed = harness.peers.map(() => 0);
   const first = harness.firstInputTick;
-  run(host, harness, PHASE_STEPS, {
-    period: PHASE_DELIVER_PERIOD,
+  run(host, harness, steps, {
+    period,
     sample: (step, peerIndex) => host.onlineCombatPhaseLiveSample(phaseId, step, peerIndex + 1),
     onBatch: (peer, peerIndex, batch) => {
       // `batch.outputs` mixes a correction's re-derived ticks with the
@@ -653,12 +675,42 @@ describe("online match presentation combat phases (real wasm bridges + online_co
   // fixture) is where it happens, because eight bodies are inside one 30px
   // reach of each other, so a corrected pixel is the difference between a
   // contact and a miss.
+  //
+  // This case needs its own delivery period, `CONTACT_REVOKE_DELIVER_PERIOD`,
+  // distinct from the shared `PHASE_DELIVER_PERIOD` every other case in this
+  // describe block uses. That split is new, and it is a scenario-staleness
+  // fix, not a weakened assertion -- the fixture's own dynamics moved out
+  // from under the shared constant:
+  //
+  // `LOCO_PACE_REF_HI`'s default rose 240 -> 280 px/s alongside this
+  // codebase's futsal re-dimensioning (960x540 -> 1648x927), and that alone
+  // (confirmed by temporarily reverting just the tunable, geometry
+  // untouched) is what moved this fixture's revoke window: at the shared
+  // period (14) the eight-body scrum now produces plenty of correction
+  // traffic -- confirmed deterministically at over a hundred corrections
+  // across repeated runs, and continuing to climb with a longer budget --
+  // but every one of those corrections either adds a combat cue the prior
+  // resimulation didn't have or replaces one in place; none any longer drops
+  // one outright. Faster locomotion means a predicted contact in this
+  // crowded scrum is now rarely wrong about *whether* two bodies meet,
+  // only about which pixel/tick they meet on -- exactly the condition
+  // `diff_events` (`crates/gc-sim/src/rollback_events.rs`) records as
+  // `replaced`, not `revoked`. The revoke case still exists -- it needs a
+  // different delivery cadence to surface it. Swept the same way the shared
+  // constant originally was (run alone, then across three full
+  // `pnpm exec vitest run` passes): 11, 13, 14, 15, 17 and 18 reproducibly
+  // reproduce zero revocations again (17+ additionally saturates the
+  // transport's inbound queue), and only 12 and 16 deterministically revoke
+  // at least one combat cue. 16 is chosen as marginally further from that
+  // queue ceiling.
+  const CONTACT_REVOKE_DELIVER_PERIOD = 16;
+
   it("never publishes a combat cue a correction took away", () => {
     const host = loadSimHost();
     const harness = buildHarness(host, "1v1", 30, () =>
       host.onlineCombatPhaseBoundaryZero("contact"),
     );
-    runPhase(host, harness, "contact");
+    runPhase(host, harness, "contact", PHASE_STEPS, CONTACT_REVOKE_DELIVER_PERIOD);
     const revoked = harness.peers.reduce((sum, peer) => sum + peer.revokedCombat, 0);
     expect(revoked > 0, "the scrum never revoked a speculative combat cue").toBe(true);
     assertPublishedOnce(harness.peers);

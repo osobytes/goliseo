@@ -245,11 +245,11 @@ pub struct KeeperTrajectoryContext {
     pub gravity: f64,
 }
 
-const CLAIM_DEPTH: f64 = 160.0;
+const CLAIM_DEPTH: f64 = 275.0;
 // The issue's fixed context deliberately omits field dimensions. GOLISEO's
-// canonical 960px pitch therefore supplies the 480px goal-line-to-midfield
+// canonical 1648px pitch therefore supplies the 824px goal-line-to-midfield
 // half-depth.
-const MIDFIELD_DEPTH: f64 = 480.0;
+const MIDFIELD_DEPTH: f64 = 824.0;
 const CONTEXT_LATERAL_GUARD: f64 = 28.0;
 const BASE_LATERAL_GUARD: f64 = 40.0;
 const BASE_MIN_DEPTH: f64 = 12.0;

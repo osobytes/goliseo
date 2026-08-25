@@ -446,8 +446,18 @@ mod tests {
         // #578 (Recovering survives the possession change) repeated the
         // pattern: sequence digest fcdaac058c967e68 -> c165170216a8ec28,
         // final hash unmoved a second time.
-        assert_eq!(f.expected_final_hash, "0e41232666bc8568");
-        assert_eq!(f.expected_sequence_digest, "c165170216a8ec28");
+        // The 2026-08-25 pitch re-dimensioning (960x540 -> 1648x927, see
+        // docs/design/fun_metrics.md's drift log) moved BOTH: the replay's
+        // frozen input frames are untouched, but the match the replay
+        // constructs them against is a different-sized pitch from tick 0
+        // onward, so every boundary -- including the first -- diverges.
+        // final hash 0e41232666bc8568 -> 02085004777f30a4, sequence digest
+        // c165170216a8ec28 -> bcf2dfa7e1ae7221. LOCO_PACE_REF_HI's default
+        // settled at 280 (see gc_data::tunables) shortly after the resize
+        // landed, moving both values a second time before either shipped;
+        // the pair above is the value at 280, not an intermediate 300.
+        assert_eq!(f.expected_final_hash, "02085004777f30a4");
+        assert_eq!(f.expected_sequence_digest, "bcf2dfa7e1ae7221");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -463,7 +473,7 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "2226cce944213655");
+        assert_eq!(boundary_hash_lines()[0], "115aedc598345a71");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
@@ -472,11 +482,16 @@ mod tests {
         // including this zero-tick kickoff snapshot; #489: bumped 12 -> 13
         // by the new `action` field on every `MatchPlayer`; #490: bumped
         // 13 -> 14 by the new `keeper_fatigue` field, same reasoning again).
+        // The 2026-08-25 pitch re-dimensioning moved it too, and for a
+        // different reason than a schema bump: `snapshot_version` did not
+        // change, but the kickoff positions this boundary hashes are laid
+        // out relative to a pitch that is now a different size
+        // (2226cce944213655 -> 115aedc598345a71).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "0e41232666bc8568"
+            "02085004777f30a4"
         );
     }
 

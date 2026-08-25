@@ -128,19 +128,51 @@ const NOOP_COMBAT_FEEDBACK: CombatFeedbackPort = {
 };
 
 /**
+ * The 2026-08-25 futsal re-dimensioning (960x540 -> 1648x927, k = 1648/960
+ * == 927/540 == 1.7166667 -- see `rust/crates/gc-sim/tests/keeper.rs`'s own
+ * header comment for the same factor used the same way): every POSITION
+ * below is the original fixture's coordinate scaled by `PITCH_SCALE`, same
+ * as that file's `HOME_GOAL`/`AWAY_GOAL`/keeper-position literals. What does
+ * NOT scale, by the same rule those literals follow for `GOAL_DEPTH`/
+ * `GOAL_MOUTH` (physical dimensions, not pitch fractions): `ball_vel` (shot
+ * speed) and `ball_z`/`ball_vz` (flight height) are player-scale physics,
+ * exactly as `PLAYER_RADIUS`/`BALL_RADIUS`/`POSSESS_DIST` stayed fixed while
+ * the pitch grew around them; `pickup_cd`/`block_grace` are time, not space.
+ * The new `ball.y` (`270 * PITCH_SCALE` = 463.5) lands exactly on the new
+ * pitch's vertical centre (`field.h / 2` = `927 / 2`) -- and therefore the
+ * new goal mouth's own centre too, since `mouth_y = field.h/2 -
+ * GOAL_MOUTH/2` is symmetric around `field.h/2` for any `GOAL_MOUTH` -- the
+ * OLD `ball.y` (270) was that same relationship on the OLD pitch (`540 /
+ * 2`), so this scaling preserves the fixture's original intent (a shot
+ * straight down the goal's own centre line) rather than merely nudging the
+ * value back inside the new, larger mouth. Unscaled, this fixture no longer
+ * scores: `ball.y` stays constant for the whole flight (`ball_vel.y` is 0),
+ * and the OLD y (270) sits nowhere near the new goal mouth's y-range
+ * (402-525).
+ */
+const PITCH_SCALE = 1648 / 960; // == 927 / 540, exactly 103/60 == 1.7166667
+
+/**
  * `match_snapshot_bridge.rs`'s `matchSnapshotBuild` `overridesJson`: every
- * player pinned motionless at (180, 40), possession cleared, and the ball
+ * player pinned motionless (originally (180, 40); see `PITCH_SCALE`'s own
+ * doc above for why the position fields below are that fixture's
+ * coordinates scaled onto the new pitch), possession cleared, and the ball
  * primed mid-flight (`ball`/`ball_vel`/`ball_z`/`ball_vz`) with
  * `pickup_cd`/`block_grace` pinned long enough that nothing intercepts it
  * before it crosses the goal line -- see the "reconciles a rollback
- * goal..." case's own header note. Cross-checked directly against
- * `match_snapshot_bridge.rs`'s own
+ * goal..." case's own header note. The override SHAPE (field names,
+ * nesting) is cross-checked directly against `match_snapshot_bridge.rs`'s
+ * own
  * `overrides_reposition_every_player_and_prime_a_loose_ball_reproducing_the_rollback_goal_fixture`
- * unit test, which builds this exact overrides shape on the Rust side.
+ * unit test, which builds this same overrides shape on the Rust side --
+ * that test only exercises the override mechanism (do the fields round
+ * trip?), not pitch geometry, so its own literals (350, 270, 180, 40) are
+ * untouched by the re-dimensioning and no longer numerically match this
+ * fixture's scaled values below; the SHAPE match is what it stands for.
  */
 const GOAL_FIXTURE_OVERRIDES = JSON.stringify({
   owner: null,
-  ball: { x: 350, y: 270 },
+  ball: { x: 350 * PITCH_SCALE, y: 270 * PITCH_SCALE },
   ball_vel: { x: 1200, y: 0 },
   ball_z: 10,
   ball_vz: 200,
@@ -148,7 +180,7 @@ const GOAL_FIXTURE_OVERRIDES = JSON.stringify({
   block_grace: 999,
   players: Array.from({ length: 10 }, (_, index) => ({
     index: index + 1,
-    pos: { x: 180, y: 40 },
+    pos: { x: 180 * PITCH_SCALE, y: 40 * PITCH_SCALE },
     run_vel: { x: 0, y: 0 },
   })),
 });
@@ -600,14 +632,20 @@ describe("playable rollback ScreenStack flow (tier 3)", () => {
 
   // # Cleared -- `matchSnapshotBuild` supplies the pinned fixture
   //
-  // The pinned fixture: all ten players pinned to (180, 40) with zero
+  // The pinned fixture: all ten players pinned motionless with zero
   // `run_vel`, `owner` cleared, `ball`/`ball_vel`/`ball_z`/`ball_vz` primed
   // for an unstoppable shot on goal, `pickup_cd`/`block_grace` pinned so
-  // nothing intercepts it -- reproduced below field-for-field as
-  // `GOAL_FIXTURE_OVERRIDES`, cross-checked directly against
+  // nothing intercepts it -- built below as `GOAL_FIXTURE_OVERRIDES`, whose
+  // override SHAPE is cross-checked directly against
   // `match_snapshot_bridge.rs`'s own
   // `overrides_reposition_every_player_and_prime_a_loose_ball_reproducing_the_rollback_goal_fixture`
-  // test, which reproduces this exact fixture on the Rust side.
+  // test (that Rust test only exercises the override mechanism, not pitch
+  // geometry, so it still uses the pre-re-dimensioning literals -- see
+  // `GOAL_FIXTURE_OVERRIDES`'s own doc). The POSITION fields (ball and
+  // player x/y) are that original fixture's coordinates scaled by
+  // `PITCH_SCALE` onto the 2026-08-25 re-dimensioned 1648x927 pitch -- see
+  // `PITCH_SCALE`'s own doc for why the ball's y in particular has to move
+  // for this fixture to still score a goal.
   //
   // Two further gaps this case's own machinery closes, neither of them
   // `@gc/wasm`'s snapshot-construction gap:

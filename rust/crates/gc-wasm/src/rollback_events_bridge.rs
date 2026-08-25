@@ -1086,7 +1086,10 @@ mod tests {
         let state = sim_match::new(sim_match::NewMatchOptions {
             home,
             away,
-            field: PitchSize { w: 960.0, h: 540.0 },
+            field: PitchSize {
+                w: 1648.0,
+                h: 927.0,
+            },
             home_formation: None,
             tactic: None,
             away_tactic: None,

@@ -88,10 +88,10 @@ const DRIBBLE_ERR_SKILL: f64 = 0.85;
 const DRIBBLE_CONTROL_SKILL: f64 = 26.0;
 const POSSESS_DIST: f64 = 22.0;
 const KEEPER_DIST: f64 = 18.0;
-const KEEPER_BOX_DEPTH: f64 = 160.0;
-const PENALTY_DEPTH: f64 = 95.0;
-const PENALTY_H: f64 = 200.0;
-const KEEPER_BOX_PAD: f64 = 30.0;
+const KEEPER_BOX_DEPTH: f64 = 275.0;
+const PENALTY_DEPTH: f64 = 163.0;
+const PENALTY_H: f64 = 343.0;
+const KEEPER_BOX_PAD: f64 = 51.0;
 const KEEPER_CLAIM_DIST: f64 = 40.0;
 const KEEPER_LEAD: f64 = 0.01;
 const KEEPER_1V1_SUPPORT: f64 = 120.0;
@@ -151,12 +151,12 @@ fn desired_pass_charge(distance: f64, tune: &Tuning) -> f64 {
     ((distance - min) / (max - min)).clamp(0.0, 1.0)
 }
 
-const GOAL_MOUTH: f64 = 110.0;
-const GOAL_DEPTH: f64 = 30.0;
+const GOAL_MOUTH: f64 = 123.0;
+const GOAL_DEPTH: f64 = 51.0;
 const RELEASE_CD: f64 = 0.3;
 
 const STEAL_DIST: f64 = 26.0;
-const KICKOFF_CLEAR: f64 = 120.0;
+const KICKOFF_CLEAR: f64 = 123.0;
 const KICKOFF_HOLD: f64 = 2.5;
 const TACKLE_POP_SPEED: f64 = 150.0;
 
@@ -167,7 +167,7 @@ const BLOCK_DAMP: f64 = 0.5;
 
 const AI_PASS_MIN_OPEN: f64 = 40.0;
 const AI_PASS_MIN_DIST: f64 = 40.0;
-const AI_PASS_MAX_DIST: f64 = 420.0;
+const AI_PASS_MAX_DIST: f64 = 721.0;
 
 const AI_CHARGE_MIN_SPACE: f64 = 25.0;
 const AI_CHARGE_SPACE_RANGE: f64 = 120.0;
@@ -187,7 +187,7 @@ const JOCKEY_REACH_BONUS: f64 = 6.0;
 const JOCKEY_HOLD: f64 = 0.2;
 
 const KEEPER_AIR_GRAB: f64 = 60.0;
-const CROSSBAR: f64 = 70.0;
+const CROSSBAR: f64 = 82.0;
 const LOB_CLEAR_H: f64 = 24.0;
 const MAX_LOB_VH: f64 = 400.0;
 const CHIP_LINE_Z: f64 = 65.0;

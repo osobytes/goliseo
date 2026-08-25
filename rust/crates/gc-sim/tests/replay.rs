@@ -53,11 +53,33 @@ use gc_sim::tuning::Tuning;
 // recover state machine can plausibly move boundaries 1..3 for real
 // (`r#match::advance_tackle_actions`) if this short fixture's three
 // stepped ticks touch a tackle -- re-derived from this build either way.
+//
+// 2026-08-25 pitch-re-dimension EXCEPTION (960x540 -> 1648x927, k=1.7166667;
+// docs/design/fun_metrics.md's 2026-08-25 entry): this fixture still passes
+// `PitchSize { w: 960.0, h: 540.0 }` above -- the field itself did NOT
+// change here -- but two geometry constants moved as flat pixel values, not
+// as a fraction of the passed-in field, so they apply to this 960x540
+// fixture too. `match::KICKOFF_CLEAR` 120 -> 123 shifts the away-team
+// clear-out distance applied during kickoff placement
+// (`match::place_kickoff`, called from `sim_match::new` before boundary 0 is
+// ever captured), nudging player coordinates across float formatting/
+// rounding boundaries -- this is why boundary 0 (the captured initial state,
+// no ticks stepped) moved despite no schema change and no stepped tick.
+// `keeper::CLAIM_DEPTH` 160 -> 275 and `keeper::MIDFIELD_DEPTH` 480 -> 824
+// change keeper positioning on every stepped tick (`keeper::base_target`,
+// `keeper::arc_target`), which is why boundaries 1..3 (the three stepped
+// ticks) moved too. All four re-derived from this build.
+//
+// Same-day follow-up: `LOCO_PACE_REF_HI` settled at 280 (from 300; see its
+// own comment in `gc-data/src/tunables.rs`) after the values above were
+// captured, which moves boundaries 1..3 again through the stepped-tick
+// locomotion path -- boundary 0 (no ticks stepped) is untouched by a pace
+// tunable and stayed put. Re-derived from this build.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "1ecbf653af4411b0",
-    "f5cb818b030f8f01",
-    "206fd6fc3e3dfe21",
-    "f5e98aeeba81f646",
+    "678924b418c3bd81",
+    "2151ea407a33d69c",
+    "1682934e090e28e9",
+    "1a0b4033d72a9aee",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

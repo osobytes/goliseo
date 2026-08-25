@@ -966,6 +966,132 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-25 — the pitch is re-dimensioned to regulation futsal
+  proportions, 960×540 → 1648×927 (owner-approved, deliberate; no issue filed
+  yet).** `baseline_version` **15 → 17**, signature `01fd23fdf736b799` →
+  `4e266983b13aa51e`; `identity.policy_id`
+  `outfield_ai_policy/v1/combat_disabled/303228d776b65a19` →
+  `.../f982f42bdd2ac756` (the nine `AI`-category knob defaults it hashes
+  moved), `identity.config` `field=960x540;...` → `field=1648x927;...`
+  (`config_hash` `48c4a66267142b10` → `7b608c384f500257`), `identity.tuning_hash`
+  `c786c29e021f3f6a` → `cba159e8c6c655e2` (every knob default below moved),
+  `identity.fixture_hash` `f78965f8bbf14200` → `f106904838b5bb33`;
+  `identity.content_hash` (`e6c01365e6311f12`), `identity.seed_hash` and
+  `identity.snapshot_version` all unchanged — no authored content and no
+  schema moved. Re-frozen via `record_outfield_ai_baseline`, per that
+  module's own re-freeze protocol. (An intermediate `baseline_version` 16
+  briefly existed with `LOCO_PACE_REF_HI` at 300; this entry states the
+  final, settled state at 280 directly against v15, per this document's
+  convention of recording the campaign once, not each intermediate step.)
+
+  **The intent.** The pitch moves from 960×540 to exactly 16:9
+  (1648×927, k = 1.7166667), matching regulation futsal proportions
+  (40.1 m × 22.5 m at the renderer's 1.75 m player height) instead of an
+  arbitrary legacy aspect. **Player and ball scale are deliberately
+  unchanged** (`PLAYER_RADIUS` stays 12, `BALL_RADIUS` stays 6) — the pitch
+  grew relative to the player, which is the entire point of the change, not
+  an incidental side effect of it. Every other geometry constant that is
+  meaningfully a *fraction of the pitch* moved with it:
+
+  | constant | before | after |
+  | --- | --- | --- |
+  | goal mouth (`GOAL_MOUTH`) | 110 px | 123 px (regulation 3.00 m) |
+  | crossbar height (`CROSSBAR`) | 70 px | 82 px (regulation 2.00 m) |
+  | goal depth (`GOAL_DEPTH`, not futsal-regulation-mapped) | 30 px | 51 px |
+  | penalty box (`PENALTY_DEPTH` × `PENALTY_H`) | 95 × 200 px | 163 × 343 px |
+  | `KEEPER_BOX_DEPTH` / `KEEPER_BOX_PAD` | 160 / 30 px | 275 / 51 px |
+  | keeper `CLAIM_DEPTH` | 160 px | 275 px |
+  | keeper `MIDFIELD_DEPTH` | 480 px | 824 px |
+  | `KICKOFF_CLEAR` | 120 px | 123 px |
+  | `AI_PASS_MAX_DIST` | 420 px | 721 px |
+  | locomotion pace band (`PACE_LOW`/`PACE_HIGH`) | 100 / 240 px/s | 130 / 280 px/s |
+  | `AI_SHOOT_RANGE` | 240 px | 410 px |
+  | `AI_HEADER_RANGE` | 200 px | 340 px |
+  | `PUNT_MAX` | 640 px | 1100 px |
+
+  The locomotion pace band moved by a smaller factor than the linear pitch
+  scale (~1.72×) — 1.30× / 1.17× on low/high, `LOCO_PACE_REF_HI` settling at
+  280 rather than the 300 first tried once gc-netcode's guard-policy
+  geometry test set the ceiling (see that tunable's own comment in
+  `gc-data/src/tunables.rs`) — deliberately, so a full-pitch sprint still
+  takes roughly the time it did before rather than scaling distance and
+  speed by the same factor and leaving traversal time unchanged; that is
+  also why the metrics below move in more than one direction at once rather
+  than resembling a uniform zoom.
+
+  **What moved, and why.** All numbers, 60 seeds (`20001..20060`), the
+  frozen fixture:
+
+  | metric | frozen (v15) | re-frozen (v17) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.340436 | 0.303255 | −0.037181 |
+  | `goals_total` | 1.966667 | 2.600000 | +0.633333 |
+  | `goals_home` | 0.800000 | 0.983333 | +0.183333 |
+  | `goals_away` | 1.166667 | 1.616667 | +0.450000 |
+  | `shots` | 32.333333 | 24.500000 | −7.833333 |
+  | `shots_per_goal` | 18.757099 (n=54) | 11.396429 (n=56) | −7.360670 |
+  | `save_rate` | 0.903665 | 0.773048 | −0.130617 |
+  | `passes` | 29.200000 | 25.266667 | −3.933333 |
+  | `pass_completion` | 0.511584 | 0.487333 | −0.024251 |
+  | `turnovers_per_min` | 8.731731 | 9.496413 | +0.764682 |
+  | `possession_balance` | 0.534866 | 0.552855 | +0.017988 |
+  | `longest_drought_s` | 11.326111 | 17.306389 | +5.980278 |
+  | `decided_late` | 0.716925 | 0.709683 | −0.007243 |
+  | `lead_changes` | 0.066667 | 0.183333 | +0.116667 |
+  | `margin` | 1.033333 | 1.266667 | +0.233333 |
+  | `duration` | 116.393611 | 112.430556 | −3.963056 |
+  | `ai_dribble_carry_s` | 25.503889 | 31.020278 | +5.516389 |
+  | `ai_dribble_close_share` | 0.815758 | 0.778921 | −0.036837 |
+  | `ai_dribble_sprint_share` | 0.165800 | 0.311694 | +0.145893 |
+  | `ai_dribble_juke_share` | 0.095915 | 0.048617 | −0.047298 |
+  | `ai_dribble_touches_per_min` | 120.436038 | 91.841378 | −28.594660 |
+  | `ai_dribble_heavy_losses_per_min` | 0.387893 | 0.229923 | −0.157970 |
+  | `ai_jukes` | 35.366667 | 25.333333 | −10.033333 |
+
+  The shape is consistent with a genuinely bigger pitch relative to the
+  player, not a rescale artifact: sprint share of dribble time roughly
+  doubles (0.166 → 0.312) and touches-per-minute falls by a quarter
+  (120.4 → 91.8) — more open space to run into between touches — while
+  shots fall (32.3 → 24.5) and goals rise (1.97 → 2.60): the widened
+  `AI_SHOOT_RANGE`/`AI_HEADER_RANGE` and the larger goal mouth make the AI
+  more selective and more accurate rather than more trigger-happy, so fewer,
+  better shots convert at a higher rate (implied conversion 1/11.4 ≈ 8.8%
+  now vs 1/18.8 ≈ 5.3% before). `longest_drought_s` rising (11.3 → 17.3 s)
+  and `duration` falling (116.4 → 112.4 s, more matches resolve inside the
+  120 s window under the unchanged 3-goal cap this fixture still runs) both
+  follow from more ground to cover between chances. `new_only` and every
+  other structural invariant this document's other frozen artifacts assert
+  are unaffected by this change — see those artifacts' own drift-log
+  entries below for their own numbers.
+
+  Every other frozen artifact this change invalidated was re-recorded in the
+  same pass, each through its own documented recorder or, for
+  `gc_sim::keeper_shadow_classifier` (which has none — see that file's own
+  inline re-pin history), the same hand-pin-with-documented-mechanism
+  discipline that file has used for every prior re-pin: `gc_data::omp1_determinism`'s
+  derived half; `gc-sim`'s `tests/fixtures/session_legacy_ordinary_baseline.txt`,
+  `tests/fixtures/match_step_ai_ai_baseline.txt`, and
+  `tests/fixtures/session_ai_driven_baseline.txt`; `gc_sim::keeper_shadow_classifier`'s
+  frozen count blocks; `rollback_lab::tape_digest`'s pinned literal
+  (`tests/rollback_lab.rs`, which folds in the OMP-1 boundary hashes);
+  `gc_sim::ai_driven_evidence`'s `EXPECTED_FINAL_HASH`/`EXPECTED_SEQUENCE_DIGEST`
+  (`tests/ai_driven_evidence.rs`, derived from `session_ai_driven_baseline.txt`
+  by that file's own test, not hand-written) and its one TypeScript mirror
+  (`ts/packages/wasm/src/ai_driven.spec.ts`'s `NATIVE_FINAL_HASH`/
+  `NATIVE_SEQUENCE_DIGEST` — both assertions there run under `it.fails` per
+  #517's pre-existing, geometry-independent wasm/native libm divergence on
+  this scenario, and still correctly fail post-re-record); and the redundant
+  OMP-1 derived-digest copies outside the JSON (`gc_data::omp1_determinism`'s
+  own unit test, `ts/packages/wasm/src/determinism.spec.ts`, `scripts/check.sh`,
+  ARCHITECTURE.md §6.1's prose). `match_snapshot_case_a_baseline.txt` and
+  `..._case_b_baseline.txt` were checked, not re-recorded: their fixture is
+  a hand-built, zero-tick `MatchState` literal (`match_snapshot_differential.rs`),
+  never constructed by `sim_match::new`, so it does not read this pitch's
+  geometry constants at all and both cases still pass unmoved. Exact
+  before/after values for each moved artifact are recorded at the re-pinned
+  site itself, per this document's own convention of not duplicating frozen
+  numbers here beyond the headline artifact.
+
 - **2026-08-18 — a `Recovering` penalty survives the possession change
   (#578, decided by the owner).** `baseline_version` **14 → 15**, signature
   `857c41df296746a8` → `01fd23fdf736b799`; `identity.tuning_hash`,

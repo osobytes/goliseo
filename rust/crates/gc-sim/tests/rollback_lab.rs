@@ -539,7 +539,22 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // because it ran BEFORE the OMP-1 derived re-record this digest folds
     // in -- the same only-the-full-suite-counts trap #572's own re-freeze
     // hit when cargo stopped at an earlier failing binary.
-    assert_eq!(rollback_lab::tape_digest(&tape), "31f7f079208e2bf9");
+    //
+    // And again for the 2026-08-25 pitch re-dimensioning (960x540 ->
+    // 1648x927, docs/design/fun_metrics.md's drift log): every derived
+    // `boundary_hashes` entry moved, including the first, because the
+    // frozen input frames now play out against a different-sized pitch
+    // from kickoff onward -- not just a schema bump this time.
+    //
+    // And again for `LOCO_PACE_REF_HI` settling at 280 (down from the 300
+    // the pitch re-dimensioning above picked; see the note beside the knob
+    // in `gc_data::tunables`), in the SAME commit as
+    // `gc_data::omp1_determinism`'s own re-record of `expected_final_hash`,
+    // `expected_sequence_digest` and `boundary_hash_lines()[0]` /
+    // `boundary_hash_lines()[last]` -- this digest folds in every one of
+    // those boundaries, so it moves whenever any of them do, same as the
+    // #572/#578 entries above.
+    assert_eq!(rollback_lab::tape_digest(&tape), "f2ab89ab575b4d1a");
 }
 
 #[test]
@@ -964,7 +979,24 @@ fn uses_one_logical_result_for_incremental_and_synchronous_execution() {
     // measured whiff_rate), and each whiff is a new `TackleMiss` event this
     // scenario did not emit before -- the retained event window's peak
     // byte usage grew with the event count, 833 -> 2929.
-    assert_eq!(incremental.metrics.peaks.event_bytes, 2929);
+    //
+    // And again for the 2026-08-25 pitch re-dimensioning (960x540 ->
+    // 1648x927): this fixture's own `new_state` still hardcodes a 960x540
+    // `PitchSize`, but `KICKOFF_CLEAR` (120 -> 123) nudges kickoff placement
+    // regardless of field size, which pushes a retained event's coordinate
+    // field(s) across a float-formatting digit boundary -- the same
+    // byte-length-by-`Debug`-rendering encoding `step_len`/`wrapped_event_len`
+    // use here means a wider formatted string, not a new event, moved the
+    // peak by 2 bytes, 2929 -> 2931.
+    //
+    // And again for `LOCO_PACE_REF_HI` settling at 280 (down from the 300
+    // the pitch re-dimensioning above picked; see the note beside the knob
+    // in `gc_data::tunables` for why): the same fixture's retained events
+    // still carry player coordinates from a run whose movement speed
+    // changed, so one or more of those coordinates format to a shorter
+    // `Debug` string than before -- again a formatting-width shift, not a
+    // new or dropped event, moved the peak by 5 bytes, 2931 -> 2926.
+    assert_eq!(incremental.metrics.peaks.event_bytes, 2926);
     assert!(incremental.history_accounting.total_bytes > 0);
     assert!(incremental.metrics.peaks.history_bytes >= incremental.history_accounting.total_bytes);
 }

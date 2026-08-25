@@ -53,8 +53,8 @@ use gc_data::tactics::TacticData;
 use gc_data::teams::{self, TeamData};
 use indexmap::IndexMap;
 
-const FIELD_W: f64 = 960.0; // the real game's pitch
-const FIELD_H: f64 = 540.0;
+const FIELD_W: f64 = 1648.0; // the real game's pitch
+const FIELD_H: f64 = 927.0;
 const DT: f64 = fixed_clock::TICK_SECONDS;
 const DEFAULT_DURATION: f64 = 120.0;
 /// Overtime guard: a stuck sim must not hang the batch.
@@ -101,7 +101,7 @@ pub struct HeadlessOpts<'a> {
     pub players_by_id: Option<&'a IndexMap<&'a str, PlayerData>>,
     /// Species pool; defaults to every authored species.
     pub species_by_id: Option<&'a IndexMap<&'a str, SpeciesData>>,
-    /// Playable pitch dimensions; defaults to 960x540.
+    /// Playable pitch dimensions; defaults to 1648x927.
     pub field: Option<PitchSize>,
     /// Human-proxy mode; defaults to [`HeadlessBot::Home`].
     pub bot: Option<HeadlessBot>,

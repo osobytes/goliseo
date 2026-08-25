@@ -1959,8 +1959,56 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
     // is fixed, the payload is not, and the eight outfield players carry a zero
     // where the two keepers carry a real pool.
     // 22061 -> 22307, 21543 -> 21789.
+    // 2026-08-25 pitch re-dimensioning (`docs/design/fun_metrics.md`, "the
+    // pitch is re-dimensioned to regulation futsal proportions"):
+    // this fixture's own `PitchSize` stays 960x540 on purpose (it prices a
+    // fixed small pitch, not the new canonical 1648x927 one), and it adds no
+    // field either -- but two of the geometry constants the re-dimensioning
+    // moved bleed into the VALUES already captured above, each nudging a
+    // position across a mantissa rounding boundary in the canonical
+    // variable-width number encoding.
+    //
+    // `KICKOFF_CLEAR` 120 -> 123 (`place_kickoff`'s centre-circle push
+    // radius): Orion's "1-1-2" formation anchors both forwards at
+    // normalized x=0.76, which mirrors to x=230.4 for the away side --
+    // inside home's own half, so `place_kickoff`'s own-half clamp
+    // (`ax = ax.max(half + PLAYER_RADIUS)`, half=480 on this 960px fixture)
+    // pins both to x=492 before the centre-circle push check ever runs.
+    // From (492, 162) and (492, 378), both forwards sit ~115.9px from the
+    // kickoff ball spot (450, 270) -- inside the push radius both before
+    // and after -- so `place_kickoff` shoves each straight out to exactly
+    // `KICKOFF_CLEAR` along its own unchanged direction; only the radius
+    // moves. Krag.x 23 -> 22 (-1), Krag.y 22 -> 23 (+1), Tox Vren.x 23 -> 22
+    // (-1, identical value to Krag.x -- both forwards are pushed the same
+    // distance along x), Tox Vren.y 23 -> 22 (-1). Net -2.
+    //
+    // Keeper `CLAIM_DEPTH`/`MIDFIELD_DEPTH` 160/480 -> 275/824
+    // (`keeper::base_target`/`arc_target`'s `(MIDFIELD_DEPTH - ball_depth) /
+    // (MIDFIELD_DEPTH - CLAIM_DEPTH)` approach fraction): both constants
+    // roughly tripled while this fixture's ball stays near the 960px
+    // pitch's centre, so the away keeper's target -- and its resulting x
+    // after the 120 stepped ticks above -- lands somewhere else: pinned
+    // against the field edge before (`field.w - PLAYER_RADIUS` = 948),
+    // pulled back off it now (~944.6). Gax Oru.x 24 -> 23 (-1).
+    //
+    // Total -3: 22307 -> 22304, 21789 -> 21786.
+    //
+    // `LOCO_PACE_REF_HI` settling at 280 (down from the 300 the pitch
+    // re-dimensioning above picked; see the note beside the knob in
+    // `gc_data::tunables` for why): every player's own top speed is a
+    // fraction of this reference (`gc_sim::locomotion`), so the keepers'
+    // autonomous movement over the same 120 stepped ticks lands each of
+    // them at a very slightly different x than before -- independent of the
+    // CLAIM_DEPTH/MIDFIELD_DEPTH geometry accounted above, and this time on
+    // BOTH keepers rather than one. Home keeper (ozzo, index 0) crosses a
+    // mantissa rounding boundary: x 16.0874477112 (21 bytes) ->
+    // 16.0874476361 (22 bytes), +1. Away keeper (Gax Oru, index 5) also
+    // moves (x 944.5682893812 -> 944.5682894562) but stays at 22 bytes, no
+    // byte-count change from this knob.
+    //
+    // Total +1: 22304 -> 22305, 21786 -> 21787.
     let encoded = match_snapshot::encode(&match_snapshot::capture(&state, None));
-    let expected = 22307 - 10 * legacy_key_bytes
+    let expected = 22305 - 10 * legacy_key_bytes
         + 10 * "z;".len()
         + "k9:formation;".len()
         + "s5:2-1-1;".len()
@@ -1968,7 +2016,7 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
         + 10 * "k19:keeper_get_up_timer;nz;".len()
         + transition_bytes;
     assert_eq!(encoded.len(), expected);
-    assert_eq!(encoded.len(), 21789);
+    assert_eq!(encoded.len(), 21787);
 
     let decision_marker = "k17:outfield_decision;d;";
     let next_field_marker = "k9:is_keeper;";
@@ -2130,16 +2178,34 @@ fn canonical_match_snapshots_prices_four_hypothetical_runs_on_the_valid_high_ove
     // is fixed, the payload is not, and the eight outfield players carry a zero
     // where the two keepers carry a real pool.
     // `four_run_delta`/`press_delta` are unrelated fields for it too.
+    //
+    // 2026-08-25 pitch re-dimensioning (see the sibling
+    // `_encodes_decision_children_...` test's comment for the full
+    // derivation): `KICKOFF_CLEAR` 120 -> 123 pushes both of Orion's
+    // forwards -- already clamped onto their own half by `place_kickoff`'s
+    // own-half rule -- out to a 3px-larger radius from the kickoff spot,
+    // moving 3 of their 4 `pos` coordinates across a `number_bytes`
+    // mantissa rounding boundary for a net -2. This fixture never steps, so
+    // the keeper-positioning constants that move the sibling test's third
+    // coordinate never fire here: `soccer_bytes` and `combat_bytes` each
+    // drop by exactly that -2. `four_run_delta`/`press_delta` are unrelated
+    // fields, so `combined_delta` (372) is unchanged, and every value
+    // derived from `soccer_bytes`/`combat_bytes` below shifts by the same
+    // -2 * boundaries (31) = -62.
+    // soccer_bytes 21653 -> 21651, combat_bytes 25329 -> 25327,
+    // soccer_window 682775 -> 682713, combat_window 796731 -> 796669,
+    // budget - soccer_window 234729 -> 234791, budget - combat_window
+    // 120773 -> 120835.
     assert_eq!(boundaries, 31);
-    assert_eq!(soccer_bytes, 21653);
-    assert_eq!(combat_bytes, 25329);
+    assert_eq!(soccer_bytes, 21651);
+    assert_eq!(combat_bytes, 25327);
     assert_eq!(four_run_delta, 346);
     assert_eq!(press_delta, 26);
     assert_eq!(combined_delta, 372);
-    assert_eq!(soccer_window, 682775);
-    assert_eq!(combat_window, 796731);
-    assert_eq!(budget - soccer_window, 234729);
-    assert_eq!(budget - combat_window, 120773);
+    assert_eq!(soccer_window, 682713);
+    assert_eq!(combat_window, 796669);
+    assert_eq!(budget - soccer_window, 234791);
+    assert_eq!(budget - combat_window, 120835);
     assert!(soccer_window < budget);
     assert!(combat_window < budget);
 }
@@ -2174,11 +2240,19 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
     // same as that sibling's update too. #490: `MatchPlayer::keeper_fatigue`
     // (VERSION 13 -> 14) adds 246 more, same as that sibling again -- see its
     // comment for why this one is not a fixed per-player cost.
-    assert_eq!(combat_bytes, 25329);
+    // 2026-08-25 pitch re-dimensioning: same -2 as the sibling
+    // `_prices_four_hypothetical_runs_..._` test's `combat_bytes` and for
+    // the same reason -- `KICKOFF_CLEAR` 120 -> 123 moves both of Orion's
+    // forwards a further 3px out from the kickoff spot, and 3 of their 4
+    // `pos` coordinates cross a `number_bytes` mantissa rounding boundary
+    // (see the schema-pin test's comment for the full derivation).
+    assert_eq!(combat_bytes, 25327);
     // The active-AI delta priced by the measurement above.
     let combined_delta: i64 = 372;
     let combat_window = (combat_bytes + combined_delta) * boundaries;
-    assert_eq!(combat_window, 796731);
+    // -2 on combat_bytes carries straight through: (25327 + 372) * 31 =
+    // 796669, down 62 (= 2 * boundaries) from 796731.
+    assert_eq!(combat_window, 796669);
 
     let worst_kind = pick_longest(
         &[
@@ -2339,14 +2413,20 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
     // real (if small) cost of the new field and is priced here rather than
     // absorbed. The sustained-window assertion below is what checks the
     // remaining headroom is still inside budget, and it is.
+    // 2026-08-25 pitch re-dimensioning: `combat_bytes` shrinking by 2 GROWS
+    // `headroom` by 62 (120773 -> 120835) instead of shrinking it, but 62
+    // bytes is nowhere near a `row_bytes` (456) step, so integer division
+    // still lands on 8 -- unchanged.
     assert_eq!(rows_per_boundary, 8);
 
     let sustained_window = (combat_bytes + combined_delta + 8 * row_bytes) * boundaries;
     assert!(sustained_window < budget);
-    assert_eq!(sustained_window, 909819);
+    // -62 straight through, same as `combat_window` above: 909819 -> 909757.
+    assert_eq!(sustained_window, 909757);
 
     assert!(worst_tick_window > budget);
-    assert_eq!(worst_tick_window, 1517667);
+    // -62 straight through: 1517667 -> 1517605.
+    assert_eq!(worst_tick_window, 1517605);
 }
 
 #[test]

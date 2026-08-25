@@ -280,12 +280,11 @@ export const camera = {
   } satisfies CameraConfig as CameraConfig,
 
   PERSPECTIVE: {
-    // STRIKERS REFRAME. A true-perspective broadcast rig for the coliseum,
-    // tuned against Mario Strikers reference stills, on the product's actual
-    // 960x540 field (ARCHITECTURE.md's own reference dimensions -- see
-    // camera.spec.ts's differential fixtures).
+    // BROADCAST REFRAME. A true-perspective rig for the coliseum, now
+    // matched to a REFERENCE CAMERA TABLE rather than to stills, on the
+    // product's 1648x927 field (see camera.spec.ts's differential fixtures).
     //
-    // What "match Strikers" reduces to, measurably: a player reads at
+    // What "match the reference" reduces to, measurably: a player reads at
     // roughly a TENTH of frame height, and the camera FOLLOWS play at a
     // moderate downward tilt instead of holding a fixed establishing shot of
     // the whole stadium. The second half is not this table's job -- see
@@ -296,45 +295,61 @@ export const camera = {
     // Derivation, kept here rather than left as bare numbers because every
     // input matters if this ever needs retuning again:
     //
-    //   1. TILT. Chosen, not derived: 45 degrees down from horizontal.
-    //      `tilt = atan(height / distance)`, so 45 degrees is exactly
-    //      `height == distance` -- which is why both numbers below are the
-    //      same, and why the ratio is verifiable by eye. Shallower than the
-    //      50 degrees this rig used while it framed the whole bowl: 50 looks
-    //      down ONTO the pitch (a stadium establishing angle), 45 reads more
-    //      along it, which is the reference's flatter, more side-on look.
-    //   2. LENS. `fov: 46` (vertical, degrees) -- unchanged by this retune.
-    //   3. DISTANCE. Derived from the CHARACTER SIZE target rather than from
-    //      a whole-pitch fit; that inversion is the point of this retune. A
+    //   1. LENS. `fov: 27` (VERTICAL, degrees). The reference stores 33.4
+    //      for its 4:3 mode and 44.3 for its widescreen mode, but those are
+    //      NOT vertical angles: its projection helper converts what it is
+    //      handed with `2 * atan(tan(in / 2) / aspect)` before building the
+    //      matrix, which is the horizontal-to-vertical conversion. Applying
+    //      it with the aspect values that code actually uses -- 1.3323944
+    //      and 1.666, the second being anamorphic-widescreen compensation
+    //      rather than 16/9 -- gives true vertical angles of 25.38 and
+    //      27.46 degrees. We take the widescreen one and round to 27.
+    //      Reading the stored pair as already-vertical would imply
+    //      horizontal angles of 43.6 vs 71.9 between the two display modes,
+    //      which no lens design would intend. This is much longer than the
+    //      46 this rig used while it was tuned by eye, and the flattened
+    //      perspective is most of what separates the reference's look from
+    //      ours.
+    //   2. TILT. 38 degrees down from horizontal, the reference's own far
+    //      preset (its near preset is 25). `tilt = atan(height / distance)`.
+    //      Shallower again than the 45 this rig used, and far shallower than
+    //      the 50 it used while framing the whole bowl.
+    //   3. DISTANCE. Taken from the reference directly: 35.0 of its world
+    //      units on its far preset, and its gravity literal pins one of its
+    //      units to one metre. At this project's rig scale -- a 1.75 m
+    //      player drawn `PLAYER_RADIUS * HEIGHT_IN_RADII * 2` = 72 px tall,
+    //      so 24.31 mm per world unit -- that is `35.0 / 0.02431` ~= 1440
+    //      world units of straight-line camera-to-focus distance `L`.
+    //   4. CHARACTER SIZE, as a check rather than as the input. A
     //      character's drawn height in pixels is `6 * radius * scale`
     //      (pitch.ts's `r = radius * scale`, then player_renderer_3d.ts's
     //      `ppmForRadius` times the mesh's own metre height, which cancels
     //      to `r * HEIGHT_IN_RADII * 2` = `6 * r`), and `scale` at the focus
     //      is `vp.h / (2 * L * tan(fov / 2))` (`projectPerspective`'s DEPTH
     //      SCALE note). `vp.h` cancels, so the FRACTION of frame height a
-    //      player occupies is resolution-independent and a property of the
-    //      rig alone:
+    //      player occupies is resolution-independent:
     //        player_frac = 6 * PLAYER_RADIUS / (2 * L * tan(fov / 2))
-    //                    = 72 / (2 * L * tan(23 deg))
-    //      Solving for the reference's ~12%:
-    //        L = 72 / (0.121 * 2 * 0.42447) ~= 700 world units.
-    //      (`PLAYER_RADIUS` is 12 world units -- gc-sim's match.rs, exported
-    //      to the renderer as `PLAYER_RADIUS_PX`.)
-    //   4. HEIGHT/DISTANCE. Split `L` by the tilt: at 45 degrees both are
-    //      `L / sqrt(2)` ~= 495. Recovered from the rounded pair below:
-    //      tilt exactly 45 degrees, `L = sqrt(2) * 495` ~= 700.0,
-    //      `player_frac` ~= 12.1%.
+    //                    = 72 / (2 * 1440.5 * tan(13.5 deg)) ~= 10.4%
+    //      Close to the ~12% the by-eye retune had solved for, which is the
+    //      reassuring part: the lens and the distance both moved a long way,
+    //      and they moved in opposite directions, so the players did not
+    //      change size. What changed is the perspective.
+    //   5. HEIGHT/DISTANCE. Split `L` by the tilt:
+    //        height   = L * sin(38 deg) = 1440 * 0.61566 ~= 887
+    //        distance = L * cos(38 deg) = 1440 * 0.78801 ~= 1135
+    //      Both agree with the reference's own tabulated split of its far
+    //      preset -- height 21.548 and ground offset 27.580 of its units,
+    //      which at 24.31 mm per unit are 887 and 1135.
+    //      Recovered from the rounded pair below: `atan(887 / 1135)` is
+    //      38.00 degrees and `sqrt(887^2 + 1135^2)` is 1440.5.
     //
-    // Note what is deliberately NOT here anymore: a `scale_k` sprite-size
-    // calibration constant. Character size is now derived from this rig plus
-    // the viewport (`projectPerspective`'s DEPTH SCALE note explains why the
-    // old constant was two live bugs), so retuning `fov`/`height`/`distance`
-    // no longer needs a matching hand-recalibration to keep players the
-    // right size relative to the stadium they stand in -- which is what made
-    // every earlier retune in this file's history a two-step dance.
-    height: 495,
-    distance: 495,
-    fov: 46,
+    // NOT ADOPTED from the reference table, deliberately: its near preset
+    // (distance 20, tilt 25) and the runtime zoom that interpolates toward
+    // it. This table sets one static shot; a dynamic zoom belongs with
+    // `pitch.follow_camera` in camera_follow.ts, not here.
+    height: 887,
+    distance: 1135,
+    fov: 27,
   } satisfies CameraPerspectiveConfig as CameraPerspectiveConfig,
 
   // Clamped focus for a following camera.
