@@ -494,7 +494,8 @@ fn state_to_json(state: &CoordinatorState) -> Json {
             "countdown_remaining",
             Json::opt_int(state.countdown_remaining),
         ),
-        ("start_deadline", Json::opt_int(state.start_deadline)),
+        ("start_armed_at", Json::opt_int(state.start_armed_at)),
+        ("start_resend_at", Json::opt_int(state.start_resend_at)),
         (
             "progress",
             state.progress.as_ref().map_or(Json::Null, progress_to_json),

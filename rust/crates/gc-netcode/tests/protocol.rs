@@ -190,7 +190,10 @@ fn omp3_online_protocol_matches_literal_wire_manifest_transcript_and_per_kind_go
 
 #[test]
 fn omp3_online_protocol_pins_the_control_vocabulary_this_build_speaks() {
-    assert_eq!(protocol::vocabulary_id(), "e13e3647001a0a7e");
+    // #612: repinned alongside `protocol_conformance::GOLDEN` -- see that
+    // constant's doc comment. `Start`'s allowed phases widen to admit a
+    // resend/duplicate-echo no-op, moving the vocabulary digest itself.
+    assert_eq!(protocol::vocabulary_id(), "93f9c16ad1674b97");
     assert_eq!(protocol::vocabulary_id(), conformance::GOLDEN.vocabulary_id);
     assert_eq!(protocol::vocabulary_id(), protocol::vocabulary_id());
     assert!(
@@ -1401,6 +1404,31 @@ const MANIFEST_ID_BASELINE_489: &str = "90b90970080d7978";
 /// See the module-section doc comment above.
 const TRANSCRIPT_ID_BASELINE_489: &str = "1b8407df3614a2cb";
 
+/// #612, found by the implementing PR rather than pre-decided — flagged for
+/// explicit reviewer confirmation, the same class of call #489's three rows
+/// in `tools/lua_reference/README.md` §2's table made but not yet made by
+/// the repository owner for this instance. Retires `VOCAB_ID`'s comparison
+/// against `protocol_lua_reference.txt` under that file's §2 procedure.
+/// Superseding change: `Start`'s allowed phases widen from `[Countdown]` to
+/// `[Countdown, Running]` (`protocol::allowed_phases`) so the coordinator can
+/// resend the canonical start boundary and accept a duplicate echo of it as
+/// a no-op instead of a protocol violation — the original Lua implementation
+/// had no resend at all (a one-shot, 2-second handshake with no recovery),
+/// so this is a deliberate capability past what the frozen fixture can ever
+/// describe, not a divergence to chase back into agreement. `MANIFEST_ID`
+/// and `TRANSCRIPT_ID` above are unaffected — they, and the fixture's other
+/// entries, do not read the phase table — so only this one value moves to a
+/// self-recorded baseline; everything else in this file keeps reading
+/// `protocol_lua_reference.txt` unmodified. Last commit the fixture
+/// comparison held: `36b0964` (the true merge base once #614, part 1 of
+/// #612, landed on `main` mid-PR — verified byte-identical to this branch's
+/// original merge base `b7ab896` for every file this retirement touches, but
+/// the citation itself must name the actual ancestor). Recorded by calling
+/// `protocol::vocabulary_id()` directly against this build — see
+/// `protocol_conformance::GOLDEN`'s doc comment for the same value pinned
+/// the same way.
+const VOCAB_ID_BASELINE_612: &str = "93f9c16ad1674b97";
+
 #[test]
 fn differential_handshake_wire_matches_the_real_lua_byte_for_byte() {
     let message = &fixture::messages()[0];
@@ -1597,7 +1625,11 @@ fn differential_maximum_size_payload_matches_the_real_lua_byte_for_byte() {
 
 #[test]
 fn differential_vocabulary_manifest_and_transcript_ids_match_the_real_lua() {
-    assert_eq!(protocol::vocabulary_id(), lua_ref("VOCAB_ID"));
+    // `vocabulary_id` no longer reads `lua_ref` — see `VOCAB_ID_BASELINE_612`'s
+    // doc comment for the retirement. This still proves the value is stable
+    // and matches the golden pinned elsewhere; it no longer proves agreement
+    // with the (superseded, gone) Lua implementation's vocabulary.
+    assert_eq!(protocol::vocabulary_id(), VOCAB_ID_BASELINE_612);
     assert_eq!(
         protocol::manifest_id(&fixture::manifest(None)),
         MANIFEST_ID_BASELINE_489

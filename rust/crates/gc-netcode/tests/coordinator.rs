@@ -60,6 +60,7 @@ fn reason_wire(reason: TerminalReason) -> &'static str {
         BuildMismatch => "build_mismatch",
         InvalidAssignment => "invalid_assignment",
         StartAckTimeout => "start_ack_timeout",
+        StartNeverArrived => "start_never_arrived",
         InputChannelFailure => "input_channel_failure",
         LateInput => "late_input",
         HashMismatch => "hash_mismatch",
@@ -3227,6 +3228,10 @@ fn maps_every_terminal_reason_to_a_closed_protocol_code() {
         (BuildMismatch, Some("manifest_mismatch")),
         (InvalidAssignment, Some("invalid_assignment")),
         (StartAckTimeout, Some("peer_disconnect")),
+        // A guest's own countdown-zero deadline is the mirror of the host's
+        // ack timeout, not a new failure class on the wire: both are one
+        // peer going silent at the start boundary.
+        (StartNeverArrived, Some("peer_disconnect")),
         (InputChannelFailure, Some("peer_disconnect")),
         (LateInput, Some("desync")),
         (HashMismatch, Some("desync")),
