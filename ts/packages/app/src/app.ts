@@ -511,6 +511,11 @@ export class App {
       this.showLobby({
         ...(action.intent !== undefined ? { intent: action.intent as "host" | "guest" } : {}),
         ...(action.mode !== undefined ? { mode: action.mode as string } : {}),
+        // The front door's own inline code composer (#610) -- reuses the
+        // SAME pre-fill-and-auto-submit path #598's join links already go
+        // through (`showLobby`'s own `presetRoomCode` doc), not a parallel
+        // one.
+        ...(action.code !== undefined ? { presetRoomCode: action.code as string } : {}),
       });
     } else if (route === "lobby" && action.go === "online_match") {
       if (action.freeze === undefined) {
