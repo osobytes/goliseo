@@ -904,6 +904,16 @@ describe("online lobby screen", () => {
     expect(nextState.effects[0]?.kind).toBe("paste_request");
   });
 
+  // #610 round-2 re-review: the honesty note `multiplayer.ts`'s own header
+  // explained the reason for (peer to peer, no server, so a player does
+  // not wait for a matchmaking queue that does not exist) died with that
+  // screen and existed nowhere a player could see it. Restated on the
+  // hosting screen a player actually lands on now.
+  it("says out loud that this is peer to peer, so nobody waits for matchmaking", () => {
+    const layout = lobbyLayout(hosting());
+    expect(hit.find(layout, "peer_to_peer_note")?.text).toContain("PEER TO PEER");
+  });
+
   it("emits transport effects for an invitation", () => {
     let state = hosting();
     state = click(state, "mode_1v1");
@@ -913,27 +923,36 @@ describe("online lobby screen", () => {
     );
   });
 
-  it("disables a control the current phase forbids, and hides one it doesn't offer at all", () => {
+  it("disables a control the current phase forbids, and hides the READY widget entirely (#610: it no longer exists)", () => {
     const state = hosting();
     const currentLayout = lobbyLayout(state);
     // Not yet an invite to copy -- disabled, not hidden, since inviting is
     // still the thing to do on this phase.
     expect(hit.find(currentLayout, "copy_signal")?.data?.disabled).toBe(true);
-    // READY/START do not apply until ownership exists (assigned/ready) --
-    // #566's own principle ("nothing on screen the player cannot act on")
-    // means they are absent here, not merely disabled.
+    // READY was cut outright (#610) -- absent in every phase, not merely
+    // disabled.
     expect(hit.find(currentLayout, "ready")).toBeNull();
-    expect(hit.find(currentLayout, "start")).toBeNull();
+    // START MATCH is the single prominent action from handshake onward
+    // (#610): present here, but disabled -- `hosting()` is a lone host with
+    // bot-fill off, well short of DEFAULT_MODE's required humans.
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("START MATCH");
     // A disabled control is not activated by a click on it.
     const nextState = click(state, "copy_signal");
     expect(view(nextState).error).toBeUndefined();
     expect(nextState.effects.length).toBe(0);
   });
 
-  it("leaves on back and on the leave control", () => {
+  it("CANCELs back to the role screen on Back, but LEAVE LOBBY still exits entirely (#610)", () => {
     const state = hosting();
+    // A host still in "handshake" restarts to the role screen on Back now
+    // (#610 round-2 review, blocking finding 1e) -- LEAVE LOBBY is the
+    // universal, unconditional exit; see `app.spec.ts`/`lobby_flow.spec.ts`
+    // (`packages/app`) for the app-level `restartLobby` this feeds.
     const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect(action?.go).toBe("main_menu");
+    expect(action?.go).toBe("lobby_restart");
     const [, clicked] = lobbyUpdate(state, clickOn(lobbyLayout(state), "leave"));
     expect(clicked?.go).toBe("main_menu");
   });
@@ -1302,16 +1321,18 @@ describe("countdown, terminal identity, and DETAILS (#566)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// READY/START visibility across manifest -> assigned -> ready (#566 council
-// review, blocking finding 2): no case ever constructed `phase ===
-// "manifest"` before, so its one distinguishing behaviour -- the roster
-// shows, but READY/START do not apply yet -- was unproven. The `ready`-phase
-// case is the companion: presence-when-enabled was never pinned either, and
-// it is now a per-phase conditional (`footerWidgets`' `showReady`/
-// `showStart`), not merely a `disabled` flag on an always-present button.
+// START MATCH visibility across manifest -> assigned -> ready (#566 council
+// review, blocking finding 2; redesigned for #610's two-click collapse):
+// READY doesn't exist in any phase any more -- the host's own readiness and
+// the guest's are both automatic now (`lobby_model.ts`'s header addendum on
+// the collapse). START MATCH stays visible through every one of these
+// phases (`footerWidgets`'s `showStart`, gated on `can_configure`) but
+// disabled, because `can_start` is only ever true in "handshake" -- past
+// it, the button reading "STARTING…" IS the player-visible evidence that
+// the collapse's own round trips are in flight.
 // ---------------------------------------------------------------------------
 
-describe("roster phase gating: manifest / assigned / ready (#566)", () => {
+describe("roster phase gating: manifest / assigned / ready (#566, #610)", () => {
   function withPhase(
     mode: SessionMatchMode,
     phase: "manifest" | "assigned" | "ready",
@@ -1326,32 +1347,35 @@ describe("roster phase gating: manifest / assigned / ready (#566)", () => {
     };
   }
 
-  it("manifest: shows the roster, but READY and START do not apply yet", () => {
+  it("manifest: shows the roster; READY is gone, START MATCH is present but reads STARTING…", () => {
     const state = withPhase("2v2", "manifest");
     const currentLayout = lobbyLayout(state);
     expect(hit.find(currentLayout, "slot_home_1")).not.toBeNull();
     expect(hit.find(currentLayout, "ready")).toBeNull();
-    expect(hit.find(currentLayout, "start")).toBeNull();
-  });
-
-  it("assigned: READY is present and enabled; START does not apply yet", () => {
-    const state = withPhase("2v2", "assigned");
-    const currentLayout = lobbyLayout(state);
-    const ready = hit.find(currentLayout, "ready");
-    expect(ready).not.toBeNull();
-    expect(ready?.data?.disabled).toBe(false);
-    expect(hit.find(currentLayout, "start")).toBeNull();
-  });
-
-  it("ready: READY and, for the host, an enabled START are both present", () => {
-    const state = withPhase("2v2", "ready");
-    const currentLayout = lobbyLayout(state);
-    const ready = hit.find(currentLayout, "ready");
-    expect(ready).not.toBeNull();
-    expect(ready?.data?.disabled).toBe(false);
     const start = hit.find(currentLayout, "start");
     expect(start).not.toBeNull();
-    expect(start?.data?.disabled).toBe(false);
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
+  });
+
+  it("assigned: READY is gone; START MATCH stays present and disabled", () => {
+    const state = withPhase("2v2", "assigned");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
+  });
+
+  it("ready: READY is gone; START MATCH stays present and disabled -- the countdown screen is next, not a re-enabled button", () => {
+    const state = withPhase("2v2", "ready");
+    const currentLayout = lobbyLayout(state);
+    expect(hit.find(currentLayout, "ready")).toBeNull();
+    const start = hit.find(currentLayout, "start");
+    expect(start).not.toBeNull();
+    expect(start?.data?.disabled).toBe(true);
+    expect(start?.text).toBe("STARTING…");
   });
 });
 
@@ -1934,19 +1958,43 @@ describe("room-code entry (#552)", () => {
   // all cover a room-code attempt still IN FLIGHT (`role` undefined). Once
   // `room_created` has actually resolved a role, the attempt is no longer
   // "pending" -- `update()`'s own `roomAttemptPending` guard requires
-  // `role === undefined` -- so Escape must fall back to the universal
-  // "leave" path and eject the whole lobby, exactly as it would for a
-  // manually-chosen role. Nothing here should route to `room_cancel`.
-  it("Escape on an ESTABLISHED room-code connection leaves the lobby, not room_cancel", () => {
+  // `role === undefined` -- so a GUEST's established connection still
+  // falls back to the universal "leave" path and ejects the whole lobby,
+  // unchanged. A HOST's established connection is different (#610 round-2
+  // review, blocking finding 1e, superseding this case's original "leaves,
+  // it does not cancel" premise): CANCEL/back must still reach the role
+  // screen even once the auto-hosted room is fully live, or #597's own
+  // manual-fallback acceptance criterion regresses the moment a room code
+  // actually appears.
+  it("Escape on an ESTABLISHED room-code HOST restarts to the role screen, not the universal leave", () => {
     let state = click(newState(VP, ports()), "room_code_host");
     state = dispatch(state, { kind: "lobby", command: { kind: "room_created", code: "A3F9K2" } });
     expect(view(state).role).toBe("host");
     expect(view(state).room_active).toBe(true);
+    expect(view(state).phase).toBe("handshake");
 
     const [next, action] = lobbyUpdate(state, { kind: "action", action: "back" });
-    expect(action?.go, "an established connection leaves, it does not cancel").toBe("main_menu");
-    // `leave()` closes the room-code link along with everything else.
+    expect(action?.go, "CANCEL/back from the auto-hosted screen restarts, it does not leave").toBe(
+      "lobby_restart",
+    );
+    // `leave()`'s own graceful-teardown effects still ran underneath it --
+    // the room-code link closes along with everything else.
     expect(next.effects.some((effect) => effect.kind === "room_close")).toBe(true);
+  });
+
+  it("Escape on an ESTABLISHED room-code GUEST still leaves the lobby, unchanged", () => {
+    const modelPorts = ports();
+    let state = click(newState(VP, modelPorts), "room_code_join");
+    for (const ch of "A3F9K2") {
+      state = dispatch(state, { kind: "lobby", command: { kind: "room_key", key: ch } });
+    }
+    state = click(state, "room_code_slots");
+    state = dispatch(state, { kind: "lobby", command: { kind: "room_joined" } });
+    expect(view(state).role).toBe("guest");
+    expect(view(state).room_active).toBe(true);
+
+    const [, action] = lobbyUpdate(state, { kind: "action", action: "back" });
+    expect(action?.go).toBe("main_menu");
   });
 });
 

@@ -32,6 +32,17 @@
 // Every widget id below still maps to a `LobbyCommand` the model already
 // accepts (`commandFor`) -- ids are presentation, not contract, but the
 // commands they dispatch are the two-way contract with `lobby_model.ts`.
+//
+// # The two-click START collapse (#610)
+//
+// LOCK MATCH, the host's own READY toggle, and the guest's READY toggle are
+// gone as separate widgets. A single START MATCH button (`footerWidgets`'s
+// `showStart`) does all three, plus starting the countdown, from one host
+// click; a guest becomes ready automatically the moment it is assigned a
+// seat, with nothing to click at all. See `lobby_model.ts`'s own header for
+// the collapse itself -- this file only ever renders what `view.can_start`/
+// `view.can_configure` already say, same as it did for the individual
+// commands before.
 
 import { focus, type Layout, type Widget } from "@gc/ui";
 import type { FocusEvent } from "@gc/ui";
@@ -52,6 +63,15 @@ import {
   type RoomCodeEntry,
   type SessionMatchMode,
 } from "./lobby_model.ts";
+import {
+  newRoomCodeEntry,
+  roomCodeCursor,
+  roomCodeCycle,
+  roomCodeDisplay,
+  roomCodeKey,
+  roomCodeText,
+  ROOM_CODE_ALPHABET,
+} from "./room_code_entry.ts";
 
 export type { LobbyEffect } from "./lobby_model.ts";
 
@@ -64,6 +84,15 @@ export type { LobbyEffect } from "./lobby_model.ts";
  * would have focused this widget by activating "JOIN WITH A ROOM CODE"
  * itself. */
 export const ROOM_CODE_ENTRY_WIDGET = "room_code_slots";
+
+/** The host's own inline "have a code?" composer on the auto-hosted
+ * handshake screen (#610 round-2 review, blocking finding 1c) --
+ * deliberately a DIFFERENT widget id from `ROOM_CODE_ENTRY_WIDGET`: a
+ * different screen state (host, already live), a different outcome
+ * (`switchToGuest` restarts the whole lobby rather than dispatching a
+ * model command), sharing only the character-editing primitives
+ * (`room_code_entry.ts`). */
+export const JOIN_ENTRY_WIDGET = "join_code_entry";
 
 export interface LobbyScreenContext {
   readonly model?: LobbyModel;
@@ -80,12 +109,27 @@ export interface LobbyScreenState {
    * `lobby_model.ts` never reads or sets it -- so it lives here rather than
    * on `LobbyModel`, per this file's own header. */
   readonly details: boolean;
+  /** The host's own inline "have a code?" composer (#610) -- screen-local
+   * exactly like `details`: `lobby_model.ts` never sees it, and it is
+   * meaningless outside `view.role === "host" && view.phase ===
+   * "handshake"` (`layoutHandshake`'s own guard), but always present so
+   * `update()` never has to conjure one on first keystroke. */
+  readonly join_entry: RoomCodeEntry;
   /** Produced by the last update; drained by the owner. */
   readonly effects: readonly LobbyEffect[];
 }
 
 export type LobbyAction =
-  { readonly go: "online_match"; readonly freeze: unknown } | { readonly go: "main_menu" };
+  | { readonly go: "online_match"; readonly freeze: unknown }
+  | { readonly go: "main_menu" }
+  // #610 round-2 review, blocking finding 1: CANCEL/back from the
+  // auto-hosted screen (no fields) and the inline "have a code?" composer
+  // (`intent`/`code`) both restart the WHOLE lobby screen rather than
+  // mutating this one's live star transport in place -- see
+  // `cancelToRoleScreen`/`switchToGuest`'s own doc, and `app.ts`'s
+  // `restartLobby`, which is the only place this is consumed.
+  | { readonly go: "lobby_restart" }
+  | { readonly go: "lobby_restart"; readonly intent: "guest"; readonly code: string };
 
 // --- layout geometry, in virtual (960x540) pixels ---------------------------
 //
@@ -118,6 +162,7 @@ export function newState(
     // than the manual "HOST A SESSION" button that used to sit first.
     focus: "room_code_host",
     details: false,
+    join_entry: newRoomCodeEntry(),
     effects: [],
   };
 }
@@ -305,7 +350,13 @@ function identityLines(view: LobbyView): string {
  * to make room for it.
  */
 function troubleText(view: LobbyView): string {
-  const trouble = view.error ?? view.room_error ?? view.departure_text ?? "";
+  // `late_joiner_note` is the lowest-priority fallback deliberately (#610
+  // round-2 review, blocking finding 3): it is the host's own quiet
+  // record that a late joiner was turned away, not something urgent about
+  // THIS session, so anything more pressing (a real error, a room
+  // failure, a departure) still wins the line.
+  const trouble =
+    view.error ?? view.room_error ?? view.departure_text ?? view.late_joiner_note ?? "";
   if (!trouble) {
     return "";
   }
@@ -383,7 +434,6 @@ function headerWidgets(widgets: Widget[], state: LobbyScreenState, view: LobbyVi
 // LEAVE, and the phase's own primary actions ------------------------------
 
 interface FooterOptions {
-  readonly showReady?: boolean;
   readonly showStart?: boolean;
   readonly showDetails?: boolean;
   readonly leaveText?: string;
@@ -426,23 +476,20 @@ function footerWidgets(
     { align: "center" },
   );
   footerX += btnW + gap;
-  if (opts.showReady) {
-    control(
-      widgets,
-      state,
-      "ready",
-      view.ready ? "NOT READY" : "READY",
-      { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
-      { selected: view.ready, disabled: !view.can_ready, align: "center" },
-    );
-    footerX += btnW + gap;
-  }
   if (opts.showStart) {
+    // Two different reasons can disable this button, and they read
+    // differently: "handshake" but not enough players yet is still
+    // START MATCH, just disabled (`can_start`'s own gate); past
+    // "handshake" the collapse is genuinely under way, so the button stays
+    // visible (this footer keeps rendering it through manifest / assigned /
+    // ready -- #610's own doc on `LobbyView.can_start`) but reads
+    // "STARTING…" right up to the countdown screen taking over entirely.
+    const starting = view.phase !== "handshake";
     control(
       widgets,
       state,
       "start",
-      "START COUNTDOWN",
+      starting ? "STARTING…" : "START MATCH",
       { x: footerX, y: FOOTER_BUTTON_Y, w: btnW, h: 38 },
       { disabled: !view.can_start, align: "center" },
     );
@@ -804,12 +851,26 @@ function layoutComposer(state: LobbyScreenState, view: LobbyView): Layout {
 }
 
 // --- handshake: the room code as the hero (or the manual signaling it
-// replaces), mode chips, bot-fill, LOCK MATCH. The eight slot rows are
-// cut -- ownership is unpublished, so every one would read "unassigned". --
+// replaces), mode chips, bot-fill, and the footer's own START MATCH button
+// (#610). The eight slot rows are cut -- ownership is unpublished, so
+// every one would read "unassigned". --
 
 function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
   const widgets: Widget[] = [];
   headerWidgets(widgets, state, view);
+  // The honesty note `multiplayer.ts`'s own header explained the reason
+  // for: peer to peer, no server, so a player does not sit waiting for a
+  // matchmaking queue that does not exist. It died with that screen
+  // (#610 round-2 re-review) -- restated here, on the screen a player
+  // actually lands on now, in the gap `headerWidgets` already leaves above
+  // `CONTENT_TOP`.
+  text(
+    widgets,
+    "peer_to_peer_note",
+    "PEER TO PEER  •  NO SERVER",
+    { x: 0, y: 64, w: 960, h: 16 },
+    { align: "center", kind: "eyebrow" },
+  );
   const LX = LEFT_X;
   const LW = LEFT_COL_W;
   let ly = CONTENT_TOP;
@@ -928,23 +989,57 @@ function layoutHandshake(state: LobbyScreenState, view: LobbyView): Layout {
       { x: LX, y: ly, w: 220, h: 38 },
       { selected: view.bot_fill, align: "center" },
     );
+    // CANCEL: back to the role screen, manual signaling included (#610
+    // round-2 review, blocking finding 1e) -- #597's own acceptance
+    // criterion ("the manual fallback stays reachable") now has to survive
+    // an auto-hosted room too, not only the pre-role composer window.
     control(
       widgets,
       state,
-      "lock",
-      "LOCK MATCH",
-      { x: LX + 230, y: ly, w: 230, h: 38 },
-      { disabled: !view.can_lock, align: "center" },
+      "cancel_to_role",
+      "CANCEL",
+      { x: LX + 230, y: ly, w: 150, h: 38 },
+      { align: "center" },
+    );
+    ly += 42;
+
+    // The inline "have a code?" composer (#610 round-2 review, blocking
+    // finding 1c): a friend meant to join, not host -- typing a code here
+    // (or anywhere on this screen, `update()`'s own doc) restarts this
+    // lobby as a guest of the typed room instead, no separate front-door
+    // screen involved. The placeholder IS the hint (compact: this row can
+    // land as far down as the manual-signaling fallback's own worst case,
+    // `role && !room_active`'s block above, with the footer fixed right
+    // below it -- a separate heading line does not fit).
+    const joinEntryEmpty = state.join_entry.chars.every((ch) => ch === "");
+    control(
+      widgets,
+      state,
+      JOIN_ENTRY_WIDGET,
+      joinEntryEmpty ? "HAVE A CODE? TYPE IT TO JOIN INSTEAD" : roomCodeDisplay(state.join_entry),
+      { x: LX, y: ly, w: 280, h: 32 },
+      { align: "center" },
     );
   }
 
   playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
-  footerWidgets(widgets, state, view, { showDetails: true });
+  // START MATCH -- the single prominent action (#610): it locks the mode,
+  // publishes ownership, marks the host ready, and begins the countdown in
+  // one command. `showStart` is `view.can_configure` (host, any phase short
+  // of countdown/terminal), so the same button keeps rendering -- disabled,
+  // reading as "starting..." -- through the collapse's own brief manifest/
+  // assigned/ready window (`layoutRoster`, below).
+  footerWidgets(widgets, state, view, {
+    showDetails: true,
+    showStart: view.can_configure,
+  });
   return widgets;
 }
 
 // --- manifest / assigned / ready: the mode-dependent roster, the players
-// strip, and READY / START once they apply. -------------------------------
+// strip, and the same START MATCH button from `layoutHandshake` -- shown
+// disabled here (`can_start` is only true in "handshake") while the
+// collapse's own round trips are in flight (#610). ------------------------
 
 function layoutRoster(state: LobbyScreenState, view: LobbyView): Layout {
   const widgets: Widget[] = [];
@@ -961,8 +1056,7 @@ function layoutRoster(state: LobbyScreenState, view: LobbyView): Layout {
   }
   playersStripWidgets(widgets, state, view, RIGHT_COL_X, CONTENT_TOP, RIGHT_COL_W);
   footerWidgets(widgets, state, view, {
-    showReady: view.phase === "assigned" || view.phase === "ready",
-    showStart: view.role === "host" && view.phase === "ready",
+    showStart: view.can_configure,
     showDetails: true,
   });
   return widgets;
@@ -1124,7 +1218,7 @@ export function layout(state: LobbyScreenState): Layout {
   }
 }
 
-function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
+function commandFor(id: string): LobbyCommand | undefined {
   switch (id) {
     case "role_host":
       return { kind: "role", role: "host" };
@@ -1144,10 +1238,6 @@ function commandFor(id: string, view: LobbyView): LobbyCommand | undefined {
       return { kind: "share_link" };
     case "paste_signal":
       return { kind: "paste_request" };
-    case "lock":
-      return { kind: "lock" };
-    case "ready":
-      return { kind: "ready", ready: !view.ready };
     case "start":
       return { kind: "start" };
     case "leave":
@@ -1211,8 +1301,40 @@ function advance(
     // the identity card open unasked. `room_cancel` resets it along with
     // everything else the room-code path clears on the way back.
     details: resetDetails ? false : state.details,
+    join_entry: state.join_entry,
     effects,
   };
+}
+
+// --- restarting the whole lobby screen (#610 round-2 review, blocking
+// finding 1) -------------------------------------------------------------
+//
+// Both interactions below tear the CURRENT session down gracefully (the
+// exact same `"leave"` command LEAVE LOBBY itself dispatches -- an abort
+// broadcast if a guest already connected, the room-code socket closed) and
+// hand a `LobbyAction` up to `app.ts`'s own `restartLobby`, which mounts a
+// genuinely fresh `OnlineLobby` (`ScreenStack.replace`'s own `teardown()`
+// contract closes this instance's star transport) rather than trying to
+// reuse this one's live star mid-flight -- switching a host into a guest,
+// or a live room back into "no role chosen", is not a state this screen's
+// own model was ever built to hold, and inventing that state here would
+// risk exactly the orphaned-connection defect round-2 council review
+// caught earlier for room-code retries (blocking finding 3 on #601's PR).
+
+function cancelToRoleScreen(state: LobbyScreenState): readonly [LobbyScreenState, LobbyAction] {
+  const [model, effects] = lobbyCommand(state.model, state.ports, { kind: "leave" });
+  return [advance(state, model, state.focus, effects, true), { go: "lobby_restart" }];
+}
+
+function switchToGuest(
+  state: LobbyScreenState,
+  code: string,
+): readonly [LobbyScreenState, LobbyAction] {
+  const [model, effects] = lobbyCommand(state.model, state.ports, { kind: "leave" });
+  return [
+    advance(state, model, state.focus, effects, true),
+    { go: "lobby_restart", intent: "guest", code },
+  ];
 }
 
 export type LobbyScreenEvent =
@@ -1228,8 +1350,8 @@ function dispatchCommand(
   // directly -- every network-driven event (`room_created`, `signal`,
   // `control`, `tick`, ...) arrives this way, not through a click -- can
   // change phase just as a click can. Without this, a guest whose screen
-  // flips handshake -> assigned the moment the host clicks LOCK keeps focus
-  // on a widget that no longer exists until their own next input.
+  // flips handshake -> assigned the moment the host clicks START keeps
+  // focus on a widget that no longer exists until their own next input.
   nextState = {
     ...nextState,
     focus: focus.ensure(layout(nextState), nextState.focus) ?? nextState.focus,
@@ -1244,13 +1366,36 @@ export function update(
   if (event.kind === "lobby") {
     return dispatchCommand(state, event.command);
   }
-  // The room-code composer is a single focused widget with its own
+  // The inline "have a code?" composer only exists on the auto-hosted
+  // handshake screen (#610 round-2 review, blocking finding 1c) -- see
+  // `JOIN_ENTRY_WIDGET`'s own doc and `layoutHandshake`'s matching guard.
+  const view = lobbyView(state.ports, state.model);
+  const joinEntryAvailable = view.role === "host" && view.phase === "handshake";
+  // Typing a room-code character ANYWHERE on that screen -- not only while
+  // the composer widget itself is focused -- redirects focus to it and
+  // feeds the keystroke through, so "just start typing" needs no prior
+  // click, mirroring the multiplayer front door's own inline entry before
+  // it folded into this screen.
+  if (
+    joinEntryAvailable &&
+    state.focus !== JOIN_ENTRY_WIDGET &&
+    event.kind === "key" &&
+    event.pressed !== false &&
+    event.key.length === 1 &&
+    ROOM_CODE_ALPHABET.includes(event.key.toUpperCase())
+  ) {
+    return [
+      { ...state, focus: JOIN_ENTRY_WIDGET, join_entry: roomCodeKey(state.join_entry, event.key) },
+      undefined,
+    ];
+  }
+  // Either composer -- the guest's own post-role one, or the host's inline
+  // "switch to guest" one -- is a single focused widget with its own
   // up/down/left/right meaning (cycle/move the character under the
   // cursor) instead of the general focus-navigation those actions
-  // otherwise carry -- see `ROOM_CODE_ENTRY_WIDGET`'s own doc. "confirm"
-  // and "back" fall through to the normal paths below (confirm submits
-  // via `commandFor`'s `ROOM_CODE_ENTRY_WIDGET` case; back/leave is
-  // universal).
+  // otherwise carry. "confirm"/"back"/click fall through to the normal
+  // paths below (confirm submits via the `id === ...` branches further
+  // down; back/leave is universal).
   if (state.model.room_entry !== undefined && state.focus === ROOM_CODE_ENTRY_WIDGET) {
     if (event.kind === "key" && event.pressed !== false) {
       return dispatchCommand(state, { kind: "room_key", key: event.key });
@@ -1270,9 +1415,35 @@ export function update(
       }
     }
   }
+  if (joinEntryAvailable && state.focus === JOIN_ENTRY_WIDGET) {
+    if (event.kind === "key" && event.pressed !== false) {
+      return [{ ...state, join_entry: roomCodeKey(state.join_entry, event.key) }, undefined];
+    }
+    if (event.kind === "action") {
+      if (event.action === "up") {
+        return [{ ...state, join_entry: roomCodeCycle(state.join_entry, 1) }, undefined];
+      }
+      if (event.action === "down") {
+        return [{ ...state, join_entry: roomCodeCycle(state.join_entry, -1) }, undefined];
+      }
+      if (event.action === "left") {
+        return [{ ...state, join_entry: roomCodeCursor(state.join_entry, -1) }, undefined];
+      }
+      if (event.action === "right") {
+        return [{ ...state, join_entry: roomCodeCursor(state.join_entry, 1) }, undefined];
+      }
+    }
+  }
   const currentLayout = layout(state);
   const nextFocus = focus.navigate(currentLayout, state.focus, event) ?? state.focus;
   if (event.kind === "action" && event.action === "back") {
+    // CANCEL/back from the auto-hosted screen must still reach the role
+    // screen (#597's own acceptance criterion; #610 round-2 review,
+    // blocking finding 1e) -- exactly what the CANCEL widget does, so
+    // reuse it rather than a parallel back-specific path.
+    if (joinEntryAvailable) {
+      return cancelToRoleScreen(state);
+    }
     // A room-code attempt with no role yet occupies the role screen's own
     // slot -- the guest composer (`room_entry`) or a host's still-connecting
     // request (`room_active`, `role` not resolved). Back/Escape used to
@@ -1317,7 +1488,22 @@ export function update(
   if (id === "details") {
     return [{ ...state, focus: id, details: !state.details, effects: [] }, undefined];
   }
-  const cmd = commandFor(id, lobbyView(state.ports, state.model));
+  if (id === "cancel_to_role") {
+    return cancelToRoleScreen(state);
+  }
+  if (id === JOIN_ENTRY_WIDGET) {
+    // Mirrors `ROOM_CODE_ENTRY_WIDGET`'s own click-or-confirm-submits
+    // contract: activating it (click, or confirm while focused) attempts a
+    // restart; an incomplete code just focuses it for more typing, exactly
+    // as `roomSubmit`'s "enter all six characters" guard does for the
+    // guest's own composer.
+    const code = roomCodeText(state.join_entry);
+    if (code === undefined) {
+      return [advance(state, state.model, id, []), undefined];
+    }
+    return switchToGuest(state, code);
+  }
+  const cmd = commandFor(id);
   if (!cmd) {
     return [advance(state, state.model, id, []), undefined];
   }
