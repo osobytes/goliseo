@@ -36,6 +36,8 @@ export { pitch, pitchDrawCommands, resetStaticSceneCache, staticSceneBuildCount 
 export { backdropCommands, frameCommands, drawBackdrop, drawFrame } from "./arena.ts";
 export {
   DEFAULT_PLAYER_RADIUS,
+  DECLARED_PLAYER_HEIGHT_M,
+  METRES_PER_WORLD_UNIT,
   ELEVATION as player3dElevation,
   metresPerWorldUnit,
   clipFor,

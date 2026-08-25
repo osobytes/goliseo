@@ -167,7 +167,50 @@ export const DEFAULT_PLAYER_RADIUS = 12;
 const RIG_PROPORTIONS = proportions.RIG_MEDIUM;
 
 /**
- * The one conversion between the pitch's world units and the rig's metres.
+ * The height this project declares a player to be. THE SCALE DECLARATION:
+ * this number, and not the rig's own geometry, is what ties a world unit to a
+ * metre everywhere in the codebase.
+ *
+ * The distinction matters because it was conflated for a long time and the
+ * conflation was load-bearing in the wrong direction. `proportions.height()`
+ * measures the authored mesh in the rig's OWN space, where the figure happens
+ * to sum to about 1.57 m. That is an art-space number: the rig is a stylised
+ * ~5.4-head silhouette, its equipment is authored in the same space
+ * (`rig3d/equipment.ts` never reads `RigProportions` at all), and nothing about
+ * it is a claim that a footballer is 1.57 m tall.
+ *
+ * Deriving the project's metre scale from that number made every metre-
+ * denominated statement elsewhere quietly wrong -- the pitch, the ball, the
+ * gravity constant. Rescaling the rig to fix it was tried and abandoned: it
+ * leaves every absolute-metre art asset behind (equipment came out 11.8%
+ * small), so it trades a labelling problem for a real visual one.
+ *
+ * So the scale is declared here instead, once, and the art is left alone.
+ */
+export const DECLARED_PLAYER_HEIGHT_M = 1.75;
+
+/**
+ * Metres per world unit, at this project's declared scale. Derived from
+ * [`DECLARED_PLAYER_HEIGHT_M`] over the pixel height a player actually draws
+ * at (`PLAYER_RADIUS * HEIGHT_IN_RADII * 2` = 72), which is 24.31 mm.
+ *
+ * What this makes true, and checkable: the 1648x927 pitch is 40.1 x 22.5 m --
+ * squarely inside regulation futsal bounds -- the ball is 29 cm
+ * across, and `gc_sim::ball_flight`'s 900 px/s^2 gravity is 21.9 m/s^2, about
+ * 2.2x Earth. That last one is a deliberate arcade dial (docs/vision.md:
+ * "Readable over realistic"), not a bug, but it is worth being able to state
+ * it as a number rather than discovering it.
+ */
+export const METRES_PER_WORLD_UNIT =
+  DECLARED_PLAYER_HEIGHT_M / (DEFAULT_PLAYER_RADIUS * HEIGHT_IN_RADII * 2);
+
+/**
+ * Metres per world unit for an arbitrary declared player height. Prefer the
+ * [`METRES_PER_WORLD_UNIT`] constant above; this is the general form, kept for
+ * callers exploring a different declared scale.
+ *
+ * Note the argument is a DECLARED height, not `proportions.height()` -- see
+ * [`DECLARED_PLAYER_HEIGHT_M`] for why those are different things.
  *
  * Worth stating because it looks depth-dependent and is not. World-to-pixels
  * is the projection's `scale`, and pixels-to-metres is `ppm`, which is built
