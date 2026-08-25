@@ -589,29 +589,73 @@ function polylinePoints(points: readonly number[]): THREE.Vector3[] {
 }
 
 /** A canvas-texture sprite for one text command. Cheap, avoids TextGeometry. */
-function buildTextSprite(c: TextCommand): THREE.Sprite {
-  const canvas = document.createElement("canvas");
-  const scale = 4; // supersample for crisper text
+// Supersample factor for text rasterisation. Named because the sprite's own
+// height is derived from it twice below and the two must not drift.
+const TEXT_SUPERSAMPLE = 4;
+
+// The rasterised height, in world units, a text command's sprite occupies.
+// Derived WITHOUT touching a canvas so the sprite geometry can be sized on a
+// cache hit, where no canvas is built at all.
+function textSpriteHeight(fontPx: number): number {
+  return Math.round(fontPx * 1.6 * TEXT_SUPERSAMPLE) / TEXT_SUPERSAMPLE;
+}
+
+// Everything that changes the rasterised pixels. Anything affecting the canvas
+// MUST appear here: a key that is missing a field renders stale text, which is
+// the one way this cache can be wrong and is worse than the churn it removes.
+// `c.x`/`c.y` are deliberately absent -- they position the sprite, they do not
+// change its pixels.
+function textMaterialKey(c: TextCommand): string {
   const fontPx = c.fontPx ?? 13;
-  canvas.width = Math.max(1, Math.round(c.w * scale));
-  canvas.height = Math.round(fontPx * 1.6 * scale);
-  const ctx = canvas.getContext("2d");
-  if (ctx !== null) {
-    ctx.scale(scale, scale);
-    ctx.font = `${fontPx}px sans-serif`;
-    ctx.fillStyle = `rgba(${Math.round(c.color[0] * 255)}, ${Math.round(c.color[1] * 255)}, ${Math.round(
-      c.color[2] * 255,
-    )}, ${c.alpha ?? 1})`;
-    ctx.textBaseline = "top";
-    ctx.textAlign = c.align;
-    const tx = c.align === "center" ? c.w / 2 : c.align === "right" ? c.w : 0;
-    ctx.fillText(c.text, tx, 0);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const alpha = c.alpha ?? 1;
+  return ["text", c.text, fontPx, c.w, c.align, alpha, c.color[0], c.color[1], c.color[2]].join(
+    "|",
+  );
+}
+
+// A text sprite, with its material AND its canvas texture shared through
+// `materialCache`.
+//
+// WHY THIS IS NOT MERELY A TIDY-UP (#403). This was the last draw-command
+// builder bypassing `sharedMaterial` -- contrast `lineMaterial`/`fillMaterial`
+// above -- so its `SpriteMaterial` never carried `SHARED_MATERIAL_FLAG` and
+// `disposeMaterial` destroyed it, and its texture, on the next `paint()`. That
+// is the exact per-frame program-destruction mechanism #411 fixed everywhere
+// else: every `SpriteMaterial` here resolves to ONE compiled GL program (none
+// of `fog`/`sizeAttenuation` vary), so any frame containing text could drive
+// that program's refcount to zero and force a synchronous relink, whose
+// `getProgramInfoLog` blocks until the driver finishes linking.
+//
+// It also allocated a canvas, rasterised the string, and uploaded a fresh
+// `CanvasTexture` EVERY FRAME per text command. The charge/windup label
+// (`pitch.ts`) is emitted every frame while a player holds shot or pass, so
+// that upload landed precisely during the beat the player is timing.
+function buildTextSprite(c: TextCommand): THREE.Sprite {
+  const fontPx = c.fontPx ?? 13;
+  const material = sharedMaterial(textMaterialKey(c), () => {
+    const canvas = document.createElement("canvas");
+    const scale = TEXT_SUPERSAMPLE;
+    canvas.width = Math.max(1, Math.round(c.w * scale));
+    canvas.height = Math.round(fontPx * 1.6 * scale);
+    const ctx = canvas.getContext("2d");
+    if (ctx !== null) {
+      ctx.scale(scale, scale);
+      ctx.font = `${fontPx}px sans-serif`;
+      ctx.fillStyle = `rgba(${Math.round(c.color[0] * 255)}, ${Math.round(c.color[1] * 255)}, ${Math.round(
+        c.color[2] * 255,
+      )}, ${c.alpha ?? 1})`;
+      ctx.textBaseline = "top";
+      ctx.textAlign = c.align;
+      const tx = c.align === "center" ? c.w / 2 : c.align === "right" ? c.w : 0;
+      ctx.fillText(c.text, tx, 0);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    return new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  });
+  const height = textSpriteHeight(fontPx);
   const sprite = new THREE.Sprite(material);
-  sprite.scale.set(c.w, canvas.height / scale, 1);
-  sprite.position.set(c.x + c.w / 2, c.y + canvas.height / scale / 2, 0);
+  sprite.scale.set(c.w, height, 1);
+  sprite.position.set(c.x + c.w / 2, c.y + height / 2, 0);
   sprite.center.set(0.5, 0.5);
   return sprite;
 }

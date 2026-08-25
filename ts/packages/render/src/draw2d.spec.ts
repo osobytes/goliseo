@@ -12,7 +12,7 @@
 // used against the HUD specifically (draw2d.ts's `PaintOptions` doc comment
 // explains the choice).
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as THREE from "three";
 import {
   appendCommands,
@@ -550,5 +550,136 @@ describe("draw2d material cache (#403)", () => {
     const after = materialOf(group);
     expect(after).not.toBe(before);
     expect(after.userData["draw2dSharedMaterial"]).toBe(true);
+  });
+});
+
+// Text was the LAST draw-command builder bypassing the material cache, and the
+// #403 suite above could not see it: `buildTextSprite` is the one DOM-shaped
+// builder (`document.createElement("canvas")`), so every test in this file
+// substitutes it via `PaintOptions.buildText` and the real path went uncovered.
+// That is exactly why it survived #411 -- the regression suite for the bug had
+// a hole in the shape of the one remaining instance of the bug.
+//
+// Closed here with a minimal canvas stub rather than by adding a jsdom
+// environment. `buildTextSprite` already handles a null 2d context (it renders
+// nothing and still produces a texture), so the stub only has to satisfy
+// `THREE.CanvasTexture`, which stores its argument without inspecting it.
+describe("draw2d text material cache (#403)", () => {
+  const realDocument = (globalThis as { document?: unknown }).document;
+
+  beforeEach(() => {
+    resetMaterialCache();
+    (globalThis as { document?: unknown }).document = {
+      createElement: () => ({ width: 0, height: 0, getContext: () => null }),
+    };
+  });
+
+  afterEach(() => {
+    if (realDocument === undefined) {
+      delete (globalThis as { document?: unknown }).document;
+    } else {
+      (globalThis as { document?: unknown }).document = realDocument;
+    }
+  });
+
+  const text = (
+    content: string,
+    over: Partial<{
+      alpha: number;
+      fontPx: number;
+      w: number;
+      color: readonly [number, number, number];
+    }> = {},
+  ): DrawCommand => ({
+    kind: "text",
+    text: content,
+    x: 0,
+    y: 0,
+    w: over.w ?? 100,
+    align: "left",
+    color: over.color ?? [1, 1, 1],
+    ...(over.alpha !== undefined ? { alpha: over.alpha } : {}),
+    ...(over.fontPx !== undefined ? { fontPx: over.fontPx } : {}),
+  });
+
+  // `THREE.Sprite.material` is a single `SpriteMaterial`, not the
+  // `Material | Material[]` union `Mesh` carries, so there is nothing to narrow
+  // here -- unlike `materialOf` above, which does have to.
+  function spriteMaterial(group: THREE.Group): THREE.SpriteMaterial {
+    const child = group.children[0];
+    expect(child, "a text command should paint exactly one sprite").toBeDefined();
+    return (child as THREE.Sprite).material;
+  }
+
+  it("reuses one material and one texture across frames for unchanged text", () => {
+    // The charge/windup label is emitted EVERY frame while a player holds shot
+    // or pass, and its content changes only between "SHOT" and "PASS". Before
+    // this cache that was a fresh canvas, a fresh GPU texture upload and a
+    // fresh material sixty times a second, each disposed on the next paint --
+    // landing precisely during the beat the player is timing.
+    const group = new THREE.Group();
+    paint(group, [text("SHOT")]);
+    const first = spriteMaterial(group);
+    const firstMap = first.map;
+
+    paint(group, [text("SHOT")]);
+    const second = spriteMaterial(group);
+
+    expect(second, "same text must reuse the same material object").toBe(first);
+    expect(second.map, "and the same texture").toBe(firstMap);
+  });
+
+  it("does not dispose a shared text material when the frame is cleared", () => {
+    // The invariant that actually prevents the stall: `paint`'s clear must
+    // leave cached materials alone, or the GL program behind them is destroyed
+    // and synchronously re-linked on the next frame.
+    const group = new THREE.Group();
+    paint(group, [text("PASS")]);
+    const material = spriteMaterial(group);
+    let disposed = false;
+    material.addEventListener("dispose", () => {
+      disposed = true;
+    });
+
+    paint(group, []);
+    expect(disposed, "paint's clear must not dispose a cached text material").toBe(false);
+  });
+
+  it("keys on every property that changes the rasterised pixels", () => {
+    // A key missing a field renders STALE TEXT, which is a worse failure than
+    // the churn the cache removes -- so each of these must produce a distinct
+    // material rather than a stale hit.
+    const base = text("SHOT");
+    const variants: readonly DrawCommand[] = [
+      text("PASS"),
+      text("SHOT", { alpha: 0.5 }),
+      text("SHOT", { fontPx: 24 }),
+      text("SHOT", { w: 200 }),
+      text("SHOT", { color: [1, 0, 0] }),
+    ];
+
+    const group = new THREE.Group();
+    paint(group, [base]);
+    const baseMaterial = spriteMaterial(group);
+
+    for (const variant of variants) {
+      const other = new THREE.Group();
+      paint(other, [variant]);
+      expect(
+        spriteMaterial(other),
+        `${JSON.stringify(variant)} must not reuse the base material`,
+      ).not.toBe(baseMaterial);
+    }
+  });
+
+  it("shares one material between two identical labels in the SAME frame", () => {
+    const group = new THREE.Group();
+    // Two SEPARATE command objects with identical content -- `text()` builds a
+    // fresh one per call, which is the case that matters: the cache must key on
+    // content, not on object identity.
+    paint(group, [text("SHOT"), text("SHOT")]);
+    const a = (group.children[0] as THREE.Sprite).material;
+    const b = (group.children[1] as THREE.Sprite).material;
+    expect(a).toBe(b);
   });
 });
