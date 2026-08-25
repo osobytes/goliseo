@@ -974,8 +974,11 @@ export function realMatchDriverPort(
     // `RenderFrameRoster` (`@gc/screens`'s deliberately narrow declared
     // type) needs a generic string index signature `DecodedRenderFrameRoster`
     // structurally lacks, even though the real object is a strict superset
-    // of it field-for-field -- the identical cast `sim_host.ts`'s/
-    // `browser_sim_host.ts`'s own `roster()` document for the offline path.
+    // of it field-for-field -- the identical cast `browser_sim_host.ts`'s
+    // own `roster()` documents for the offline path (`sim_host.ts`'s own
+    // `RenderFrameRoster` alias is `@gc/render`'s full type directly, not
+    // `@gc/screens`'s narrow one, so that module's `roster()` needs no cast
+    // at all).
     roster: (d) => d.roster as unknown as RenderFrameRoster,
     tick: (d) => d.tickCount,
     dispose: (d) => {
@@ -1021,17 +1024,22 @@ interface ObserverPort {
 }
 
 // `OnlineMatchState.players` (`online_match.ts`) carries `id`/`team`/`pos`/
-// `facing` only -- no `is_keeper` (confirmed by reading `MatchScreen.onlineState`'s
-// own builder in `match.ts`: it derives `players[]` from `roster().ids`/
-// `.teams` and `frame().players`, neither of which threads `is_keeper`
-// through for the ONLINE construction mode, unlike the offline path's
-// `RealMatchScreenPort.state.roster`). A disclosed simplification, not a
+// `facing` only -- no `is_keeper`. That is NOT a data gap any more (#611):
+// the roster this file builds now carries real `is_keeper` per slot, the
+// same as the offline path (`onlineHost.roster().is_keeper`, decoded off
+// the bridge's own `rosterNumeric()`/`.rosterIdsAndNames()`). The remaining
+// gap is entirely on the `@gc/screens` side of the seam: `MatchScreen.onlineState`'s
+// builder (`match.ts`) derives `players[]` from `roster().ids`/`.teams` and
+// `frame().players` only, never reading `roster().is_keeper`, so
+// `OnlineMatchState.players` never carries it through to a caller here --
+// and this port hardcodes `is_keeper: false` below for exactly that reason,
+// not because the value is unavailable. A disclosed simplification, not a
 // silent one: every online player observes as a non-keeper, so keeper-only
 // stats (saves, claims) under-count for whichever slot is actually the
-// keeper. Reported as a residual gap in this issue's PR rather than solved
-// here -- fixing it needs `OnlineHostPort.roster()`/`RenderFrameRoster` to
-// carry keeper identity for the online path too, a `@gc/screens`/`@gc/render`
-// change outside this issue's scope.
+// keeper. Left as a follow-up rather than fixed here -- threading it
+// through needs `OnlineMatchState.players` and `match.ts`'s `onlineState`
+// builder to carry/populate `is_keeper`, a `@gc/screens` change outside
+// this PR's scope.
 function observerPortFor(): ObserverPort {
   return {
     create: (state) =>

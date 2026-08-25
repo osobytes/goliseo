@@ -830,7 +830,12 @@ describe("online_ports: the online frame matches the offline frame's shape (#611
     const offlineHost = createSimHost("nebula", "orion", 1, 120, 99);
     const offlineFrame = offlineHost.frame() as unknown as Record<string, unknown>;
 
-    for (const key of ["players", "control", "field", "ball", "roster"] as const) {
+    // `Object.keys(offlineFrame)`, not a hand-maintained list -- both
+    // products are built by the SAME `frameBuffer.toRenderFrame` call, so
+    // every top-level field it produces today, or ever adds
+    // (`hud`/`possession`/`events`/a future `combat`), is covered by
+    // construction rather than by remembering to extend a literal here.
+    for (const key of Object.keys(offlineFrame)) {
       expect(offlineFrame[key], `the offline frame must carry '${key}'`).toBeDefined();
       expect(onlineFrame[key], `the online frame must carry '${key}' (#611)`).toBeDefined();
     }
@@ -840,9 +845,50 @@ describe("online_ports: the online frame matches the offline frame's shape (#611
     // actually fields; a roster present but empty or truncated would pass
     // the key check above and still leave the renderer drawing nobody.
     const expectedRosterSize = manifest.teams.reduce((sum, team) => sum + team.roster.length, 0);
-    const onlineRoster = onlineFrame["roster"] as { readonly ids: readonly string[] };
+    const onlineRoster = onlineFrame["roster"] as {
+      readonly ids: readonly string[];
+      readonly teams: readonly unknown[];
+      readonly radius: readonly unknown[];
+      readonly is_keeper: readonly unknown[];
+      readonly species_shape: readonly unknown[];
+      readonly species_color: readonly unknown[];
+      readonly presentation_ids: readonly unknown[];
+      readonly loadout_ids: readonly unknown[];
+    };
     expect(onlineRoster.ids.length).toBe(expectedRosterSize);
     expect(onlineRoster.ids.length).toBe(offlineHost.roster().ids.length);
+
+    // Every roster sub-array is genuinely parallel to `ids`, not just
+    // present -- a roster with `ids.length === 10` but a 0-length
+    // `species_shape` would still pass the key/size checks above and still
+    // leave `@gc/render`'s `pitch.ts` reading past the end of a short array
+    // for every player after the first.
+    for (const field of [
+      "teams",
+      "radius",
+      "is_keeper",
+      "species_shape",
+      "species_color",
+      "presentation_ids",
+      "loadout_ids",
+    ] as const) {
+      expect(
+        onlineRoster[field].length,
+        `online roster.${field} must be parallel to roster.ids`,
+      ).toBe(onlineRoster.ids.length);
+    }
+
+    // And the per-tick players SoA must be parallel to the roster too --
+    // exactly what `frame_view_players.ts`'s `rosterPlayersView` reads
+    // (`roster.ids[index]` paired with `players.x[index]`/`.y[index]`), and
+    // exactly what its `?? 0` fallback would silently paper over if
+    // `players.x`/`.y` were ever shorter than the roster.
+    const onlinePlayers = onlineFrame["players"] as {
+      readonly x: readonly unknown[];
+      readonly y: readonly unknown[];
+    };
+    expect(onlinePlayers.x.length).toBe(onlineRoster.ids.length);
+    expect(onlinePlayers.y.length).toBe(onlineRoster.ids.length);
 
     offlineHost.dispose();
     hostDriverPort.dispose(hostDriver);
