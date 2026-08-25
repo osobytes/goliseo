@@ -44,6 +44,7 @@ import { draw } from "@gc/ui";
 import type { SettingsStorage } from "./settings.ts";
 import { CanvasGraphicsBackend } from "./canvas_graphics_backend.ts";
 import { createRealMatchFactory } from "./real_match_factory.ts";
+import { rosterPlayersView } from "./frame_view_players.ts";
 import { createBrowserSimHost, ensureBrowserSimHostReady } from "./browser_sim_host.ts";
 import { loadOnlineWasmHost } from "./browser_online_wasm_host.ts";
 import { createOnlinePorts, browserStarEval } from "./online_ports.ts";
@@ -212,10 +213,13 @@ async function main(): Promise<void> {
       // accumulators itself and they would advance twice per frame, running the
       // gait cycle at double speed. Tracked as its own issue rather than left
       // as a surprise for whoever wires that port.
-      const players = renderFrame.roster.ids.map((id, index) => ({
-        id,
-        pos: { x: renderFrame.players.x[index] ?? 0, y: renderFrame.players.y[index] ?? 0 },
-      }));
+      //
+      // The `roster.ids` -> `{id, pos}[]` derivation itself is `frame_view_players.ts`'s
+      // pure `rosterPlayersView` (AGENTS.md §9) -- extracted so it is
+      // spec'd, headlessly, against both the offline and online frame
+      // shapes (see that module's header for why, and #611 for the bug a
+      // structural divergence between them caused).
+      const players = rosterPlayersView(renderFrame);
       viewState.update(players, lastFrameDtSeconds);
       cameraFollow.update(
         {
