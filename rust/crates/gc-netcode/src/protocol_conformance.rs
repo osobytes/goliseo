@@ -55,8 +55,20 @@ pub struct Golden {
 /// `Disconnect` -- are unchanged below, and `vocabulary_id` with them. That is
 /// again the evidence that nothing but the manifest moved. Recorded the same
 /// way.
+///
+/// `vocabulary_id` repinned by #612, a genuinely different mechanism from
+/// every repin above: this one moves the vocabulary itself, not the
+/// manifest it happens to embed. `Start`'s allowed phases widen from
+/// `[Countdown]` to `[Countdown, Running]` (`protocol::allowed_phases`) so a
+/// resend or a duplicate echo arriving after either peer already applied the
+/// original is a phase-legal no-op instead of a protocol violation — see
+/// `gc_netcode::coordinator::emit_start`'s doc. `manifest_id`, `transcript_id`
+/// and every per-kind wire digest below are unaffected: none of them read the
+/// phase table, only the field/kind vocabulary and each kind's own encoded
+/// bytes, and neither changed. Recorded by calling `protocol::vocabulary_id()`
+/// directly against this build.
 pub const GOLDEN: Golden = Golden {
-    vocabulary_id: "e13e3647001a0a7e",
+    vocabulary_id: "93f9c16ad1674b97",
     manifest_id: "90b90970080d7978",
     transcript_id: "1b8407df3614a2cb",
     complete_kind: MessageKind::ManifestAccept,

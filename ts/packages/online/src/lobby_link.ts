@@ -259,25 +259,31 @@ export class LobbyLink {
     }
   }
 
-  private drainEvents(events: LobbyLinkEvent[]): void {
+  // Splits the transport's connection-lifecycle events into two buckets
+  // rather than one, so `poll()` below can place them on either side of the
+  // control wires: `opens` (`peer_connected`) stays ahead of them, `closes`
+  // (`link_lost`/`link_error`) moves behind them. See `poll()`'s own doc for
+  // why the two halves of what used to be one `drainEvents` need different
+  // positions.
+  private drainEvents(opens: LobbyLinkEvent[], closes: LobbyLinkEvent[]): void {
     let event = this.star.pollEvent();
     while (event !== null) {
       if (event.kind === "peer_state" && event.peer_id !== undefined) {
         if (event.state === "connected") {
-          events.push({ kind: "peer_connected", peer_id: event.peer_id });
+          opens.push({ kind: "peer_connected", peer_id: event.peer_id });
         } else if (
           event.state === "error" ||
           event.state === "closed" ||
           event.state === "disconnected"
         ) {
-          events.push({
+          closes.push({
             kind: "link_lost",
             link_id: event.peer_id,
             ...(event.message !== undefined ? { detail: event.message } : {}),
           });
         }
       } else if (event.kind === "peer_error" || event.kind === "star_error") {
-        events.push({
+        closes.push({
           kind: "link_error",
           ...(event.peer_id !== undefined ? { link_id: event.peer_id } : {}),
           ...(event.code !== undefined ? { code: event.code } : {}),
@@ -307,9 +313,31 @@ export class LobbyLink {
     }
   }
 
-  // One pump of the transport: locally produced signaling blobs first, then
-  // connection events, then reassembled control wires. The order is fixed
-  // so a scripted lobby flow is reproducible.
+  // One pump of the transport: locally produced signaling blobs, then a
+  // freshly opened connection, then reassembled control wires, then a
+  // connection ending. The order is fixed so a scripted lobby flow is
+  // reproducible, and it is not one fixed order but two deliberate
+  // boundaries:
+  //
+  // `peer_connected` stays ahead of control wires because the model's own
+  // reaction to it (`onPeerConnected` in `lobby_model.ts`) is what tells a
+  // guest's coordinator to `connect` in the first place -- a wire arriving
+  // for a link the coordinator has not been told exists yet would have
+  // nothing to apply it to.
+  //
+  // `link_lost`/`link_error` were ahead of control wires too until #612:
+  // when a session ends, the closing peer's own Abort and the transport's
+  // own close notification are one causal event (`terminate_session` in
+  // `gc_netcode::coordinator` sends the Abort, *then* closes the link) but
+  // arrive over two independent local queues (`pollBatch`'s data channel,
+  // `pollEvent`'s connection-state observer) with no guaranteed order
+  // between them. Draining events before messages meant a same-poll race
+  // let the close's generic `transport_lost` terminalize the session before
+  // the Abort naming the real reason was ever read -- the model's terminal
+  // latch (`lobby_model.ts`'s `step`) then discarded that Abort outright, so
+  // the peer that gave up never learned why. Moving connection-close/error
+  // behind control wires means the specific, already-arrived reason always
+  // wins over the generic one when both are in the same batch.
   poll(): LobbyLinkEvent[] {
     const events: LobbyLinkEvent[] = [];
     for (const closing of this._closing) {
@@ -318,8 +346,10 @@ export class LobbyLink {
     }
     this._closing = [];
     this.drainSignals(events);
-    this.drainEvents(events);
+    const closes: LobbyLinkEvent[] = [];
+    this.drainEvents(events, closes);
     this.drainMessages(events);
+    events.push(...closes);
     return events;
   }
 }

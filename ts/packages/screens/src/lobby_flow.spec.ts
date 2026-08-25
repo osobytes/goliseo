@@ -395,6 +395,7 @@ const TERMINAL_CODES: Readonly<Record<CoordinatorTerminalReason, string>> = {
   build_mismatch: "manifest_mismatch",
   invalid_assignment: "invalid_assignment",
   start_ack_timeout: "peer_disconnect",
+  start_never_arrived: "peer_disconnect",
   input_channel_failure: "peer_disconnect",
   late_input: "desync",
   hash_mismatch: "desync",
@@ -3128,5 +3129,93 @@ describe("room-code guest slot assignment (#601)", () => {
     });
     expect(model.last_dropped_signal).toBeUndefined();
     expect(lobbyModelView(modelPorts, model).last_dropped_signal).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reason honesty: a same-batch Abort beats a generic link loss (#612).
+//
+// The real coordinator's `terminate_session` sends an Abort naming the real
+// reason, then closes the link -- one causal event, but `LobbyLink.poll()`
+// (see `@gc/online`'s `lobby_link.ts`/`lobby_link.spec.ts`) can see the
+// close arrive before or after the Abort wire, since they travel over two
+// independently-queued local observations. What actually protects the
+// specific reason is `lobby_model.ts`'s `step()` terminal latch (this
+// file's header, "the single pure entry point" section): once a command
+// leaves the coordinator terminal, every later command but `tick` is a
+// no-op. These cases pin that latch directly against the two commands
+// `online_lobby.ts`'s dispatch loop would feed it, in the order
+// `LobbyLink.poll()` now guarantees (control before link_lost) -- narrower
+// than a `Driver` flow, the same way "defers coordinator creation..." above
+// pins its own mechanism without one.
+// ---------------------------------------------------------------------------
+
+describe("reason honesty: a same-batch Abort beats a generic link loss (#612)", () => {
+  // `fakeCoordinatorPort`'s shared `stepImpl` (this file's general fixture,
+  // used by every other case) has never needed a "link_lost" branch: no
+  // existing case drives one, so it silently no-ops today. The real
+  // coordinator's `Event::LinkLost` does end a guest's own session, with the
+  // generic transport-loss reason -- added here, locally, rather than folded
+  // into the shared fake, which this file's header says is deliberately
+  // general-purpose, not tuned to one new case.
+  function coordinatorPortWithGenericLinkLoss(): CoordinatorPort {
+    const base = ports().coordinator;
+    return {
+      ...base,
+      step(state, event) {
+        if (event.kind === "link_lost" && state.phase !== "terminal") {
+          return [
+            { ...state, phase: "terminal", terminal: { reason: "transport_lost" } },
+            { accepted: true, actions: [] },
+          ];
+        }
+        return base.step(state, event);
+      },
+    };
+  }
+
+  function freshGuest(modelPorts: LobbyModelPorts): LobbyModel {
+    let model = newLobbyModel(modelPorts);
+    [model] = command(model, modelPorts, { kind: "role", role: "guest" });
+    return model;
+  }
+
+  it("keeps the Abort's reason when link_lost is dispatched right after it", () => {
+    const modelPorts: LobbyModelPorts = {
+      ...ports(),
+      coordinator: coordinatorPortWithGenericLinkLoss(),
+    };
+    let model = freshGuest(modelPorts);
+    expect(model.coordinator?.terminal).toBeUndefined();
+
+    // The order `LobbyLink.poll()` now guarantees: the control wire ahead of
+    // the connection-close event in the same batch.
+    const abortWire = JSON.stringify({ kind: "abort", code: "host_abort" });
+    [model] = command(model, modelPorts, { kind: "control", link_id: "host", wire: abortWire });
+    expect(model.coordinator?.terminal?.reason).toBe("peer_abort");
+
+    [model] = command(model, modelPorts, { kind: "link_lost", link_id: "host" });
+    expect(model.coordinator?.terminal?.reason).toBe("peer_abort");
+    expect(TERMINAL_TEXT["peer_abort"]).not.toBe(TERMINAL_TEXT["transport_lost"]);
+  });
+
+  // The counterpart, proving the latch itself (not the ordering) is what
+  // protects the reason: fed in the OLD, pre-#612 order, the generic
+  // link_lost reaches the coordinator first and the Abort that follows is
+  // the one silently discarded. This failing-if-things-regress case is what
+  // makes the passing case above meaningful rather than vacuous.
+  it("would lose the specific reason if link_lost arrived first (the bug #612 fixed)", () => {
+    const modelPorts: LobbyModelPorts = {
+      ...ports(),
+      coordinator: coordinatorPortWithGenericLinkLoss(),
+    };
+    let model = freshGuest(modelPorts);
+
+    [model] = command(model, modelPorts, { kind: "link_lost", link_id: "host" });
+    expect(model.coordinator?.terminal?.reason).toBe("transport_lost");
+
+    const abortWire = JSON.stringify({ kind: "abort", code: "host_abort" });
+    [model] = command(model, modelPorts, { kind: "control", link_id: "host", wire: abortWire });
+    expect(model.coordinator?.terminal?.reason).toBe("transport_lost");
   });
 });

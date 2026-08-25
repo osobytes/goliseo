@@ -16,7 +16,15 @@
 // lobby_flow.rs` for the same distinction).
 
 import { describe, expect, it } from "vitest";
-import { absorb, frame, MAX_CHUNK_BYTES, newFrameBuffer } from "./lobby_link.ts";
+import { ok } from "@gc/core";
+import type {
+  StarTransportAdapter,
+  TransportPeerEvent,
+  TransportPeerMessage,
+  TransportState,
+  TransportStarDiagnostics,
+} from "@gc/transport";
+import { absorb, frame, LobbyLink, MAX_CHUNK_BYTES, newFrameBuffer } from "./lobby_link.ts";
 
 const PROTOCOL_MAX_WIRE_BYTES = 8192;
 
@@ -126,5 +134,104 @@ describe("lobby control framing", () => {
   it("refuses a wire beyond the protocol bound", () => {
     const result = frame("q".repeat(PROTOCOL_MAX_WIRE_BYTES + 1));
     expect(result.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `LobbyLink.poll()`'s own drain order (#612). A minimal `StarTransportAdapter`
+// -- only enough of it for `poll()` to actually call (`peerIds`/`takeSignal`
+// for signals, `pollEvent` for connection lifecycle, `pollBatch` for control
+// traffic) -- so these cases drive the ordering decision itself, not a real
+// transport's behavior (that is `fake_star.ts`'s own coverage elsewhere).
+// ---------------------------------------------------------------------------
+
+function fakeStar(options: {
+  readonly events?: readonly TransportPeerEvent[];
+  readonly messages?: readonly TransportPeerMessage[];
+}): StarTransportAdapter {
+  const events = [...(options.events ?? [])];
+  const messages = [...(options.messages ?? [])];
+  const unimplemented = (): never => {
+    throw new Error("not needed by this test");
+  };
+  return {
+    initialize: () => ok(true),
+    shutdown: () => ok(true),
+    role: () => "host",
+    capacity: () => 1,
+    openPeer: unimplemented,
+    closePeer: () => ok(true),
+    peerIds: () => [],
+    peerState: () => null,
+    requestOffer: unimplemented,
+    acceptOffer: unimplemented,
+    acceptAnswer: unimplemented,
+    takeSignal: () => ok(null),
+    send: unimplemented,
+    broadcast: unimplemented,
+    poll: () => ok(null),
+    pollBatch: () => messages.splice(0),
+    pollEvent: () => events.shift() ?? null,
+    state: (): TransportState => "connected",
+    diagnostics: (): TransportStarDiagnostics => ({
+      role: "host",
+      state: "connected",
+      capacity: 1,
+      peer_count: 1,
+      queue_limit: 64,
+      buffered_amount_limit: 0,
+      event_depth: 0,
+      sent: 0,
+      received: 0,
+      dropped_outbound: 0,
+      dropped_inbound: 0,
+      malformed: 0,
+      unsupported_version: 0,
+      overflow: 0,
+      backpressure: 0,
+      last_error: null,
+      peers: [],
+    }),
+  };
+}
+
+function controlMessage(peerId: string, wire: string): TransportPeerMessage {
+  const frames = frame(wire);
+  if (!frames.ok) throw new Error(frames.error);
+  return {
+    peer_id: peerId,
+    channel: "control",
+    message: { version: 1, type: "event", seq: 0, payload: frames.value[0] as string },
+    arrival_seq: 0,
+  };
+}
+
+describe("LobbyLink.poll() drain order (#612)", () => {
+  it("delivers a queued control wire before a same-poll connection close", () => {
+    // The real coordinator's `terminate_session` sends an Abort, then closes
+    // the link -- one causal event, but the two land on independent local
+    // queues (`pollBatch`'s data channel, `pollEvent`'s connection-state
+    // observer) with no guaranteed order. Draining events before messages
+    // used to let the close's generic `link_lost` reach `lobby_model`'s
+    // terminal latch first, discarding the Abort naming the real reason.
+    const star = fakeStar({
+      events: [{ kind: "peer_state", peer_id: "guest", state: "closed" }],
+      messages: [controlMessage("guest", "abort-wire")],
+    });
+    const events = new LobbyLink(star).poll();
+    expect(events.map((event) => event.kind)).toEqual(["control", "link_lost"]);
+  });
+
+  it("still delivers a fresh connection before any control wire in the same poll", () => {
+    // The other half of the same reorder must not move: a guest's coordinator
+    // only learns a link exists via `peer_connected` (`onPeerConnected` in
+    // `lobby_model.ts` dispatches `connect` off it), so a wire arriving for
+    // that link in the same batch has to be processed after, not before.
+    const star = fakeStar({
+      events: [{ kind: "peer_state", peer_id: "guest", state: "connected" }],
+      messages: [controlMessage("guest", "hello-wire")],
+    });
+    const events = new LobbyLink(star).poll();
+    expect(events.map((event) => event.kind)).toEqual(["peer_connected", "control"]);
   });
 });

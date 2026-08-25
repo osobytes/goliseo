@@ -159,9 +159,21 @@ jobs:
             # did not check out the same ref before pull_request events, so
             # trusting its result for what ends up deployed would be
             # unfounded.
+            # VITE_BUILD_SHA becomes `buildInfo.build_sha`
+            # (`ts/packages/app/src/build_info.ts`), which `online_ports.ts`
+            # folds into the session manifest's `build_id`/`source_id` (#612):
+            # without a real per-deploy identity here, every deploy shared
+            # `gc_netcode::protocol_fixture`'s one fixed literal, so a tab on
+            # an old deploy and a tab on a new one could pair freely and
+            # desync instead of refusing at handshake with the existing
+            # `build_mismatch` reason. `GITHUB_SHA` is this job's own commit
+            # (this workflow triggers on push to `main`, so it is exactly
+            # what gets deployed); ci.yml's gate build and local `vite
+            # build`/`vite dev` leave this unset and get `buildInfo`'s "dev"
+            # fallback instead, which is intentional -- see that file's doc.
             - name: "ts: pnpm exec vite build"
               working-directory: ts
-              run: pnpm exec vite build
+              run: VITE_BUILD_SHA="${GITHUB_SHA:0:7}" pnpm exec vite build
 
             - name: "infra: pnpm install --frozen-lockfile"
               working-directory: infra

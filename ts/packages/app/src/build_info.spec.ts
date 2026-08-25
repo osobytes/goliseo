@@ -35,6 +35,13 @@ describe("GOLISEO branding", () => {
     expect(buildInfo.identity).toBe("goliseo");
   });
 
+  // #612: `vitest` never sets `VITE_BUILD_SHA` (only `deploy.yml` does), so
+  // this pins the local/CI fallback that keeps two peers in the SAME test
+  // run -- or two local dev tabs -- agreeing and able to pair.
+  it("falls back to a stable build identity when no deploy SHA is injected", () => {
+    expect(buildInfo.build_sha).toBe("dev");
+  });
+
   it("retains no prototype product name in the player-facing shell", () => {
     const titleWidget = hit.find(title.layout(title.newState(VIEWPORT)), "title");
     const creditsWidget = hit.find(

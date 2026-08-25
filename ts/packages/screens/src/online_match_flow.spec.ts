@@ -217,6 +217,47 @@ function fakeCoordinatorPort(): CoordinatorPort<FakeCoordinatorState> {
   };
 }
 
+// #612: a control wire carrying an already-decided Abort and a `link_lost`
+// derived from `star.pollEvent()`'s own connection-close observation can both
+// be waiting in the same `drainControl()` call -- the real coordinator's
+// `terminate_session` sends the Abort, then closes the link, one causal
+// event reaching this screen over two independently-queued local
+// observations with no guaranteed order between them. `fakeCoordinatorPort`
+// above treats "control" as relay-only for every other case in this file, so
+// it cannot tell that scenario apart from an ordinary in-match message; this
+// one does, the way the real coordinator's `apply_abort` does -- an
+// announced Abort names its own reason -- so the "which one lands first"
+// distinction below is actually observable.
+function abortAwareCoordinatorPort(): CoordinatorPort<FakeCoordinatorState> {
+  return {
+    step(state, event): readonly [FakeCoordinatorState, CoordinatorOutcome] {
+      if (event["kind"] === "control") {
+        const wire = event["wire"];
+        const parsed =
+          typeof wire === "string"
+            ? (JSON.parse(wire) as { readonly kind?: string; readonly reason?: string })
+            : undefined;
+        if (parsed?.kind === "abort") {
+          const terminal: CoordinatorTerminal = { reason: parsed.reason ?? "peer_abort" };
+          return [
+            { ...state, phase: "terminal" },
+            { accepted: true, actions: [{ kind: "terminate", terminal }] },
+          ];
+        }
+        return [state, { accepted: true, actions: [] }];
+      }
+      if (event["kind"] === "link_lost") {
+        const terminal: CoordinatorTerminal = { reason: "transport_lost" };
+        return [
+          { ...state, phase: "terminal" },
+          { accepted: true, actions: [{ kind: "terminate", terminal }] },
+        ];
+      }
+      return [state, { accepted: true, actions: [] }];
+    },
+  };
+}
+
 function fakeProtocolPort(): ProtocolPort {
   return {
     encode(message): string {
@@ -360,6 +401,49 @@ function fakeLobbyFraming(): LobbyFramingPort {
   return {
     newBuffer: (): LobbyFrameBuffer => ({}),
     absorb: () => [undefined, undefined] as const,
+  };
+}
+
+// A single-frame passthrough, for the one case below that needs a control
+// wire to actually reassemble: real chunking/reassembly is pinned for real
+// against `@gc/online`'s own module in that package's `lobby_link.spec.ts`
+// (this file's header explains why `@gc/screens` cannot import it directly),
+// and this case's wire is small enough to never approach the chunking bound
+// anyway.
+function passthroughLobbyFraming(): LobbyFramingPort {
+  return {
+    newBuffer: (): LobbyFrameBuffer => ({}),
+    absorb: (_buffer, payload) => [payload, undefined] as const,
+  };
+}
+
+// A link whose star reports one queued control wire *and* one queued
+// connection-close event, both already pending on the very first poll -- the
+// same-batch race #612 traced. `drainControl()` only polls the star once the
+// driver has gone non-active (`fakeLink()`'s own comment above), so a case
+// using this constructs its driver already `"failed"`.
+function raceLink(peerId: string, wire: string): MatchLobbyLinkPort {
+  let batchesPolled = 0;
+  let eventsPolled = 0;
+  return {
+    star: {
+      pollBatch: () => {
+        if (batchesPolled > 0) {
+          return [];
+        }
+        batchesPolled += 1;
+        return [{ channel: "control", peer_id: peerId, message: { payload: wire } }];
+      },
+      pollEvent: () => {
+        if (eventsPolled > 0) {
+          return undefined;
+        }
+        eventsPolled += 1;
+        return { kind: "peer_state", peer_id: peerId, state: "closed" };
+      },
+    },
+    send: () => {},
+    apply: () => {},
   };
 }
 
@@ -1618,6 +1702,57 @@ describe("online match screen flow", () => {
     const guestModel = guestMatch.model as { readonly terminal?: { readonly reason: string } };
     expect(guestModel.terminal?.reason).toBe("peer_abort");
     expect(exitRoute(guestMatch.model)).toBe("terminal");
+  });
+
+  it("lets a same-poll Abort beat the generic link-lost verdict (#612)", () => {
+    const driver: FakeDriverState = { status: "failed", tick: 0 };
+    const initialState: OnlineMatchState = {
+      time_left: 600,
+      score: { home: 0, away: 0 },
+      controlled: 0,
+      players: [{ id: "zyro_vex", team: "home", pos: new Vec2(0, 0), facing: new Vec2(0, 1) }],
+    };
+    const abortWire = JSON.stringify({ kind: "abort", reason: "peer_abort" });
+    const options: OnlineMatchOptions<
+      FakeDriverState,
+      FakeBatch,
+      unknown,
+      FakeCheckpoint,
+      Record<string, never>,
+      FakeBatch,
+      FakeCoordinatorState
+    > = {
+      request: HOST_REQUEST,
+      coordinator: fakeCoordinatorState("host"),
+      link: raceLink("peer", abortWire),
+      matchDriver: fakeMatchDriver(driver, { [HOST_REQUEST.peer_id]: HOST_REQUEST.live ?? "" }),
+      matchPresentation: fakeMatchPresentation(),
+      matchSession: fakeMatchSession(),
+      lobbyFraming: passthroughLobbyFraming(),
+      contract: fakeContract(),
+      observer: fakeObserver(),
+      newMatch: (opts) => fakeMatchScreen(initialState, opts.rollbackSource),
+    };
+    const modelPort: OnlineMatchModelPort<
+      OnlineMatchModel<FakeCoordinatorState, OnlineMatchRequest>
+    > = {
+      command: (model, event) =>
+        command(model, { ...modelPorts(), coordinator: abortAwareCoordinatorPort() }, event),
+      ended,
+      exitRoute,
+      ABORT_PROMPT,
+    };
+    const match = new OnlineMatch(options, modelPort, (request, coordinator) =>
+      newOnlineMatchModel(request, coordinator),
+    );
+
+    // One `update()` is one `drainControl()` call: both the Abort and the
+    // close are already queued before it runs.
+    match.update(TICK_SECONDS);
+
+    expect(ended(match.model)).toBe(true);
+    const model = match.model as { readonly terminal?: { readonly reason: string } };
+    expect(model.terminal?.reason).toBe("peer_abort");
   });
 
   // `overlayLines` reads `this.match.state` and diagnostics off the
