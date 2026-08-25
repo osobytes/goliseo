@@ -563,6 +563,14 @@ export class OnlineMatch<
     this.drainSimulation();
     this.reportDriver();
     this.accumulator += dt;
+    // Deliberately UNCAPPED, unlike `this.match.update(dt)` just above
+    // (`match.ts`'s `MAX_ONLINE_TICKS_PER_UPDATE` bounds LOCAL RENDERED
+    // simulation per call) -- this loop drives the COORDINATOR's own tick
+    // clock, whose deadlines are funded by processed tick-time (#612). A
+    // long stall makes this catch up in one synchronous burst while the
+    // rendered match above fast-forwards over several calls instead; see
+    // `MAX_ONLINE_TICKS_PER_UPDATE`'s own doc for why that split is
+    // intentional, not an oversight.
     while (this.accumulator >= TICK_SECONDS) {
       this.accumulator -= TICK_SECONDS;
       this.dispatch({ kind: "tick", dt: TICK_SECONDS });

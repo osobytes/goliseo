@@ -42,6 +42,13 @@ const MAX_BUFFERED_AMOUNT_LIMIT = 1048576;
 const MAX_PEER_ID_BYTES = 128;
 const MAX_SIGNAL_BYTES = 65536;
 const ICE_TIMEOUT_MS = 5000;
+// #612 part 3: a transient `connectionState === "disconnected"` (an ICE
+// blip -- a dropped packet burst, a NAT rebinding) self-heals far more
+// often than it means the link is gone. "failed"/"closed" mean that
+// unambiguously and are reported immediately; "disconnected" instead gets
+// this long to recover before the peer is declared lost -- see
+// `ensurePeerConnection`'s `onconnectionstatechange`.
+const DISCONNECT_GRACE_MS = 3000;
 const PEER_ID_PATTERN = /^[0-9A-Za-z][0-9A-Za-z_-]*$/;
 const CHANNEL_ORDER = ["control", "input"] as const;
 type ChannelName = (typeof CHANNEL_ORDER)[number];
@@ -136,6 +143,11 @@ interface PeerState {
   backpressure: number;
   malformed: number;
   last_error: string;
+  /** A pending "report loss after `DISCONNECT_GRACE_MS`" timer, armed while
+   * `connectionState` reads a transient "disconnected" -- `null` when none
+   * is pending (never disconnected, already reported, or already
+   * recovered). See `DISCONNECT_GRACE_MS`'s own doc. */
+  disconnect_grace: number | null;
 }
 
 interface StarState {
@@ -327,7 +339,19 @@ export function newGoliseoStarTransportBridge(
       backpressure: 0,
       malformed: 0,
       last_error: "",
+      disconnect_grace: null,
     };
+  }
+
+  /** Cancels a pending grace timer, if one is armed -- the connection
+   * recovered, failed/closed outright (both reported immediately and make
+   * a queued "disconnected" report stale), or the peer is being torn down
+   * entirely. Safe to call whether or not one is pending. */
+  function clearDisconnectGrace(peer: PeerState): void {
+    if (peer.disconnect_grace !== null) {
+      globalThis.clearTimeout(peer.disconnect_grace);
+      peer.disconnect_grace = null;
+    }
   }
 
   function bufferedAmount(channel: ChannelState): number {
@@ -606,13 +630,33 @@ export function newGoliseoStarTransportBridge(
     pc.onconnectionstatechange = () => {
       const connection = pc.connectionState;
       if (connection === "failed" || connection === "closed") {
+        // Unambiguous: report immediately, and drop any pending transient-
+        // disconnect grace -- it would only re-report the same loss late.
+        clearDisconnectGrace(peer);
         if (peer.state !== "closed") {
           peerError(peer, null, "disconnected", "peer connection " + connection);
           peerState(peer, "disconnected");
         }
       } else if (connection === "disconnected" && peer.state === "connected") {
-        peerError(peer, null, "disconnected", "peer connection disconnected");
-        peerState(peer, "disconnected");
+        // Transient -- see `DISCONNECT_GRACE_MS`'s own doc. One timer per
+        // disconnected spell: a flicker of onconnectionstatechange firing
+        // "disconnected" more than once before the grace elapses must not
+        // shorten or restart the window.
+        if (peer.disconnect_grace === null) {
+          peer.disconnect_grace = globalThis.setTimeout(() => {
+            peer.disconnect_grace = null;
+            // Re-read live state rather than trust the closure: the peer
+            // may have recovered, or already been closed/failed (and
+            // reported) by the time this fires.
+            if (pc.connectionState === "disconnected" && peer.state === "connected") {
+              peerError(peer, null, "disconnected", "peer connection disconnected");
+              peerState(peer, "disconnected");
+            }
+          }, DISCONNECT_GRACE_MS);
+        }
+      } else if (connection === "connected") {
+        // Recovered before the grace elapsed -- the transient blip is over.
+        clearDisconnectGrace(peer);
       }
     };
     pc.ondatachannel = (event: RTCDataChannelEvent) => {
@@ -697,6 +741,7 @@ export function newGoliseoStarTransportBridge(
   }
 
   function closePeer(peer: PeerState, reason: string): void {
+    clearDisconnectGrace(peer);
     for (const name of CHANNEL_ORDER) {
       const channel = peer.channels[name];
       star.dropped_outbound += channel.outbound.length;

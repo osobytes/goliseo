@@ -874,7 +874,25 @@ export type RollbackHostFactory = () => RollbackHostPort;
 /** One canonical simulation tick, seconds -- matches `online_match.ts`'s own `TICK_SECONDS` and every fixed-clock fake in this package's spec files. */
 const ONLINE_TICK_SECONDS = 1 / 60;
 const ONLINE_CLOCK_EPSILON = ONLINE_TICK_SECONDS * 1e-9;
-/** A runaway-loop guard only -- see [`MatchScreen.updateOnline`]'s doc for why this is not the determinism-relevant catch-up/drop decision `SimHostPort.planTicks` exists to keep singular. */
+/** A runaway-loop guard only -- see [`MatchScreen.updateOnline`]'s doc for why this is not the determinism-relevant catch-up/drop decision `SimHostPort.planTicks` exists to keep singular.
+ *
+ * #612's network heartbeat (`@gc/app`'s `network_heartbeat.ts`) deliberately
+ * does NOT fund this cap higher, and this cap is deliberately not raised or
+ * removed to "keep up" with it -- the two caps guard different things. This
+ * one bounds how much LOCAL RENDERED SIMULATION one render call attempts
+ * (a real cost: sim step time, animation/camera state), so after a long
+ * stall the match screen catches up over several calls at up to `1/60 * 8`
+ * seconds of game time per call, rendering visibly "fast-forwarded" for a
+ * few frames -- not a defect, an accepted, bounded consequence of catching
+ * up at all. `online_match.ts`'s OWN `OnlineMatch.update` fixed-tick
+ * accumulator, immediately alongside this screen's `update` in the same
+ * caller, drives the COORDINATOR's tick clock instead and is intentionally
+ * UNCAPPED (see that accumulator's own call site) -- capping the
+ * coordinator's funding to match this constant would silently starve it of
+ * tick-time again, reintroducing the exact class of bug #612 fixes. The
+ * coordinator is allowed to "jump" a whole stall's worth of ticks in one
+ * synchronous burst; only the rendered picture is deliberately smoothed out
+ * over several calls instead. */
 const MAX_ONLINE_TICKS_PER_UPDATE = 8;
 
 // =============================================================================
