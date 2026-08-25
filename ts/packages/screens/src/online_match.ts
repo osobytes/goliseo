@@ -399,7 +399,21 @@ export class OnlineMatch<
   // terminal it stops polling entirely; the link is pumped directly from
   // that point on, which is also how a link lost after the final tick still
   // reaches the coordinator.
+  //
+  // The direct `pollEvent()` drain below used to dispatch `link_lost`
+  // *before* the control entries collected in the same call (and any
+  // already queued from the driver's own per-tick `batchControl`) were
+  // dispatched -- #612's mechanism for the lobby screen, reached here too:
+  // an Abort and the transport's own close notification are one causal
+  // event but arrive over two independent local queues with no guaranteed
+  // order, and dispatching the close first let its generic `transport_lost`
+  // terminalize the session before the Abort naming the real reason was
+  // ever read (then discarded outright by the model's terminal latch). This
+  // collects `link_lost` into `closes` and dispatches it only after every
+  // pending control entry has gone through, so a specific reason already in
+  // hand always wins over the generic one.
   private drainControl(): void {
+    const closes: string[] = [];
     if (this.ports.matchDriver.status(this.driver) !== "active") {
       for (const entry of this.link.star.pollBatch()) {
         if (entry.channel === "control") {
@@ -413,7 +427,7 @@ export class OnlineMatch<
           event.peer_id !== undefined &&
           (event.state === "closed" || event.state === "error" || event.state === "disconnected")
         ) {
-          this.dispatch({ kind: "link_lost", link_id: event.peer_id });
+          closes.push(event.peer_id);
         }
         event = this.link.star.pollEvent();
       }
@@ -432,6 +446,9 @@ export class OnlineMatch<
           this.model = { ...this.model, error: err };
         }
       }
+    }
+    for (const linkId of closes) {
+      this.dispatch({ kind: "link_lost", link_id: linkId });
     }
   }
 
