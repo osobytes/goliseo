@@ -555,15 +555,23 @@ async function main(): Promise<void> {
 
   let lastFrameTime = performance.now();
   function frame(now: number): void {
+    // RENDER-FACING dt ONLY, from here on -- clamped, and computed from
+    // THIS function's own `lastFrameTime` (which only `frame()` ever
+    // writes). `dt`/`lastFrameDtSeconds` feed `viewState.update`/
+    // `cameraFollow.update` inside `RenderPort.draw` below and nothing
+    // else. This pair must NEVER fund `app.update()` -- see
+    // `network_heartbeat.ts`'s header ("NO DOUBLE PUMP -- SINGLE dt
+    // AUTHORITY") for why an earlier version of this file did exactly
+    // that and double-counted wall time on every heartbeat-covered stall's
+    // resume frame: `lastFrameTime` goes stale for the whole stall (rAF
+    // never runs, so this function is never called), so the first resumed
+    // frame computed `dt` as the full `MAX_FRAME_DT_SECONDS` clamp ceiling
+    // from a timestamp that predates time the heartbeat had already
+    // funded.
     const dt = Math.min(Math.max((now - lastFrameTime) / 1000, 0), MAX_FRAME_DT_SECONDS);
     const delta = now - lastFrameTime;
     lastFrameTime = now;
     lastFrameDtSeconds = dt;
-    // Tells the heartbeat rAF is alive right now -- see
-    // `network_heartbeat.ts`'s header for why this is a separate clock from
-    // this function's own `lastFrameTime`/`dt` (which keep the pre-existing,
-    // unrelated post-stall clamp for rendering-side smoothing).
-    heartbeat.notifyRafFrame(now);
 
     for (const evt of keyboard.drainKeyEvents()) {
       app.event(evt);
@@ -573,8 +581,16 @@ async function main(): Promise<void> {
       app.event(evt);
     }
 
+    // THE dt AUTHORITY FOR `app.update()` -- unrelated to `dt` above.
+    // `consumeElapsed` marks rAF alive (so the heartbeat's own `tick()`
+    // sees no stall right now) and returns the wall time genuinely not
+    // yet funded by ANY pump, rAF or heartbeat, unclamped -- see
+    // `network_heartbeat.ts`'s header for why unclamped is correct here
+    // even though the render-facing `dt` above stays clamped.
+    const appDt = heartbeat.consumeElapsed(now);
+
     const tUpdate = performance.now();
-    app.update(dt);
+    app.update(appDt);
     const tDraw = performance.now();
 
     const layout = menuLayout(app.stack.current());

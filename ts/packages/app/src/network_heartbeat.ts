@@ -49,37 +49,86 @@
 // module calls `update(dt)` and nothing else, so a heartbeat tick can never
 // submit a GL frame.
 //
-// NO DOUBLE PUMP. The risk: if the rAF loop and this heartbeat each tracked
-// their own "time of my last pump", a tick right at the resume boundary
-// could re-cover wall-clock time the other pump already funded (or, the
-// opposite failure, leave a gap). This module avoids both by keeping ONE
-// authority (`lastPumpAt`, private to a `createNetworkHeartbeat` instance)
-// for "the last moment ANY pump -- rAF or heartbeat -- funded `update`",
-// updated by both `notifyRafFrame` and a firing `tick()`. Every dt this
-// module hands to `update` is `now - lastPumpAt`, so the wall-clock
-// intervals the two pumps fund never overlap and never gap, regardless of
-// which one runs when -- see `network_heartbeat.spec.ts`'s "no double pump"
-// case, which proves interleaved rAF+heartbeat delivers the exact same
-// total tick count as rAF alone over the same wall time.
+// NO DOUBLE PUMP -- SINGLE dt AUTHORITY (post-review revision). The risk:
+// if the rAF loop and this heartbeat each tracked their own "time of my
+// last pump", a tick right at the resume boundary could re-cover
+// wall-clock time the other pump already funded (or, the opposite failure,
+// leave a gap). An EARLIER version of this file tried to guard against
+// that with a `notifyRafFrame(now)` method that only updated this module's
+// OWN internal bookkeeping -- but `browser_main.ts`'s `frame()` kept
+// computing its OWN separate dt for the `app.update()` call, from ITS OWN
+// `lastFrameTime`, which ONLY `frame()` writes. That `lastFrameTime` goes
+// stale for an entire stall (rAF never runs, so `frame()` -- its only
+// writer -- is never called), so the FIRST frame after ANY heartbeat-
+// covered stall computed `dt = MAX_FRAME_DT_SECONDS` from that stale
+// timestamp and fed `app.update()` wall time the heartbeat had ALREADY
+// delivered during the stall -- a real double pump, traced numerically in
+// review: a 1.9s stall funded by heartbeat ticks up to t=1850 got roughly
+// another `MAX_FRAME_DT_SECONDS` re-funded at the t=1900 resume frame.
+// Every extra millisecond becomes an extra coordinator tick (the
+// accumulators in `online_lobby.ts`/`online_match.ts` have no cap), so
+// repeated stalls would accumulate LOCAL tick-clock drift against the
+// peer -- the exact defect class this whole file exists to eliminate.
+//
+// The fix: {@link NetworkHeartbeat.consumeElapsed} is now the ONE
+// authority for the `app.update()` call, for BOTH pumps. It returns
+// `now - lastPumpAt` and advances `lastPumpAt` to `now`, so `frame()` MUST
+// call it and use its return value for `app.update()` instead of computing
+// a dt of its own for that call. `frame()` still computes its own separate
+// `lastFrameTime`/clamped dt too -- but that pair now serves ONLY its
+// original render-facing consumers (`lastFrameDtSeconds`, read by
+// `viewState.update`/`cameraFollow.update` inside `RenderPort.draw`),
+// which this heartbeat has no reason to touch and `browser_main.ts` leaves
+// untouched. Every dt `consumeElapsed`/`tick()` hand to `update` covers a
+// non-overlapping, gap-free slice of wall time regardless of which pump
+// ran when -- see `network_heartbeat.spec.ts`'s "no double pump" cases,
+// including one that reproduces the reviewed defect's exact shape (a stale
+// render-side `lastFrameTime` alongside the correct `consumeElapsed`
+// value) and proves the fixture can tell them apart.
 //
 // A second, SEPARATE timestamp (`lastRafAt`) tracks only "the last real rAF
-// frame", written exclusively by `notifyRafFrame`. It exists purely to
-// answer "has rAF actually run recently?" -- if the heartbeat's own pumps
-// also moved this clock, a stalled rAF would look "fresh" again after a
-// single heartbeat tick and the interval would go quiet, undershooting its
-// own cadence during a real stall.
+// frame", written exclusively by `consumeElapsed` (the rAF path's own call
+// -- `tick()` never touches it). It exists purely to answer "has rAF
+// actually run recently?" -- if the heartbeat's own pumps also moved this
+// clock, a stalled rAF would look "fresh" again after a single heartbeat
+// tick and the interval would go quiet, undershooting its own cadence
+// during a real stall.
 //
-// UNCLAMPED dt, ON PURPOSE. `browser_main.ts`'s rAF loop clamps its own dt
-// to `MAX_FRAME_DT_SECONDS` (0.25s) before calling `update` -- intentional
-// for the common case (mirrors love2d's own post-stall dt clamp, bounds a
-// single frame's simulation catch-up). This heartbeat does NOT apply that
-// clamp: the online coordinator's own deadlines are funded by processed
-// tick-time, so under-funding a stall on purpose is exactly the bug this
-// file exists to close. Because the heartbeat keeps `lastPumpAt` fresh
-// throughout a stall (every ~`HEARTBEAT_INTERVAL_MS`, or ~1s once a hidden
-// tab's timers are throttled), the gap rAF eventually sees on resume stays
-// small anyway -- so its own clamp, unchanged, never actually bites for the
-// case this file is about.
+// UNCLAMPED dt, ALWAYS, FOR EVERY CALLER -- ON PURPOSE. `browser_main.ts`'s
+// rAF loop clamps ITS OWN, SEPARATE render-facing dt to
+// `MAX_FRAME_DT_SECONDS` (0.25s) -- intentional there (mirrors love2d's
+// own post-stall dt clamp, bounds a single frame's animation/camera
+// catch-up). `consumeElapsed`/`tick()` never apply that clamp, or any
+// clamp, to the value handed to `app.update()` -- deliberately the SAME
+// choice for a healthy rAF frame, a stalled rAF's resume frame, AND a
+// heartbeat tick, rather than three different rules to keep synchronized:
+//   - The online coordinator's own deadlines are funded by processed
+//     tick-time (this file's whole reason to exist), so under-funding a
+//     stall on purpose is exactly the bug being fixed -- clamping a
+//     HEARTBEAT tick's dt would silently drop the very time it exists to
+//     deliver. `online_match.ts`'s `OnlineMatch.update` accumulator is
+//     itself uncapped for the same reason (see its own comment, and
+//     `match.ts`'s `MAX_ONLINE_TICKS_PER_UPDATE` for the DIFFERENT,
+//     deliberately-still-capped concern: how much LOCAL RENDERED
+//     simulation one call attempts -- the two are not the same knob, and
+//     capping the coordinator's funding to match the render cap would
+//     reintroduce exactly the starvation #612 fixes).
+//   - Clamping ONLY the rAF-side call would not be safe either: the
+//     resumed frame's own `consumeElapsed` gap (time since the LAST
+//     heartbeat pump, which can itself be up to the heartbeat's own
+//     cadence -- ~250ms visible, ~1s once a hidden tab's timers are
+//     throttled) can exceed 0.25s on its own, so clamping it would drop
+//     genuinely-unfunded time right at the resume boundary -- a smaller
+//     instance of the very bug this revision fixes.
+//   - On a HEALTHY frame (no stall, either pump), the elapsed value is a
+//     tiny fraction of a frame either way, so a clamp would never engage
+//     there regardless -- there is no "healthy path" behavior a clamp
+//     would meaningfully preserve.
+// Every other route (title, team sheet, an OFFLINE match, ...) either
+// already stops calling `update` on the current screen while backgrounded
+// (an offline match pauses via `App.focus`) or has no dt-driven catch-up
+// loop that a large, unclamped dt could turn into a runaway cost (a menu
+// screen's own `motion.advance`-style transition simply saturates).
 
 /** How often the heartbeat's own timer fires while the tab is visible.
  * Once `document.hidden`, the browser throttles this on its own (typically
@@ -159,13 +208,21 @@ export interface NetworkHeartbeat {
    * `start()`'s real interval) so a spec can drive the decision at a
    * synthetic time with no real timer involved at all. */
   tick(): void;
-  /** Tells this heartbeat a real rAF frame just ran at `now` -- call once
-   * per `browser_main.ts` `frame()` invocation, with the SAME timestamp
-   * that callback received. Marks rAF alive (so the next `tick()` finds no
-   * stall) and folds `now` into the dt-funding clock (so a `tick()` right
-   * after a healthy frame funds only the time since THAT frame, never
-   * double-counting it). */
-  notifyRafFrame(now: number): void;
+  /**
+   * THE SINGLE dt AUTHORITY for `App.update()` -- call this once per real
+   * rAF frame, from `browser_main.ts`'s `frame()`, with the SAME `now`
+   * that callback received, and feed ITS RETURN VALUE to `app.update()`
+   * for that frame. Do not compute a separate dt for that call: see this
+   * file's header ("NO DOUBLE PUMP -- SINGLE dt AUTHORITY") for the bug
+   * that came from doing exactly that. Marks rAF alive (so the next
+   * `tick()` finds no stall) and returns `now - lastPumpAt` in seconds,
+   * UNCLAMPED, before advancing `lastPumpAt` to `now` -- so a call right
+   * after a healthy frame returns only the time since THAT frame, and a
+   * call right after a heartbeat-covered stall returns only the
+   * genuinely-new time since the heartbeat's own last pump, never
+   * double-counting either way.
+   */
+  consumeElapsed(now: number): number;
   /** Starts calling {@link tick} on a `HEARTBEAT_INTERVAL_MS` interval via
    * `ports.setInterval`. Idempotent. */
   start(): void;
@@ -196,9 +253,11 @@ export function createNetworkHeartbeat(ports: NetworkHeartbeatPorts): NetworkHea
 
   return {
     tick,
-    notifyRafFrame(now: number): void {
+    consumeElapsed(now: number): number {
       lastRafAt = now;
+      const elapsedSeconds = Math.max((now - lastPumpAt) / 1000, 0);
       lastPumpAt = now;
+      return elapsedSeconds;
     },
     start(): void {
       if (handle === undefined) {
