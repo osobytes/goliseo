@@ -71,6 +71,7 @@ const ABANDONED: readonly string[] = [
   "removed",
   "transport_lost",
   "start_ack_timeout",
+  "start_never_arrived",
 ];
 
 /** Reasons that mean the two peers disagreed, rather than one of them leaving. */

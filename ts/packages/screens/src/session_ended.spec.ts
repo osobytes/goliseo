@@ -39,6 +39,18 @@ describe("session ended", () => {
     }
   });
 
+  // #612: a guest whose own countdown-zero deadline expires must be told the
+  // real reason, not the generic "The online session ended." fallback the
+  // previous case proves an *unknown* reason gets. Pinned as its own case,
+  // distinct from the generic `REASONS` sweep above, because this is the
+  // exact string the feature exists to deliver.
+  it("gives a guest whose own start deadline expired the specific reason, not the fallback", () => {
+    const state = sessionEnded.newState(VP, { reason: "start_never_arrived" });
+    expect(state.headline).toBe("The host never confirmed the start.");
+    expect(state.headline).not.toBe("The online session ended.");
+    expect(state.consequence).toContain("not recorded");
+  });
+
   it("prefers the text the caller supplies over its own table", () => {
     const state = sessionEnded.newState(VP, {
       reason: "guest_left",

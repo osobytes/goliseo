@@ -174,6 +174,7 @@ import type {
   SpeciesShape,
 } from "./player_render_options.ts";
 import * as playerRenderer3d from "./player_renderer_3d.ts";
+import * as heldBall from "./held_ball.ts";
 import { viewState } from "./view_state.ts";
 import {
   DrawList,
@@ -899,14 +900,20 @@ function depthSortedItems(players: RenderFramePlayers, ball: RenderFrameBall): D
 }
 
 // Loose / dribbled ball. (A keeper-held ball is drawn in its hands by the
-// keeper avatar, so skip the ground ball then.) The shadow stays on the
-// ground and shrinks/fades with height; the ball lifts by its height.
+// keeper avatar -- `held_ball.ts`, riding the character's `socket_ball` bone
+// -- so skip the ground ball then.) The shadow stays on the ground and
+// shrinks/fades with height; the ball lifts by its height.
+//
+// Radius and colour come from `held_ball.ts` rather than being written here:
+// the ball in a keeper's hands is the same object as the ball on the grass,
+// and that claim is only true if there is one number for each. The shadow's
+// own radii are the shadow's, not the ball's, and stay here.
 function drawLooseBallCommands(dl: DrawList, project: Project, ball: RenderFrameBall): void {
   const [sx, sy, scale] = project(ball.x, ball.y);
   const z = ball.z;
   const hk = 1 / (1 + z / 80);
   dl.ellipse("fill", sx, sy, 6 * scale * hk, 3 * scale * hk, [0, 0, 0], { alpha: 0.3 * hk });
-  dl.circle("fill", sx, sy - (z + 4) * scale, 5 * scale, [1, 0.95, 0.7]);
+  dl.circle("fill", sx, sy - (z + 4) * scale, heldBall.RADIUS * scale, heldBall.COLOR);
 }
 
 // CONTROLLED-PLAYER MARKER. docs/design/broadcast_presentation.md's

@@ -86,6 +86,7 @@ import * as body from "./rig3d/body.ts";
 import * as geometry from "./rig3d/geometry.ts";
 import * as ground from "./rig3d/ground.ts";
 import * as celShader from "./rig3d/cel_shader.ts";
+import * as heldBall from "./held_ball.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
 
 // Character height maps to roughly this many player-radii on screen. Tuned
@@ -613,6 +614,10 @@ interface BuiltCharacter {
   readonly rig: skeleton.Rig;
   readonly bones: readonly THREE.Bone[];
   readonly mesh: THREE.SkinnedMesh;
+  // The match ball this character draws while holding it -- see
+  // `held_ball.ts`. Parented to `mesh` and hidden unless `opts.holding` says
+  // otherwise, so it rides the same yaw/tilt/placement the character does.
+  readonly ball: THREE.Mesh;
   readonly height: number;
   // One `themes.SLOTS` index per vertex, kept alongside the mesh so
   // `materialsForTeam` can bake a per-team vertex `color` attribute against
@@ -1009,6 +1014,7 @@ function build(variant: CharacterVariant = defaultVariant()): BuiltCharacter | u
       rig,
       bones,
       mesh,
+      ball: heldBall.attach(mesh, heldBall.radiusMetres(metresPerWorldUnit(height))),
       height,
       paletteSlots,
       groundProbes,
@@ -1324,6 +1330,8 @@ function buildCharacterBones(): THREE.Bone[] {
 interface PooledCharacter {
   readonly bones: readonly THREE.Bone[];
   readonly mesh: THREE.SkinnedMesh;
+  /** This character's own held-ball mesh -- see `BuiltCharacter.ball`. */
+  readonly ball: THREE.Mesh;
 }
 
 // Per-`playerId` rigged character instances, pooled and reused frame-to-frame.
@@ -1402,7 +1410,11 @@ function pooledCharacter(
   // parented to anything at that point -- so the wrapper's real transform is
   // the only one that ever applies.
   mesh.bindMode = "detached";
-  const pooled: PooledCharacter = { bones, mesh };
+  const pooled: PooledCharacter = {
+    bones,
+    mesh,
+    ball: heldBall.attach(mesh, heldBall.radiusMetres(metresPerWorldUnit(character.height))),
+  };
   characterPool.set(poolKey, pooled);
   return pooled;
 }
@@ -1472,6 +1484,12 @@ export function characterMesh(
     }
   });
   pooled.mesh.skeleton.update();
+  // The held ball, from the SAME posed rig the bones above were copied from
+  // and before the next character re-poses it (`character.rig` is shared and
+  // consumed immediately -- see `characterPool`'s note). pitch.ts stops
+  // drawing the ground ball the moment a keeper owns it, so without this the
+  // ball does not move to the hands, it disappears -- see `held_ball.ts`.
+  heldBall.place(pooled.ball, character.rig, opts.holding === true);
 
   const facing = opts.facing;
   const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;
@@ -1584,6 +1602,9 @@ function prepareCharacter(
     }
   });
   character.mesh.skeleton.update();
+  // The held ball, on the same terms as `characterMesh` above: the two paths
+  // must not disagree about what a holding keeper looks like.
+  heldBall.place(character.ball, character.rig, opts.holding === true);
 
   const facing = opts.facing;
   const yaw = facing !== undefined ? Math.atan2(facing.x, facing.y) : 0;

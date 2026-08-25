@@ -207,9 +207,18 @@ export function bones(rig: RigLike): readonly BoneDef[] {
       offset: [f.arm_r * 1.15, -s.lowerarm * 0.7, f.arm_r * 0.35],
       rest: [70, 0, 0],
     },
-    // Held ball for keeper grab / carry / set. Parented to the chest so a
-    // torso-driven clip carries it. Throw and punt reparent it to
-    // socket_hand.R at runtime -- one socket cannot be in two hands.
+    // Held ball for keeper grab / carry / set, drawn by `held_ball.ts`.
+    // Parented to the chest so a torso-driven clip carries it, and
+    // `clips.ts`'s `keeper_gather` closes the fists around this point.
+    //
+    // NO RUNTIME REPARENT TO socket_hand.R, and none is needed: this bone
+    // used to be documented as moving to the throwing fist for a throw or a
+    // punt, but the simulation releases the ball BEFORE it arms the pose
+    // timer either one plays off (`gc-sim`'s `keeper_throw` calls
+    // `release_pass` first, the punt path `release_shot`), so by the time the
+    // sling clip runs the ball is already a loose ball on the pitch and the
+    // frame's per-player `holding` is false. There is nothing in hand to
+    // reparent.
     {
       name: "socket_ball",
       parent: "chest",

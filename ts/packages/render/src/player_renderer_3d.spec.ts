@@ -26,7 +26,9 @@ import {
   resetAnimation,
   DEFAULT_PLAYER_RADIUS,
 } from "./player_renderer_3d.ts";
+import * as heldBall from "./held_ball.ts";
 import * as animator from "./rig3d/animator.ts";
+import * as proportions from "./rig3d/proportions.ts";
 import * as actionPose from "./rig3d/action_pose.ts";
 import type { MutablePose } from "./rig3d/action_pose.ts";
 import type { PlayerRenderOptions } from "./player_render_options.ts";
@@ -1065,5 +1067,91 @@ describe("player_renderer_3d.characterMesh / ppmForRadius", () => {
     ) as THREE.SkinnedMesh;
     expect(Array.isArray(mesh.material)).toBe(false);
     expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
+  });
+});
+
+// THE KEEPER'S HELD BALL (`held_ball.ts`). The geometry of the hold -- fists
+// on the ball, ball the same size as the one on the grass -- is measured in
+// `held_ball.spec.ts` through the pure pose path. What is asserted here is the
+// half only this module can answer: that the ball is actually IN the object
+// `pitch.ts` is handed, parented so the character's yaw/tilt/placement reach
+// it, and standing exactly where the posed rig's own `socket_ball` bone says.
+describe("player_renderer_3d.characterMesh: the keeper's held ball", () => {
+  const idleView: PlayerView = { px: 0, py: 0, speed: 0, phase: 0, gait: 0, lean: 0 };
+
+  function ballOf(mesh: THREE.Object3D | undefined): THREE.Mesh {
+    const found = mesh?.children.find((child) => child.name === heldBall.NAME);
+    if (!(found instanceof THREE.Mesh)) {
+      throw new Error("expected a held-ball mesh parented to the character");
+    }
+    return found;
+  }
+
+  function bonePosition(mesh: THREE.Object3D | undefined, name: string): THREE.Vector3 {
+    const bone = (mesh as THREE.SkinnedMesh).skeleton.bones.find((b) => b.name === name);
+    if (bone === undefined) {
+      throw new Error(`no bone ${name}`);
+    }
+    return new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld);
+  }
+
+  it("is visible only while this player is holding, and is the same mesh either way", () => {
+    const holding = characterMesh("keeper-hold", idleView, baseOptions({ holding: true }), 0);
+    const ball = ballOf(holding);
+    expect(ball.visible).toBe(true);
+
+    const empty = characterMesh("keeper-hold", idleView, baseOptions({ holding: false }), 0.5);
+    expect(ballOf(empty)).toBe(ball);
+    expect(ball.visible).toBe(false);
+  });
+
+  it("stands exactly where the posed rig's own ball socket does", () => {
+    // The bones carry the same posed rig the ball was placed from, so this
+    // pins the ball to the skinning rather than to a second, drifting copy of
+    // where a chest is. Compared against the SKELETON, not against a
+    // separately posed rig, because the bones are what the body is drawn
+    // from.
+    const mesh = characterMesh("keeper-socket", idleView, baseOptions({ holding: true }), 0.3);
+    const socket = bonePosition(mesh, heldBall.SOCKET);
+    expect(ballOf(mesh).position.distanceTo(socket)).toBeLessThan(1e-9);
+  });
+
+  it("follows the pose: a keeper diving with the ball carries it with the body", () => {
+    const upright = characterMesh("keeper-dive", idleView, baseOptions({ holding: true }), 0);
+    const still = ballOf(upright).position.clone();
+    const diving = characterMesh(
+      "keeper-dive",
+      idleView,
+      baseOptions({ holding: true, dive: 1, dive_dir: new Vec2(0, 1) }),
+      0,
+    );
+    expect(ballOf(diving).position.distanceTo(still)).toBeGreaterThan(0.05);
+  });
+
+  it("is a child of the character mesh, so pitch.ts's wrapper transform reaches it", () => {
+    // pitch.ts scales/positions/tilts the object this function returns; a ball
+    // added anywhere else would be drawn in rig-local metres somewhere near
+    // the world origin, which is the same defect `bindMode = "detached"` above
+    // exists to prevent for the body.
+    const mesh = characterMesh("keeper-parent", idleView, baseOptions({ holding: true }), 0);
+    expect(ballOf(mesh).parent).toBe(mesh);
+  });
+
+  it("is sized in rig metres from the same conversion the projection uses", () => {
+    const mesh = characterMesh("keeper-size", idleView, baseOptions({ holding: true }), 0);
+    const geometry = ballOf(mesh).geometry as THREE.SphereGeometry;
+    const height = proportions.height(proportions.RIG_MEDIUM);
+    expect(geometry.parameters.radius).toBeCloseTo(
+      heldBall.radiusMetres(metresPerWorldUnit(height)),
+      12,
+    );
+  });
+
+  it("gives each pooled player their own ball, sharing one geometry and one material", () => {
+    const a = ballOf(characterMesh("keeper-a", idleView, baseOptions({ holding: true }), 0));
+    const b = ballOf(characterMesh("keeper-b", idleView, baseOptions({ holding: true }), 0));
+    expect(a).not.toBe(b);
+    expect(a.geometry).toBe(b.geometry);
+    expect(a.material).toBe(b.material);
   });
 });

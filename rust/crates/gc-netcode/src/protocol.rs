@@ -1868,7 +1868,17 @@ impl MessageKind {
             MessageKind::PairPreference => &[Assigned, Ready, Countdown],
             MessageKind::PairPreferenceResult => &[Assigned, Ready, Countdown],
             MessageKind::Countdown => &[Ready, Countdown],
-            MessageKind::Start => &[Countdown],
+            // `Running` is here for a resend/duplicate, not a fresh start: a
+            // host that has not heard every guest's echo yet keeps
+            // re-emitting the identical Start (see
+            // `gc_netcode::coordinator::emit_start`) until it does, and a
+            // duplicate can legitimately arrive after the receiver already
+            // applied the first copy and moved on. `apply_start`'s own
+            // idempotency check (already-started peer -> no-op) is what
+            // makes that safe; this phase list only has to stop it being
+            // rejected as a protocol violation before reaching that check
+            // (#612).
+            MessageKind::Start => &[Countdown, Running],
             MessageKind::MatchPhase => &[Running, ResultPhase],
             MessageKind::HashReport => &[Running],
             MessageKind::ResultAck => &[ResultPhase],

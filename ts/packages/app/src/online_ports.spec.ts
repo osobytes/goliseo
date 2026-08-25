@@ -40,6 +40,7 @@ import { fakeStar, fakeStarRendezvous, type StarTransportAdapter } from "@gc/tra
 import type { LobbyScreenState } from "@gc/screens";
 import type { GraphicsBackend } from "@gc/ui";
 import { createOnlinePorts, realMatchDriverPort, type OnlinePortsDeps } from "./online_ports.ts";
+import { buildInfo } from "./build_info.ts";
 import type { OnlineWasmHost } from "./online_wasm_host.ts";
 import { App, type OnlineLobbyScreen } from "./app.ts";
 import { hit, menuLayout, viewport } from "./ui_bridge.ts";
@@ -126,10 +127,10 @@ describe("online_ports: production App wiring", () => {
     const app = new App(APP_CONTENT, { online: onlinePorts });
     expect(app.currentRoute()).toBe("title");
 
-    // Through the multiplayer front door, which is what the title offers now.
+    // PLAY ONLINE routes straight to the hosting screen now, already
+    // requesting a room code -- no intermediate front-door route (#610
+    // round-2 review, blocking finding 1).
     clickWidget(app, "multiplayer");
-    expect(app.currentRoute()).toBe("multiplayer");
-    clickWidget(app, "host");
 
     expect(app.currentRoute()).toBe("lobby");
     // A real `LobbyScreenState`, not a stub -- the model actually
@@ -187,7 +188,6 @@ describe("online_ports: production App wiring", () => {
     });
     const app = new App(APP_CONTENT, { online: onlinePorts });
     clickWidget(app, "multiplayer");
-    clickWidget(app, "host");
     expect(() => {
       app.update(1 / 60);
     }).not.toThrow();
@@ -234,6 +234,39 @@ describe("online_ports: a real coordinator drives a solo host to ready", () => {
     lobbyScreen.dispatch({ kind: "ready", ready: true });
     const readyCoordinator = lobbyScreen.state.model.coordinator;
     expect(readyCoordinator?.phase).toBe("ready");
+  });
+
+  // #612: `gc_netcode::protocol_fixture` hardcodes one `build_id`/`source_id`
+  // literal for every build, which would make the real coordinator's own
+  // build-skew detection (`build_mismatch`) permanently unreachable across a
+  // real deploy. `online_ports.ts`'s `protocolFixturePort` overrides both
+  // fields with `buildInfo.build_sha` before the manifest ever reaches the
+  // coordinator -- proven here through the real reducer's own accepted
+  // manifest, not by reading `online_ports.ts`'s source.
+  it("stamps the manifest's build identity from buildInfo, not the fixture's fixed literal", () => {
+    const rendezvous = fakeStarRendezvous();
+    const onlinePorts = newTestOnlinePorts((role: "host" | "guest") => {
+      const star: StarTransportAdapter = fakeStar({ role, rendezvous });
+      const initialized = star.initialize();
+      return initialized.ok ? star : undefined;
+    });
+    const lobbyScreen = onlinePorts.newLobbyScreen(() => {}, {
+      template: onlinePorts.matchManifestTemplate,
+    }) as unknown as OnlineLobbyScreen & {
+      dispatch(command: { readonly kind: string; readonly [key: string]: unknown }): void;
+      state: LobbyScreenState;
+    };
+
+    lobbyScreen.dispatch({ kind: "role", role: "host" });
+    lobbyScreen.dispatch({ kind: "mode", mode: "1v1" });
+    lobbyScreen.dispatch({ kind: "bot_fill" });
+    lobbyScreen.dispatch({ kind: "lock" });
+
+    const manifest = lobbyScreen.state.model.coordinator?.manifest as
+      { readonly build_id?: string; readonly source_id?: string } | undefined;
+    expect(manifest?.build_id).toBe(`build.${buildInfo.build_sha}`);
+    expect(manifest?.source_id).toBe(`source.${buildInfo.build_sha}`);
+    expect(manifest?.build_id).not.toBe("build.97b60ea");
   });
 });
 
