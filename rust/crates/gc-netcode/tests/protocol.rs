@@ -1404,10 +1404,12 @@ const MANIFEST_ID_BASELINE_489: &str = "90b90970080d7978";
 /// See the module-section doc comment above.
 const TRANSCRIPT_ID_BASELINE_489: &str = "1b8407df3614a2cb";
 
-/// #612 (repository owner's call, tracked issue): retires `VOCAB_ID`'s
-/// comparison against `protocol_lua_reference.txt` under
-/// `tools/lua_reference/README.md` §2's procedure. Superseding change:
-/// `Start`'s allowed phases widen from `[Countdown]` to
+/// #612, found by the implementing PR rather than pre-decided — flagged for
+/// explicit reviewer confirmation, the same class of call #489's three rows
+/// in `tools/lua_reference/README.md` §2's table made but not yet made by
+/// the repository owner for this instance. Retires `VOCAB_ID`'s comparison
+/// against `protocol_lua_reference.txt` under that file's §2 procedure.
+/// Superseding change: `Start`'s allowed phases widen from `[Countdown]` to
 /// `[Countdown, Running]` (`protocol::allowed_phases`) so the coordinator can
 /// resend the canonical start boundary and accept a duplicate echo of it as
 /// a no-op instead of a protocol violation — the original Lua implementation
@@ -1418,10 +1420,13 @@ const TRANSCRIPT_ID_BASELINE_489: &str = "1b8407df3614a2cb";
 /// entries, do not read the phase table — so only this one value moves to a
 /// self-recorded baseline; everything else in this file keeps reading
 /// `protocol_lua_reference.txt` unmodified. Last commit the fixture
-/// comparison held: `b7ab896` (this branch's own merge base, verified
-/// green). Recorded by calling `protocol::vocabulary_id()` directly against
-/// this build — see `protocol_conformance::GOLDEN`'s doc comment for the
-/// same value pinned the same way.
+/// comparison held: `36b0964` (the true merge base once #614, part 1 of
+/// #612, landed on `main` mid-PR — verified byte-identical to this branch's
+/// original merge base `b7ab896` for every file this retirement touches, but
+/// the citation itself must name the actual ancestor). Recorded by calling
+/// `protocol::vocabulary_id()` directly against this build — see
+/// `protocol_conformance::GOLDEN`'s doc comment for the same value pinned
+/// the same way.
 const VOCAB_ID_BASELINE_612: &str = "93f9c16ad1674b97";
 
 #[test]
