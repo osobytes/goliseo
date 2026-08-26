@@ -231,28 +231,38 @@ fn step_once(s: &mut MatchState, tune: &Tuning) {
 // An AI outfielder holds charge and the cone picks the receiver.
 // ---------------------------------------------------------------------
 
-/// `PASS_RANGE_MAX` is driven down to its registered floor (300px), so h2 --
-/// 400px from the carrier, inside `ai_pass_options`' own `40..=420` distance
-/// band, and the option that scorer picks -- needs MORE range than a full
-/// charge can ever deliver: `desired_pass_charge` clamps its target charge
-/// to `1.0`, and even a full meter only ever resolves a 300px range. h3
-/// sits 300px out (the practical ceiling), on almost the same ray (about 9.6
-/// degrees off) but excluded from `ai_pass_options` by a defender standing
-/// 15px from it -- far off `ai_pass_options`' own passing lane, so neither
-/// pass's lane/interception read is disturbed, but well under
+/// `PASS_RANGE_MAX` is driven down to its registered floor -- 520px as of
+/// the pitch's own rescale (was 300px; `gc_data::tunables`' Passing note),
+/// so h2 -- 650px from the carrier, inside `ai_pass_options`' own `40..=721`
+/// distance band, and the option that scorer picks -- needs MORE range than
+/// a full charge can ever deliver: `desired_pass_charge` clamps its target
+/// charge to `1.0`, and even a full meter only ever resolves a 520px range.
+/// h3 sits ~527px out (the practical ceiling), on almost the same ray (about
+/// 9.3 degrees off) but excluded from `ai_pass_options` by a defender
+/// standing 15px from it -- far off `ai_pass_options`' own passing lane, so
+/// neither pass's lane/interception read is disturbed, but well under
 /// `AI_PASS_MIN_OPEN`. So `ai_pass_options`/`decide_carrier` (unchanged by
 /// #531) commit to h2, and once #531's seam starts charging toward it, a
-/// full meter (clamped at the 300px ceiling) leaves the resolved range 100px
-/// short of h2's own 400px -- and comfortably closer to h3's actual 300px --
-/// so the cone (`select_pass_target`, reached through `try_pass`) picks h3.
+/// full meter (clamped at the 520px ceiling) leaves the resolved range 130px
+/// short of h2's own 650px -- and comfortably closer to h3's actual ~527px
+/// -- so the cone (`select_pass_target`, reached through `try_pass`) picks
+/// h3. `PASS_ANGULAR_WEIGHT`'s 180 (the weight settled on once the
+/// half-plane gate carried "never backwards" and the weight only had to
+/// arbitrate forward preference -- `gc_data::tunables`' Passing note) still
+/// leaves h3 the clear winner: h3's score is its ~7px distance-term plus
+/// `180 * chord(9.3deg)` (about 29), comfortably under h2's 130px
+/// distance-term with no angular term at all (h2 is dead on the aim). h2
+/// and h3 both sit forward of the carrier's aim (toward h2), so the
+/// half-plane gate excludes neither -- this fixture's divergence is decided
+/// by the soft cone exactly as before, not by the gate.
 #[test]
 fn ai_outfielder_holds_charge_and_the_cone_picks_the_receiver() {
     let mut tune = fast_charge_tuning(3.0);
-    tune.set("PASS_RANGE_MAX", 300.0);
+    tune.set("PASS_RANGE_MAX", 520.0);
 
     let carrier_pos = Vec2::new(100.0, 270.0);
-    let a_pos = Vec2::new(500.0, 270.0); // h2: ai_pass_options' own pick, 400px out
-    let b_pos = Vec2::new(395.0, 320.0); // h3: the cone's pick once charge clamps, ~299px out
+    let a_pos = Vec2::new(750.0, 270.0); // h2: ai_pass_options' own pick, 650px out
+    let b_pos = Vec2::new(620.0, 355.0); // h3: the cone's pick once charge clamps, ~527px out
 
     let players = vec![
         make_player("h_keeper", Team::Home, true, 20.0, 50.0),
@@ -266,10 +276,10 @@ fn ai_outfielder_holds_charge_and_the_cone_picks_the_receiver() {
         // dribbling), and behind it so `carrier_forward_space` (dribble's
         // own space read) never sees it.
         make_player("a1", Team::Away, false, 40.0, 270.0),
-        // 15px from h3 -- well under `AI_PASS_MIN_OPEN` -- but 65px off the
+        // 15px from h3 -- well under `AI_PASS_MIN_OPEN` -- but 100px off the
         // h1->h2 lane (POSSESS_DIST is 22px) and past h3 along h1->h3's own
         // ray, so neither pass's lane/interception read ever sees it.
-        make_player("a2", Team::Away, false, 395.0, 335.0),
+        make_player("a2", Team::Away, false, 620.0, 370.0),
         make_player("a3", Team::Away, false, 800.0, 100.0),
         make_player("a4", Team::Away, false, 800.0, 440.0),
     ];
@@ -329,42 +339,53 @@ fn ai_outfielder_holds_charge_and_the_cone_picks_the_receiver() {
 // keeper_distribute's internal pick.
 // ---------------------------------------------------------------------
 
-/// The keeper holds the ball in its hands (`feet_ball: false`). h2, 400px
+/// The keeper holds the ball in its hands (`feet_ball: false`). h2, 650px
 /// out, is the only teammate with `KEEPER_SAFE_DIST` (60px) of clearance --
 /// `commit_keeper_pass_intent`'s own tier-1 scan, unchanged by #531, picks
-/// it. h3 sits 300px out, on the same ray, but a defender 28px from it
+/// it. h3 sits 520px out, on the same ray, but a defender 28px from it
 /// drops its clearance under `KEEPER_SAFE_DIST` **and** `THROW_MIN_OPEN`
 /// (30px) both, hard-excluding it from `commit_keeper_pass_intent`'s scan
 /// entirely (unlike the outfield case, this exclusion has no continuous
 /// score to disturb: a candidate below either bound is never scored at
-/// all). `PASS_RANGE_MAX` is floored at 300px, the same technique the
-/// outfield case uses: h2's 400px need is more range than a full charge can
-/// ever deliver, so the resolved range clamps to 300px -- exactly h3's own
-/// distance -- and `select_throw_target` (reached through `keeper_throw`)
-/// picks h3, not h2.
+/// all). h4 and h5 get the same 21px marker each -- unlike
+/// `ai_pass_options`, this scan has no outer distance band of its own to
+/// exclude a merely-distant filler on its own, and an unblocked filler's
+/// clear-lane bonus (`+1000`) dwarfs h2's own distance-shaped score, so a
+/// "nowhere near anything" filler would otherwise silently win the scan
+/// instead of h2. `PASS_RANGE_MAX` is floored at 520px (was 300px --
+/// `gc_data::tunables`' Passing note), the same technique the outfield case
+/// uses: h2's 650px need is more range than a full charge can ever deliver,
+/// so the resolved range clamps to 520px -- exactly h3's own distance --
+/// and `select_throw_target` (reached through `keeper_throw`) picks h3, not
+/// h2.
 #[test]
 fn ai_keeper_throw_goes_through_select_throw_target() {
     let mut tune = fast_charge_tuning(3.0);
-    tune.set("PASS_RANGE_MAX", 300.0);
+    tune.set("PASS_RANGE_MAX", 520.0);
 
     let keeper_pos = Vec2::new(100.0, 270.0);
-    let h2_pos = Vec2::new(500.0, 270.0); // commit_keeper_pass_intent's own pick, 400px out
-    let h3_pos = Vec2::new(400.0, 270.0); // select_throw_target's pick once charge clamps, 300px out
+    let h2_pos = Vec2::new(750.0, 270.0); // commit_keeper_pass_intent's own pick, 650px out
+    let h3_pos = Vec2::new(620.0, 270.0); // select_throw_target's pick once charge clamps, 520px out
+    let h4_pos = Vec2::new(850.0, 100.0); // filler, marked off below
+    let h5_pos = Vec2::new(850.0, 440.0); // filler, marked off below
 
     let players = vec![
         make_player("h_keeper", Team::Home, true, keeper_pos.x, keeper_pos.y),
         make_player("h2", Team::Home, false, h2_pos.x, h2_pos.y),
         make_player("h3", Team::Home, false, h3_pos.x, h3_pos.y),
-        make_player("h4", Team::Home, false, 900.0, 50.0), // filler: nowhere near anything
-        make_player("h5", Team::Home, false, 900.0, 500.0), // filler: nowhere near anything
+        make_player("h4", Team::Home, false, h4_pos.x, h4_pos.y),
+        make_player("h5", Team::Home, false, h5_pos.x, h5_pos.y),
         make_player("a_keeper", Team::Away, true, 940.0, 270.0),
         make_player("a1", Team::Away, false, 900.0, 270.0),
         // 28px from h3: under both KEEPER_SAFE_DIST (60px) and
         // THROW_MIN_OPEN (30px), hard-excluding h3 from
         // `commit_keeper_pass_intent`'s scan entirely.
-        make_player("a2", Team::Away, false, 420.0, 290.0),
-        make_player("a3", Team::Away, false, 850.0, 100.0),
-        make_player("a4", Team::Away, false, 850.0, 440.0),
+        make_player("a2", Team::Away, false, 640.0, 290.0),
+        // 21px from h4: same exclusion, so the filler cannot win the tier-1
+        // scan on an unblocked-lane bonus alone.
+        make_player("a3", Team::Away, false, 865.0, 115.0),
+        // 21px from h5, same reason.
+        make_player("a4", Team::Away, false, 865.0, 425.0),
     ];
     let keeper_idx = 1; // h_keeper=1, h2=2, h3=3, h4=4, h5=5
 
@@ -501,11 +522,11 @@ fn losing_possession_mid_charge_clears_pass_intent_and_pass_charge() {
 #[test]
 fn a_rollback_boundary_mid_charge_resimulates_to_exactly_one_release_no_strand_no_duplicate() {
     let mut tune = fast_charge_tuning(3.0);
-    tune.set("PASS_RANGE_MAX", 300.0);
+    tune.set("PASS_RANGE_MAX", 520.0);
 
     let carrier_pos = Vec2::new(100.0, 270.0);
-    let h2_pos = Vec2::new(500.0, 270.0); // ai_pass_options' pick, 400px out (clamps the charge)
-    let h3_pos = Vec2::new(395.0, 320.0); // the cone's actual receiver once charge clamps
+    let h2_pos = Vec2::new(750.0, 270.0); // ai_pass_options' pick, 650px out (clamps the charge)
+    let h3_pos = Vec2::new(620.0, 355.0); // the cone's actual receiver once charge clamps
 
     let players = vec![
         make_player("h_keeper", Team::Home, true, 20.0, 50.0),
@@ -515,7 +536,7 @@ fn a_rollback_boundary_mid_charge_resimulates_to_exactly_one_release_no_strand_n
         make_player("h4", Team::Home, false, 900.0, 50.0),
         make_player("a_keeper", Team::Away, true, 940.0, 270.0),
         make_player("a1", Team::Away, false, 40.0, 270.0),
-        make_player("a2", Team::Away, false, 395.0, 335.0),
+        make_player("a2", Team::Away, false, 620.0, 370.0),
         make_player("a3", Team::Away, false, 800.0, 100.0),
         make_player("a4", Team::Away, false, 800.0, 440.0),
     ];

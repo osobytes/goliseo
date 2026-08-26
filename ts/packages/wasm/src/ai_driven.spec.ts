@@ -48,17 +48,61 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // (down from the 300 in place when the pair above was first captured), so
 // the reference match's whole trajectory moves again.
 //
+// Re-recorded a third time the same day: the passing knobs were rescaled for
+// the 1648x927 pitch (`PASS_RANGE_MIN/MAX`, `PASS_ELIGIBLE_MIN/MAX`,
+// `PASS_ARRIVE_PACE`, `PASS_SPEED_MIN/MAX`, `PASS_ANGULAR_WEIGHT` -- see
+// `gc_data::tunables`'s own dated note and `gc-sim/tests/passing.rs`). Two
+// defects had shipped with the un-rescaled knobs: passes clamped at the
+// reach ceiling and died short far more often on the bigger pitch, and the
+// receiver-scoring angular term lost enough authority relative to distance
+// that a teammate directly behind the passer could outscore one dead on aim.
+// A bot-driven match passes constantly, so this scenario's whole trajectory
+// moves again, from the first AI pass on -- confirmed against the fixture:
+// the recorded baseline and this native replay agree bit for bit from tick 0
+// through 29 and diverge starting tick 30.
+//
+// CHECKED AGAIN, NOT RE-RECORDED, for the #622 follow-up (owner-approved):
+// the half-plane aim gate in `gc_sim::passing::select_receiver` ("never
+// opposite the aim" is now structural, rejected before scoring, rather than
+// arbitrated by weight), `PASS_ANGULAR_WEIGHT` settling at 180 (down from
+// the 240 the row above shipped), and deflection-aware lane risk in
+// `gc_sim::ai::pass_intercept` (a fast ground pass a body merely reaches
+// BLOCKING position for is now a cut lane too, not only a slow one a body
+// collects -- `ai::VERSION` 1 -> 2; see `gc_data::tunables`'s own
+// 2026-08-25 note and `gc-sim/tests/knob_contract.rs`'s
+// `the_shipped_passing_defaults_land_inside_their_proposed_bands` for the
+// honest, still-unsettled `pass_aim_error` band verdict this redesign
+// produces in general). Each of those three is exactly the class of change
+// #405's note above warns moves this scenario's whole trajectory, so it was
+// checked rather than assumed: reverting `passing.rs`, `ai.rs` and
+// `match.rs`'s `pass_intercept` call site to their committed form while
+// leaving every tunable at its current (rescaled) default reproduces the
+// IDENTICAL final/sequence pair below, and `record_session_ai_driven_baseline`
+// re-run against the full redesign is byte-for-byte identical to the
+// checked-in fixture over all 7,201 rows. So this frozen bot-vs-bot match
+// never puts a candidate in the half-plane behind the aim, never turns on a
+// score tie the weight would break, and never drives a ball fast enough for
+// the deflection branch to fire -- the redesign is real, and
+// `knob_contract.rs`'s own measurement finds its effect elsewhere, but this
+// specific scenario doesn't exercise it. Nothing here moved, and the
+// digests, the fixture and `ai_driven_evidence.rs`'s constants are
+// deliberately left untouched rather than re-recorded to a value that would
+// happen to match -- see this file's own rule against a pinned value moved
+// without a stated reason.
+//
 // THE DISCRIMINATING MEASUREMENT THIS FILE'S OWN HEADER DEMANDS WAS RUN
 // FIRST, because a moved digest here is exactly as consistent with #405/#517
-// (wasm and native disagreeing) as with a geometry-driven trajectory shift --
+// (wasm and native disagreeing) as with a knob-driven trajectory shift --
 // wasm, `node -e` against the freshly built `dist/pkg/gc_wasm.cjs`
 // (`runAiDrivenEvidence()`, the same export `loadSimHost().runAiDrivenEvidence`
-// wraps): final `9308135889bead2b`, sequence `3bd60753ef065fb7`; native, via
+// wraps): final `3291aa8895b160f4`, sequence `3688b7ab51128e90`; native, via
 // `cargo test -p gc-sim --test ai_driven_evidence`
 // (`ai_driven_evidence::EXPECTED_FINAL_HASH`/`EXPECTED_SEQUENCE_DIGEST`), the
-// same two. They AGREE, so this is not #517.
-const NATIVE_FINAL_HASH = "9308135889bead2b";
-const NATIVE_SEQUENCE_DIGEST = "3bd60753ef065fb7";
+// same two. They AGREE, so this is not #517. Re-run identically after the
+// #622 follow-up above, against a freshly rebuilt `dist/pkg/gc_wasm.cjs`:
+// same wasm pair, same native pair. They still AGREE.
+const NATIVE_FINAL_HASH = "3291aa8895b160f4";
+const NATIVE_SEQUENCE_DIGEST = "3688b7ab51128e90";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {

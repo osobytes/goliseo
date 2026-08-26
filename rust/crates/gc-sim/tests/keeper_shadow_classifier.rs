@@ -291,11 +291,81 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // would have been a finding rather than a re-pin. Re-pinned in the SAME
     // commit as `gc_data::outfield_ai_baseline`'s v16 -> v17 re-freeze, per
     // this file's own coupling rule.
-    assert_eq!(total.candidates, 11693);
-    assert_eq!(total.agree_true, 6832);
-    assert_eq!(total.agree_false, 4036);
-    assert_eq!(total.disagree_deferred, 824);
-    assert_eq!(total.disagree_height, 1);
+    // candidates 11693 -> 19486: the 2026-08-25 passing-knob rescale (this
+    // file's own module doc coupling rule; see `gc_data::tunables`'s
+    // `PASS_*` family comment for the two defects it fixes) is not a
+    // possession-invariant change like most of the entries above it -- it
+    // repairs two things that were previously breaking attacking sequences
+    // before they ever reached a shot. `PASS_SPEED_MAX` no longer clamps
+    // the launch-speed solve short of what `PASS_ELIGIBLE_MAX` requires, so
+    // a pass aimed at the eligibility window's far edge no longer dies
+    // short of the receiver; and `PASS_ANGULAR_WEIGHT` was rescaled with
+    // the distances that grew around it, so receiver scoring picks the
+    // teammate actually aimed at again instead of a nearer teammate
+    // standing behind the passer. Both defects used to end a possession
+    // sequence in a turnover before it produced a shot; fixed, far more
+    // sequences run to completion and put a shot on goal for a keeper to
+    // judge, so `candidates` rises by two thirds instead of holding
+    // roughly flat the way a possession-timing change alone does elsewhere
+    // in this file. `agree_false` absorbs nearly all of the rise
+    // (4036 -> 12839): the newly-completed sequences are shots from the
+    // wider range the fixed reach and receiver-scoring now open up, and
+    // most of them are not on target, the same way most shots on the
+    // bigger pitch were not on target in the pitch re-dimensioning entry
+    // above. `agree_true` falls in share of the larger total
+    // (6832 -> 6148) and `disagree_deferred` falls in raw count
+    // (824 -> 494) even as the candidate base grows -- both consistent
+    // with the additional volume landing in clear-cut agree_false
+    // evaluations rather than in the marginal, near-resolution buckets.
+    // `disagree_height` moves only slightly (1 -> 5), nowhere near enough
+    // to explain the jump in `candidates`. `new_only` stays structurally
+    // 0, which is the assertion that would have been a finding rather than
+    // a re-pin. Re-pinned in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v17 -> v18 re-freeze, per this
+    // file's own coupling rule.
+    //
+    // candidates 19486 -> 20654: the owner-approved passing redesign's
+    // second stage lands three changes together on this fixture -- the
+    // half-plane aim gate in `gc_sim::passing::select_receiver` (a
+    // candidate strictly behind the aim is rejected before scoring at all,
+    // the "never opposite to the aim" invariant that module's own doc now
+    // carries as structural rather than a knob), `PASS_ANGULAR_WEIGHT`
+    // settling at 180 (down from the 240 the first rescale authored, now
+    // that the gate itself owns "never backwards" and the weight only
+    // arbitrates a forward near-miss), and `gc_sim::ai::pass_intercept`
+    // learning deflection risk (`ai::VERSION` 1 -> 2: a body in blocking
+    // position now cuts a lane even where the ball is too fast to collect,
+    // mirroring `sim::r#match`'s body-block rule, so `pass_risk` reads more
+    // lanes as unsafe than it used to). All three change which passes the
+    // AI attempts and completes, which is upstream of every candidate this
+    // file counts -- more possession sequences run to a shot a keeper has
+    // to judge. `agree_false` absorbs most of the rise (12839 -> 13610,
+    // +771) and `agree_true` absorbs the rest (6148 -> 6539, +391), the
+    // same shape as the entries above where added volume lands mostly in
+    // clear-cut evaluations rather than the marginal buckets. Unlike those
+    // entries, though, `disagree_deferred` does NOT track the rise -- it
+    // falls slightly (494 -> 487) -- while `disagree_height` more than
+    // triples (5 -> 18): the RNG-stream-shifting, one-tick-later signature
+    // this file's own module doc gives `disagree_deferred` is not what is
+    // driving this move, which is consistent with a change to WHICH passes
+    // get attempted (upstream possession composition) rather than a
+    // same-shot timing shift. `disagree_height` still stays under a tenth
+    // of a percent of `candidates`, so this is a real but small shift in
+    // the shots the classifier evaluates, not a new failure of the
+    // monotonicity argument. `new_only` stays structurally 0, which is the
+    // assertion that would have been a finding rather than a re-pin. To be
+    // re-pinned in the SAME commit as `gc_data::outfield_ai_baseline`'s
+    // v18 -> v19 re-freeze, per this file's own coupling rule -- that
+    // re-freeze had not yet landed as of this re-pin (its frozen
+    // `policy_id` still reflects `ai::VERSION` 1); the counts here are
+    // measured directly against the live simulation on this fixture's 60
+    // seeds, which is what `outfield_ai_baseline`'s own recorder will
+    // reproduce once it is re-run.
+    assert_eq!(total.candidates, 20654);
+    assert_eq!(total.agree_true, 6539);
+    assert_eq!(total.agree_false, 13610);
+    assert_eq!(total.disagree_deferred, 487);
+    assert_eq!(total.disagree_height, 18);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -414,7 +484,36 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // still reaches 46/60 (77%), down from 51/60 but still by far the
     // dominant bucket. No historical byte-divergent split to compare
     // against.
-    assert_eq!(matches_with_disagree, 1);
-    assert_eq!(matches_with_deferred, 46);
-    assert_eq!(matches_with_either, 46);
+    // Re-pinned by the 2026-08-25 passing-knob rescale alongside the counts
+    // above: `disagree_height` alone now touches 4/60 matches (7%), up from
+    // 1/60 -- consistent with `disagree_height`'s small rise above -- while
+    // folding in `disagree_deferred` reaches 35/60 (58%), down from 46/60.
+    // Both moves track the candidates-side story: repaired passing lets far
+    // more matches' possession sequences reach a shot at all, and per the
+    // reasoning above most of that extra volume lands in unambiguous
+    // agree_false evaluations rather than in either near-resolution bucket
+    // -- so a smaller fraction of the (now much larger) set of matches with
+    // any save candidate has one that disagrees or defers, even though the
+    // raw `disagree_height` count rose. Deferred episodes remain the larger
+    // of the two buckets in every match that has either. No historical
+    // byte-divergent split to compare against.
+    //
+    // Re-pinned by the owner-approved passing redesign's second stage
+    // (aim gate + `PASS_ANGULAR_WEIGHT` 180 + deflection-aware lane risk;
+    // see the counts above) alongside the counts above: `disagree_height`
+    // alone now touches 5/60 matches (8%), up from 4/60 -- consistent with
+    // `disagree_height` more than tripling in raw count above -- while
+    // folding in `disagree_deferred` reaches 38/60 (63%), up from 35/60.
+    // Both track the candidates-side story: more possession sequences
+    // reaching a keeper spreads across more matches, not just more
+    // candidates within the same ones. Deferred episodes remain the larger
+    // of the two buckets in every match that has either, even though this
+    // move (unlike most previous ones) is not primarily a deferred-episode
+    // signature -- see the reasoning above. No historical byte-divergent
+    // split to compare against. To be re-pinned in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
+    // file's own coupling rule.
+    assert_eq!(matches_with_disagree, 5);
+    assert_eq!(matches_with_deferred, 37);
+    assert_eq!(matches_with_either, 38);
 }

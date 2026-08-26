@@ -1334,6 +1334,9 @@ fn release_shot(
 
 /// Opposing outfielders as interception threats against a pass by `team`.
 /// Keepers are excluded: they hold their box instead of chasing lanes.
+/// `block_contact` is the body-block rule's own contact radius (the
+/// `update_ball` block: `radius + BALL_RADIUS + species::block_reach`), so
+/// the lane model describes the deflection the match actually resolves.
 fn pass_threats(s: &MatchState, team: Team) -> Vec<ai::Threat> {
     let mut threats = Vec::new();
     for p in &s.players {
@@ -1341,6 +1344,7 @@ fn pass_threats(s: &MatchState, team: Team) -> Vec<ai::Threat> {
             threats.push(ai::Threat {
                 pos: p.pos,
                 speed: p.move_speed,
+                block_contact: p.radius + BALL_RADIUS + species::block_reach(p.owned_verb),
             });
         }
     }
@@ -1348,8 +1352,10 @@ fn pass_threats(s: &MatchState, team: Team) -> Vec<ai::Threat> {
 }
 
 /// Earliest lane fraction where a chaser would cut out a driven ground pass
-/// from->to (paced by `pass_speed_for`), or `None` when the pass outruns
-/// everyone.
+/// from->to (paced by `pass_speed_for`) — by clean collection or by the
+/// body-block deflection, treated alike (see `ai::pass_intercept`'s doc for
+/// why the two are not priced differently) — or `None` when the pass
+/// outruns everyone.
 fn pass_risk(from: Vec2, to: Vec2, threats: &[ai::Threat], tune: &Tuning) -> Option<f64> {
     let speed = passing::speed_for(from.dist(to), tune);
     ai::pass_intercept(
@@ -1360,7 +1366,9 @@ fn pass_risk(from: Vec2, to: Vec2, threats: &[ai::Threat], tune: &Tuning) -> Opt
         threats,
         POSSESS_DIST,
         POSSESS_MAX_SPEED,
+        BLOCK_GRACE,
     )
+    .map(|(f, _)| f)
 }
 
 /// Release a pass from `owner_idx` to teammate `target_idx`: fires the

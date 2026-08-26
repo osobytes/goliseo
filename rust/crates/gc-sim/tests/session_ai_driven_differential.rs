@@ -24,7 +24,7 @@
 //!     releases shots, queues lobs, dashes, jukes as a carrier and picks
 //!     outlets, so those branches fire in the combinations the game actually
 //!     produces rather than the ones a test author thought to enumerate. The
-//!     captured match ends 1-1: the bot scores, and is scored against.
+//!     captured match ends 1-3: the bot scores, and is scored against.
 //!   * It is deterministic. `bot::new` seeds its OWN stream
 //!     (`seed * 7919 + 17`) and never touches the match's, so the capture
 //!     replays exactly.

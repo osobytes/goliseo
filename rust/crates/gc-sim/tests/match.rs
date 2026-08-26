@@ -376,7 +376,10 @@ fn passing_sends_the_ball_toward_a_teammate_in_the_aim_direction() {
         &tune,
     );
     assert!(s.owner.is_none(), "ball should be released on a pass");
-    assert!((s.ball_vel.length() - 420.0).abs() < 0.5, "pass speed");
+    // The two teammates in the fixture are 196px apart, below the
+    // PASS_ARRIVE_PACE + FRICTION*d floor distance under the rescaled
+    // constants, so the launch speed clamps at PASS_SPEED_MIN (720).
+    assert!((s.ball_vel.length() - 720.0).abs() < 0.5, "pass speed");
 }
 
 // ---------------------------------------------------------------------
@@ -1019,9 +1022,14 @@ fn distributes_to_a_teammate_instead_of_hoofing_it() {
     );
     assert!(s.owner.is_none(), "the keeper releases the ball");
     // A paced short throw (arrives with a touch left), not a long clear.
+    // The four home outfielders here sit 237-410px out, all inside the
+    // PASS_SPEED_MIN floor's reach ((720 - 210) / 1.2 = 425px), so this
+    // always clamps to the floor of 720 regardless of which one the AI
+    // picks; the range keeps the same +/-100/+200px margin the old
+    // [320, 620] bracket held around its floor of 420.
     let speed = s.ball_vel.length();
     assert!(
-        (320.0..=620.0).contains(&speed),
+        (620.0..=920.0).contains(&speed),
         "throw pace is a pass, not a hoof"
     );
     assert!(has_event(&s, MatchEventKind::Pass), "expected a pass event");
@@ -4304,8 +4312,26 @@ fn a_poke_from_jockey_stance_gains_bonus_reach() {
     // STAND_REACH+6=40. The human is also more than STEAL_DIST=26px from
     // the carrier's body so the body-contact shortcut doesn't apply.
     //
-    //   defender @ 422          ball @ 462     carrier @ 480
+    //   defender @ 722          ball @ 762     carrier @ 780
     //      [me] <---40px-------> [ball] <--18px--> [c]
+    //
+    // The whole apparatus sits at x=780 rather than the original 480: the
+    // rescaled PASS_RANGE_MIN/PASS_RANGE_MAX (110/520 -> 190/890) shrank the
+    // charge-time `desired_pass_charge` needs to reach the "away teammates"
+    // parked at x=40 from ~0.95 (needs longer than TACKLE_FRAMES to build,
+    // so it never fired) down to ~0.44 (fires around tick 11 -- inside the
+    // budget). The AI carrier would panic-pass one of them away under the
+    // defender's proximity before the poke ever resolved, an interference
+    // this fixture's own comment already flags as the failure mode to
+    // avoid. 480px away, x=40 is only 496-511px from the carrier -- still
+    // inside `AI_PASS_MAX_DIST` (721, hardcoded, untouched by the rescale)
+    // so the option isn't filtered out by distance either. Moving the
+    // carrier to x=780 pushes that same distance to 774-784px, past
+    // `AI_PASS_MAX_DIST`, so none of the parked teammates are legal pass
+    // candidates any more regardless of charge timing -- robust to any
+    // future PASS_RANGE retune. x=780 stays outside the AWAY penalty box
+    // (x > 865 on this harness's fixed 960x540 field) so it isn't read as
+    // "carrier in its own box" by anything else.
     let poke_at_40 = |with_jockey: bool| -> bool {
         let mut s = new_match();
         let mut away_idx = None;
@@ -4326,24 +4352,25 @@ fn a_poke_from_jockey_stance_gains_bonus_reach() {
                 p.pos = Vec2::new(100.0, 40.0 + idx as f64 * 25.0);
                 p.dash_cd = 1.0; // cooldown so they can't challenge
             }
-            // Park away teammates out of pressure-pass range.
+            // Park away teammates out of pass range (see the comment above
+            // this closure for why x=780 for the carrier, not x=480).
             if p.team == Team::Away && !p.is_keeper && idx != away_idx {
                 p.pos = Vec2::new(40.0, 380.0 + idx as f64 * 15.0);
             }
         }
         {
             let c = &mut s.players[(away_idx - 1) as usize];
-            c.pos = Vec2::new(480.0, 270.0);
+            c.pos = Vec2::new(780.0, 270.0);
             c.facing = Vec2::new(-1.0, 0.0);
         }
         s.owner = Some(away_idx);
         let carrier = s.players[(away_idx - 1) as usize].clone();
-        s.ball = carrier.pos.add(carrier.facing.scale(18.0)); // ball at 462, 270
-        // Human defender 40px left of the ball, on the ball side: 422, 270.
-        // Distance to carrier body (480): 58px > STEAL_DIST 26, so no shortcut.
+        s.ball = carrier.pos.add(carrier.facing.scale(18.0)); // ball at 762, 270
+        // Human defender 40px left of the ball, on the ball side: 722, 270.
+        // Distance to carrier body (780): 58px > STEAL_DIST 26, so no shortcut.
         {
             let me = &mut s.players[(controlled - 1) as usize];
-            me.pos = Vec2::new(422.0, 270.0); // 40px from ball at 462, on its left
+            me.pos = Vec2::new(722.0, 270.0); // 40px from ball at 762, on its left
             me.vel = Vec2::new(0.0, 0.0);
             // Prime jockey_timer so the bonus is still active at RESOLUTION
             // time -- #489's poke now charges and executes over
@@ -4376,11 +4403,11 @@ fn a_poke_from_jockey_stance_gains_bonus_reach() {
         let mut settled = false;
         for _ in 0..TACKLE_FRAMES {
             let c = &mut s.players[(away_idx - 1) as usize];
-            c.pos = Vec2::new(480.0, 270.0);
+            c.pos = Vec2::new(780.0, 270.0);
             c.facing = Vec2::new(-1.0, 0.0);
             let ball_pos = c.pos.add(c.facing.scale(18.0));
             s.ball = ball_pos;
-            s.players[(controlled - 1) as usize].pos = Vec2::new(422.0, 270.0);
+            s.players[(controlled - 1) as usize].pos = Vec2::new(722.0, 270.0);
             step(&mut s, 1.0 / 60.0, &no_input(), &tune);
             if has_event(&s, MatchEventKind::Tackle) || has_event(&s, MatchEventKind::TackleMiss) {
                 settled = true;
@@ -4989,15 +5016,26 @@ fn a_carrier_moves_at_03x_speed_during_the_wind_up() {
 
 /// Controlled carrier near its own box aiming square at the keeper; the rest
 /// of the home side pushed far upfield so the aim cone holds only the keeper.
+///
+/// The passer-to-keeper distance (230px) is deliberately past the old
+/// fixture's 150px: `run_until_received` has to wait out `RELEASE_CD` (0.3s)
+/// before anybody may collect the ball, and at the rescaled
+/// `PASS_SPEED_MIN` floor of 720px/s a ground pass covers ~183px in that
+/// window regardless of target distance (the floor clamp makes launch speed,
+/// and so the time-vs-position curve, independent of distance below the
+/// floor threshold). At the old 150px gap the ball was already past the
+/// keeper's position before pickup unlocked; 230px leaves it converging on
+/// the keeper (which creeps forward off its line to meet the ball) right as
+/// the cooldown clears.
 fn setup_backpass(s: &mut MatchState) {
     s.owner = Some(s.controlled);
     let controlled = s.controlled;
     {
         let owner = &mut s.players[(controlled - 1) as usize];
-        owner.pos = Vec2::new(220.0, 270.0);
+        owner.pos = Vec2::new(300.0, 270.0);
         owner.facing = Vec2::new(-1.0, 0.0);
     }
-    s.ball = Vec2::new(214.0, 270.0);
+    s.ball = Vec2::new(294.0, 270.0);
     s.players[0].pos = Vec2::new(70.0, 270.0); // home keeper on its line
     for (i, p) in s.players.iter_mut().enumerate() {
         let idx = (i + 1) as i64;

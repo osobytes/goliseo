@@ -7,11 +7,21 @@
 //! hard 60-degree acceptance cone, and deleting it is the point of #491 — a
 //! gate turns near-misses into non-passes and non-passes into faith. The
 //! replacement claim is `a_teammate_the_old_cone_excluded_is_now_selected`,
-//! which asserts the same geometry now resolves.
+//! which asserts the near-miss geometry resolves.
+//!
+//! The dead-behind half of the old geometry has since swung back — but to a
+//! **half-plane**, not to the 60-degree cone. The futsal re-dimensioning
+//! made a full-charge `|d - range|` term big enough for a teammate directly
+//! behind the aim to out-score one dead on it, and the owner ruled a pass
+//! must never go opposite to the aim. That is the invariant the "never
+//! backwards" cases below pin; `gc_sim::passing`'s module doc argues why the
+//! half-plane does not reintroduce #491's failure (a 45-degree — or
+//! 89-degree — miss still passes).
 
 use gc_core::vec2::Vec2;
 use gc_sim::passing::{self, SelectionKnobs};
 use gc_sim::tuning::Tuning;
+use gc_sim::{ball_flight, pass_lead};
 
 const FROM: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 const EAST: Vec2 = Vec2 { x: 1.0, y: 0.0 };
@@ -32,7 +42,10 @@ fn open_knobs(angular_weight: f64) -> SelectionKnobs {
 
 #[test]
 fn the_nearer_of_two_equally_aligned_teammates_wins() {
-    let mates = [Vec2::new(100.0, 0.0), Vec2::new(30.0, 0.0)];
+    // k-scaled with the pitch: at the old 30 px the nearer mate now falls
+    // below PASS_ELIGIBLE_MIN (20 -> 34) and is filtered before scoring, which
+    // would make this assert the eligibility filter rather than the tie-break.
+    let mates = [Vec2::new(172.0, 0.0), Vec2::new(52.0, 0.0)];
     assert_eq!(
         passing::select_receiver(FROM, EAST, &mates, None, &knobs()),
         Some(1)
@@ -62,23 +75,25 @@ fn a_charged_range_picks_out_the_far_man_on_the_line() {
 
 /// The deletion of the hard cone, asserted rather than claimed.
 ///
-/// Both of these were `None` before #491: one teammate is 84 degrees off the
-/// aim and one is directly behind the passer. The old 60-degree gate saw
-/// neither, so a player who aimed a little wide got no pass at all and no
-/// feedback about why.
+/// This was `None` before #491: a teammate 84 degrees off the aim, invisible
+/// to the old 60-degree gate, so a player who aimed a little wide got no
+/// pass at all and no feedback about why. It is deliberately the widest
+/// forward miss there is — one degree short of square — because that is the
+/// edge of what the half-plane aim gate leaves to the soft cone.
+///
+/// This test's second half used to assert the mirror image: a teammate
+/// directly BEHIND the passer was also selectable, "no acceptance test on
+/// the angle at all, not even at 180 degrees". The owner's futsal play-test
+/// ruling reversed exactly and only that half — see
+/// `a_teammate_behind_the_aim_is_never_selected_at_any_charge` — so the
+/// claim now stops at square instead of extending to 180.
 #[test]
 fn a_teammate_the_old_cone_excluded_is_now_selected() {
     let wide = [Vec2::new(10.0, 100.0)]; // ~84 degrees off the aim
     assert_eq!(
         passing::select_receiver(FROM, EAST, &wide, None, &knobs()),
         Some(0),
-        "a soft cone always resolves to someone eligible"
-    );
-    let behind = [Vec2::new(-50.0, 0.0)];
-    assert_eq!(
-        passing::select_receiver(FROM, EAST, &behind, None, &knobs()),
-        Some(0),
-        "there is no acceptance test on the angle at all, not even at 180 degrees"
+        "a soft cone resolves any eligible near-miss forward of square"
     );
 }
 
@@ -276,16 +291,22 @@ fn the_speed_curve_rises_with_distance_between_its_registered_ends() {
 #[test]
 fn the_speed_curve_reads_its_knobs_rather_than_restating_constants() {
     let mut tune = Tuning::new();
-    let before = passing::speed_for(300.0, &tune);
+    // Probe inside the LINEAR band. The rescaled floor (PASS_SPEED_MIN 720)
+    // now sits above the curve at the old 300 px probe, so measuring there
+    // would only ever observe the floor and would pass whatever ARRIVE_PACE
+    // did. The band is [(MIN - PACE) / FRICTION, (MAX - PACE) / FRICTION],
+    // which is roughly 425..1042 px at the shipped defaults.
+    let d = 700.0;
+    let before = passing::speed_for(d, &tune);
     tune.set(passing::ARRIVE_PACE_KNOB, 300.0);
     assert!(
-        passing::speed_for(300.0, &tune) > before,
+        passing::speed_for(d, &tune) > before,
         "PASS_ARRIVE_PACE must reach the curve"
     );
-    tune.set(passing::SPEED_MAX_KNOB, 450.0);
+    tune.set(passing::SPEED_MAX_KNOB, 800.0);
     assert_eq!(
-        passing::speed_for(300.0, &tune),
-        450.0,
+        passing::speed_for(d, &tune),
+        800.0,
         "PASS_SPEED_MAX must cap it"
     );
 }
@@ -298,9 +319,183 @@ fn the_speed_curve_reads_its_knobs_rather_than_restating_constants() {
 /// itself permits.
 #[test]
 fn an_inverted_speed_range_clamps_instead_of_panicking() {
+    // Authored at the two knobs' own declared extremes, so `tune.set` cannot
+    // quietly clamp the pair back into a valid order and leave this asserting
+    // nothing: PASS_SPEED_MIN's ceiling is above PASS_SPEED_MAX's floor, which
+    // is exactly the overlap that makes an inverted pair authorable at all.
     let mut tune = Tuning::new();
-    tune.set(passing::SPEED_MIN_KNOB, 600.0);
-    tune.set(passing::SPEED_MAX_KNOB, 450.0);
-    assert_eq!(passing::speed_for(10.0, &tune), 600.0);
-    assert_eq!(passing::speed_for(4000.0, &tune), 600.0);
+    tune.set(passing::SPEED_MIN_KNOB, 1030.0);
+    tune.set(passing::SPEED_MAX_KNOB, 770.0);
+    assert_eq!(passing::speed_for(10.0, &tune), 1030.0);
+    assert_eq!(passing::speed_for(4000.0, &tune), 1030.0);
+}
+
+// ---------------------------------------------------------------------------
+// The reach invariant (#622 play-test follow-up).
+//
+// Reported after play-testing the futsal pitch: "passes often don't even reach
+// the player -- the teammate has to run to a ball that stopped half way."
+//
+// The cause is not randomness. `speed_for` clamps at `PASS_SPEED_MAX`, so
+// `passing::reach` is a hard ceiling on how far a ground pass can travel. If a
+// pass may legally be AIMED further than that ceiling, the ball provably stops
+// short every single time it happens. Nothing enforced that the aimable
+// maximum and the reachable maximum were compatible, and they were not -- the
+// pre-resize pair violated it by 193 px, the post-resize pair by far more.
+//
+// These tests are the enforcement. They are deliberately written against the
+// SHIPPED defaults rather than a fixture, because the defect is a relationship
+// between four independently-authored knobs, and any one of them drifting is
+// what reintroduces it.
+
+/// The furthest a pass can legally be aimed: the selection filter's ceiling,
+/// plus the lead solve's own projection of a receiver running flat out.
+fn furthest_aimable(tune: &Tuning) -> f64 {
+    let eligible = tune.value(passing::ELIGIBLE_MAX_KNOB);
+    let lead_time = tune.value(pass_lead::TIME_MAX_KNOB);
+    let top_speed = tune.value("LOCO_PACE_REF_HI");
+    eligible + lead_time * top_speed
+}
+
+#[test]
+fn a_pass_can_always_roll_as_far_as_it_can_legally_be_aimed() {
+    let tune = Tuning::new();
+    let reach = passing::reach(&tune);
+    let aimable = furthest_aimable(&tune);
+    assert!(
+        reach >= aimable,
+        "a pass can be aimed {aimable:.1} px away but can only roll {reach:.1} px: \
+         every pass past {reach:.1} px dies short by construction. Raise \
+         PASS_SPEED_MAX (reach = PASS_SPEED_MAX / FRICTION), lower \
+         PASS_ELIGIBLE_MAX, or shorten PASS_LEAD_TIME_MAX -- but do not leave \
+         them disagreeing."
+    );
+}
+
+#[test]
+fn the_reach_ceiling_is_the_speed_ceiling_over_friction() {
+    // Pins the derivation itself, so a future change to how speed_for clamps
+    // cannot leave `reach` quietly describing a curve that no longer exists.
+    let tune = Tuning::new();
+    let expected = tune.value(passing::SPEED_MAX_KNOB) / ball_flight::FRICTION;
+    assert!((passing::reach(&tune) - expected).abs() <= 1e-9);
+
+    // And that the clamp is real: asking for a distance past the ceiling
+    // returns the ceiling speed, not a speed that would carry the ball there.
+    let past = passing::reach(&tune) * 2.0;
+    assert!((passing::speed_for(past, &tune) - tune.value(passing::SPEED_MAX_KNOB)).abs() <= 1e-9);
+}
+
+/// The second reported defect: aiming forward at a teammate ahead, the pass
+/// went backwards to a closer teammate. This test used to assert the weight
+/// arithmetic (`150 + WEIGHT * 2 > 500`), which is the brute-force fix that
+/// shipped first — and which broke down again at full charge, where the
+/// `|d - range|` distance term reaches `PASS_RANGE_MAX` and no affordable
+/// weight can cover it. "Never backwards" is now the half-plane aim gate's
+/// job, a structural invariant rather than a knob's, so this asserts the
+/// GATE: the behind candidate is rejected outright, at a tap and at the
+/// full-charge geometry that beat the weight.
+#[test]
+fn an_aimed_teammate_beats_a_closer_one_behind_the_passer() {
+    // The original report's geometry: dead on aim at 500 px, versus 180
+    // degrees off at 150 px. Both inside the eligibility window.
+    let mates = [Vec2::new(-150.0, 0.0), Vec2::new(500.0, 0.0)];
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &mates, None, &knobs()),
+        Some(1),
+        "a tap must go to the man on the aim, not the closer man behind it"
+    );
+
+    // The full-charge reproduction from the play-test: charge range at
+    // PASS_RANGE_MAX (890), teammate on-aim at 300 px (charge term 590),
+    // teammate dead behind at exactly the charged range (charge term 0).
+    // Under weight-only arbitration the behind man wins at any weight below
+    // 295 px/chord; under the gate he is not a candidate at all.
+    let tune = Tuning::new();
+    let range = tune.value("PASS_RANGE_MAX");
+    let charged = [Vec2::new(-range, 0.0), Vec2::new(300.0, 0.0)];
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &charged, Some(range), &knobs()),
+        Some(1),
+        "at full charge the man behind the aim sits exactly at the charged \
+         range and out-scores the aimed man unless the gate removes him"
+    );
+}
+
+/// The owner's ruling as a property: for ANY charge level, a candidate with
+/// negative dot against the aim is never selected while a forward candidate
+/// exists. Each behind candidate is planted where it would WIN the soft
+/// score without the gate — dead behind at exactly the charged range (charge
+/// term zero against the forward man's hundreds), and just barely behind
+/// square (95 degrees, chord ~1.47, cheaper still) — so this fails against
+/// weight-only arbitration rather than passing vacuously.
+#[test]
+fn a_teammate_behind_the_aim_is_never_selected_at_any_charge() {
+    let k = knobs();
+    // The last entry reads the knob rather than restating 890, so a future
+    // PASS_RANGE_MAX raise cannot silently stop this sweep exercising full
+    // charge -- the geometry above is what makes full charge the case where
+    // the behind candidate would win without the gate.
+    let full = Tuning::new().value("PASS_RANGE_MAX");
+    for range in [None, Some(110.0), Some(300.0), Some(500.0), Some(full)] {
+        let r = range.unwrap_or(150.0);
+        // 95 degrees off the aim: sin/cos of 5 degrees, dot < 0 by a hair.
+        let barely_behind = Vec2::new(-r * 0.08716, r * 0.99619);
+        let mates = [
+            Vec2::new(-r, 0.0), // dead behind, at the charged range
+            barely_behind,
+            Vec2::new(230.0, 193.0), // forward, ~40 degrees off, 300 px
+        ];
+        assert_eq!(
+            passing::select_receiver(FROM, EAST, &mates, range, &k),
+            Some(2),
+            "at charge range {range:?} a behind-the-aim candidate won"
+        );
+    }
+}
+
+/// The owner's worked example: aim bisecting two forward teammates, so the
+/// angular terms cancel exactly and the charge term alone arbitrates. A tap
+/// finds the near man; a full-length charge picks out the far one.
+#[test]
+fn aim_bisecting_two_forward_mates_a_tap_goes_near_and_a_charge_goes_far() {
+    // Mirrored at ~37 degrees either side of the aim: identical chords.
+    let near = Vec2::new(300.0, 225.0); // 375 px
+    let far = Vec2::new(600.0, -450.0); // 750 px
+    let mates = [near, far];
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &mates, None, &knobs()),
+        Some(0),
+        "a tap prefers the near man"
+    );
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &mates, Some(750.0), &knobs()),
+        Some(1),
+        "a charge to the far man's range picks him out"
+    );
+}
+
+/// When the gate empties the candidate set, selection lands on the same
+/// `None` the distance bounds produce when they exclude everyone — the
+/// callers' existing no-eligible-receiver fallback handles both, and no new
+/// behaviour was invented for the gate.
+#[test]
+fn a_set_with_everyone_behind_the_aim_selects_nobody_like_an_ineligible_set() {
+    let k = knobs();
+    let all_behind = [
+        Vec2::new(-100.0, 50.0),
+        Vec2::new(-300.0, 0.0),
+        Vec2::new(-50.0, -200.0),
+    ];
+    let all_ineligible = [Vec2::new(5.0, 0.0)]; // inside PASS_ELIGIBLE_MIN
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &all_ineligible, None, &k),
+        None,
+        "(the existing no-eligible outcome this case compares against)"
+    );
+    assert_eq!(
+        passing::select_receiver(FROM, EAST, &all_behind, None, &k),
+        passing::select_receiver(FROM, EAST, &all_ineligible, None, &k),
+        "an emptied-by-the-gate set must take the exact no-eligible path"
+    );
 }

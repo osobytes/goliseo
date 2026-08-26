@@ -932,10 +932,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Min pass range",
         cat: "Attacking",
-        default: 110.0,
+        default: 190.0,
         unit: "px",
-        min: 60.0,
-        max: 300.0,
+        min: 100.0,
+        max: 520.0,
         step: 10.0,
         desc: "Range of an uncharged pass; the floor PASS_RANGE_MAX charges up from.",
     },
@@ -944,10 +944,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Max pass range",
         cat: "Attacking",
-        default: 520.0,
+        default: 890.0,
         unit: "px",
-        min: 300.0,
-        max: 800.0,
+        min: 520.0,
+        max: 1380.0,
         step: 20.0,
         desc: "Range of a fully charged pass.",
     },
@@ -982,6 +982,45 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
     // many knobs is a tab, and a designer piloting the soft cone should not
     // have to hunt for them between shot charge and header pace.
     //
+    // 2026-08-25: the whole family below was rescaled by the pitch's own
+    // k = 1.7166667 (960x540 -> 1648x927). Leaving them fixed was a mistake
+    // and it produced two reported defects, both measured:
+    //
+    //   * Passes died short. `speed_for` solves launch speed from the target
+    //     distance, so it is closed-loop in its middle band -- but it clamps
+    //     at `PASS_SPEED_MAX`, and `PASS_SPEED_MAX / FRICTION` is therefore a
+    //     hard physical reach ceiling. At 700 that was 583 px against a 560 px
+    //     eligibility window: a 23 px margin that the larger pitch erased.
+    //     Measured over 40 seeds, releases clamped at the ceiling went 1.7% ->
+    //     7.9%, releases that physically died short 0.8% -> 2.4%, and the mean
+    //     shortfall among those 64 px -> 241 px.
+    //   * Passes chose the wrong receiver. `score = distance + WEIGHT * chord`
+    //     with chord in [0, 2]. Distances grew 1.72x and the weight did not, so
+    //     the angular term lost that much authority. A teammate dead on aim at
+    //     500 px scored 500 while a teammate directly BEHIND at 150 px scored
+    //     150 + 140*2 = 430 and won. Raising the weight (140 -> 240) stopped
+    //     that tap-range case but could not survive charge: the charged
+    //     `|d - range|` term reaches PASS_RANGE_MAX = 890, so at full charge
+    //     a teammate dead behind at the charged range beat one on the aim
+    //     line at 300 px under ANY affordable weight. "Never backwards" is
+    //     therefore structural now -- the half-plane aim gate in
+    //     `gc_sim::passing::select_receiver` (an owner-ruled invariant, not
+    //     a knob) -- and this weight's job shrank to arbitrating preference
+    //     FORWARD of square; see its own comment below for how its value is
+    //     set.
+    //
+    // `PASS_SPEED_MAX` is the one value NOT simply k-scaled: k would give 1200,
+    // and 1200 restores the old near-miss rather than fixing it. The reach
+    // ceiling has to clear the FURTHEST point a pass can legally be aimed at,
+    // which is `PASS_ELIGIBLE_MAX` plus the lead solve's own projection of a
+    // running receiver (`PASS_LEAD_TIME_MAX` 0.9 s x 280 px/s top speed), so
+    // 960 + 252 = 1212 px. 1460 gives a 1217 px reach and clears it. That
+    // invariant never actually held -- the old pair violated it by 193 px too,
+    // just rarely enough to look like bad luck. `passing::reach` and
+    // `tests/passing.rs`'s invariant test now pin it so it cannot silently
+    // drift again. `FRICTION` stays fixed: it is shared ball physics, not a
+    // knob (see `passing::speed_for`'s own doc).
+    //
     // Every range below STARTED as a prior converted from the metric ranges
     // the issue proposed, at a pitch scale of "960 px across a full-size
     // pitch, about 9 px per metre". That conversion was wrong and the note
@@ -1004,17 +1043,29 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Aim weight",
         cat: "Passing",
-        // 140, not the 90 this shipped with in review: at 90 a teammate
-        // DIRECTLY BEHIND the passer costs only 180 px of score, so aiming
-        // upfield at a man 400 px away played the ball backwards to one
-        // 200 px behind (`a_long_pass_is_driven_hard_enough_to_actually_arrive`
-        // in gc-sim's tests/match.rs caught it). That is the "aim feels
-        // ignored" failure the issue warns about at low weights, and the
-        // measured constraint it produces is the only empirical input this
-        // default has. At 140 a backward teammate must be 280 px NEARER to
-        // win, while a 60-degree teammate still costs only 140 px -- soft,
-        // not a gate. Still a prior: it needs hands-on pilots.
-        default: 140.0,
+        // 2026-08-25: 180, down from the 240 the futsal rescale first
+        // authored, and carrying a NARROWER job than either 240 or the
+        // pre-rescale 140. 240's rationale was stopping backwards passes by
+        // brute weight, and at full charge it measurably could not (the
+        // family note above): "never backwards" now belongs to the
+        // half-plane aim gate in `gc_sim::passing::select_receiver`, a
+        // structural invariant rather than a tunable, so this weight only
+        // arbitrates which FORWARD teammate a near-miss prefers.
+        //
+        // With that burden gone the value is set by the `pass_aim_error`
+        // band instead, measured rather than guessed (gate and
+        // deflection-aware lane model both in place, 30 s matches, seeds
+        // 20001+): the converged mean is 0.152 (n=192) / 0.160-0.162 (n=96)
+        // everywhere in 180..240 and rises only ~0.005 more by 100 -- the
+        // gate now owns most of what this metric used to see, so lower buys
+        // no real extra softness -- while the knob's own committed
+        // down-perturbation contract
+        // (`ignoring_the_aim_sends_the_pass_further_from_where_it_was_pointed`,
+        // gc-sim's tests/knob_contract.rs, 48 seeds) stays WIRED at 180 and
+        // collapses to DECORATION at 170 (delta +0.0240 vs threshold
+        // 0.0354). 180 is the softest step-aligned value above that
+        // measured cliff. Still a prior on feel: it needs hands-on pilots.
+        default: 180.0,
         // Per unit CHORD, not per radian, and that is a determinism
         // requirement rather than a unit preference: see `gc_sim::passing`.
         unit: "px/chord",
@@ -1024,8 +1075,8 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         // whole eligible distance span (PASS_ELIGIBLE_MAX - PASS_ELIGIBLE_MIN
         // is 540 px, and 2 chord x 400 is 800), so the cone has hardened into
         // a gate by another name. A sweep must be able to reach both.
-        min: 10.0,
-        max: 400.0,
+        min: 20.0,
+        max: 690.0,
         step: 10.0,
         desc: "How much a teammate's angle off the aim costs against raw distance in \
                receiver scoring. Soft: there is no acceptance cone.",
@@ -1035,10 +1086,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Min receiver range",
         cat: "Passing",
-        default: 20.0,
+        default: 34.0,
         unit: "px",
-        min: 5.0,
-        max: 45.0,
+        min: 9.0,
+        max: 77.0,
         step: 1.0,
         desc: "Teammates nearer than this are not pass candidates; a handoff is not a pass.",
     },
@@ -1047,10 +1098,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Max receiver range",
         cat: "Passing",
-        default: 560.0,
+        default: 960.0,
         unit: "px",
-        min: 200.0,
-        max: 1100.0,
+        min: 340.0,
+        max: 1880.0,
         step: 20.0,
         desc: "Teammates further than this are not pass candidates.",
     },
@@ -1059,10 +1110,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Arrival pace",
         cat: "Passing",
-        default: 120.0,
+        default: 210.0,
         unit: "px/s",
-        min: 40.0,
-        max: 300.0,
+        min: 70.0,
+        max: 520.0,
         step: 10.0,
         desc: "Pace a ground pass still carries when it reaches the receiver; the \
                distance-to-speed curve's intercept.",
@@ -1072,10 +1123,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Min pass pace",
         cat: "Passing",
-        default: 420.0,
+        default: 720.0,
         unit: "px/s",
-        min: 200.0,
-        max: 600.0,
+        min: 340.0,
+        max: 1030.0,
         step: 10.0,
         desc: "Floor under a ground pass's launch speed, so a short ball is not a tap.",
     },
@@ -1084,10 +1135,10 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Max pass pace",
         cat: "Passing",
-        default: 700.0,
+        default: 1460.0,
         unit: "px/s",
-        min: 450.0,
-        max: 1000.0,
+        min: 770.0,
+        max: 1720.0,
         step: 10.0,
         desc: "Ceiling over a ground pass's launch speed, so a long ball is not a bullet.",
     },

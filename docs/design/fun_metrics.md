@@ -966,6 +966,246 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
+  180, and a deflection-aware pass-lane risk model land together (#622 Part
+  2 follow-up, owner-approved, deliberate).** `baseline_version` **18 → 19**,
+  signature `a85b73658ba8996c` → `b8bf51b45b96ce84`; `identity.policy_id`
+  `outfield_ai_policy/v1/combat_disabled/f982f42bdd2ac756` →
+  `.../59bf9d7112667dbf` — moved because `gc_sim::ai::VERSION` bumped 1 → 2
+  (the deflection-aware lane model is a behaviour change to a file-local
+  constant the declared surface hashes, not a change to one of the nine
+  `AI`-category knob defaults, none of which moved); `identity.config`/
+  `config_hash` unchanged (`field=1648x927;...`, `7b608c384f500257` — no
+  pitch or match-config change); `identity.content_hash` unchanged
+  (`e6c01365e6311f12` — no authored content moved); `identity.tuning_hash`
+  `b191686a9a29bc63` → `1aa75187553ed1a8` (`PASS_ANGULAR_WEIGHT` is the only
+  one of the 40 defaults this hash covers that moved, 240 → 180);
+  `identity.fixture_hash` `44c762ed2aa9bdb5` → `dd491c7603454855`;
+  `identity.seed_hash`, `identity.snapshot_version` and `identity.input_version`
+  all unchanged — no seed set and no schema moved. Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  **The cause.** Three changes to how a pass is chosen and how a lane is
+  judged safe, landed together as part 2 of #622's follow-up to the PASS_*
+  rescale directly below:
+
+  1. **The half-plane aim gate** (`gc_sim::passing::select_receiver`). The
+     rescale below raised `PASS_ANGULAR_WEIGHT` 140 → 240 to stop a nearer,
+     worse-aimed teammate from outscoring one on the aim line once distances
+     grew ~1.72× and the weight did not. 240 could not survive a charge: the
+     charged `|d − range|` term scales with the pitch (`PASS_RANGE_MAX` =
+     890), so at full charge a teammate dead BEHIND the aim at the charged
+     range still out-scored a teammate on the aim line at 300 px — no finite
+     weight fixes that shape, it only moves the crossover. "Never opposite
+     the aim" is therefore now a structural invariant, not a knob: a
+     candidate in the half-plane behind the aim (negative dot of
+     `candidate − passer` with the aim, equivalently chord > √2) is rejected
+     before scoring, full stop.
+  2. **`PASS_ANGULAR_WEIGHT` 240 → 180.** With "never backwards" moved to the
+     gate, the weight's job narrowed to arbitrating which FORWARD teammate a
+     near-miss prefers, and 240 was no longer earning its keep at that
+     narrower job. 180 is set from the `pass_aim_error` metric contract, not
+     guessed: measured with the gate and the deflection model both in place,
+     the converged mean sits close to flat (0.152–0.162) anywhere in
+     180..240, while the knob's own committed down-perturbation contract
+     (`gc-sim/tests/knob_contract.rs`,
+     `ignoring_the_aim_sends_the_pass_further_from_where_it_was_pointed`)
+     stays WIRED at 180 and collapses to DECORATION at 170 — 180 is the
+     softest step-aligned value above that measured cliff. Full derivation
+     and the `pass_aim_error` band table are in `PASS_ANGULAR_WEIGHT`'s own
+     comment in `gc-data/src/tunables.rs`; that same source flags the band
+     question as NOT cleanly settled ("comfortably inside the band" is not
+     what 180 measures — it sits within about one standard error of the
+     boundary at every seed count tried), which is why `knob_contract.rs`'s
+     `the_shipped_passing_defaults_land_inside_their_proposed_bands` reports
+     this as an open finding rather than a closed one.
+  3. **Deflection-aware pass-lane risk** (`gc_sim::ai::pass_intercept`,
+     `VERSION` 1 → 2). The lane model previously only counted a lane as cut
+     when a threat could take clean possession (ball below the collection
+     speed cap). It now also counts a lane as cut when a threat can reach
+     blocking position before a ball too fast to collect arrives, once
+     `sim::r#match`'s own block-grace window has elapsed — mirroring the
+     match's own body-block rule, under which a fast, low ball deflects off
+     any body it runs into rather than sailing past everyone. Both outcomes
+     report as "lane is cut" (a `LaneCut` of `Collect` or `Deflect`),
+     undifferentiated in severity: every caller already consumes this as a
+     boolean lane-safety verdict, and a numeric discount for the milder
+     outcome would be an unregistered, unmeasured weight.
+
+  **What moved, and why.** All numbers, 60 seeds (`20001..20060`), the
+  frozen fixture:
+
+  | metric | frozen (v18) | re-frozen (v19) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.062577 | 0.267774 | +0.205197 |
+  | `goals_total` | 2.566667 | 2.633333 | +0.066667 |
+  | `goals_home` | 1.333333 | 1.300000 | −0.033333 |
+  | `goals_away` | 1.233333 | 1.333333 | +0.100000 |
+  | `shots` | 27.400000 | 25.616667 | −1.783333 |
+  | `shots_per_goal` | 12.606034 (n=58) | 12.126316 (n=57) | −0.479719 |
+  | `save_rate` | 0.796459 | 0.778390 | −0.018069 |
+  | `passes` | 27.066667 | 25.650000 | −1.416667 |
+  | `pass_completion` | 0.526884 | 0.532042 | +0.005158 |
+  | `turnovers_per_min` | 8.446749 | 8.480897 | +0.034148 |
+  | `possession_balance` | 0.518765 | 0.513253 | −0.005513 |
+  | `longest_drought_s` | 13.875556 | 14.058333 | +0.182778 |
+  | `decided_late` | 0.687952 | 0.682557 | −0.005395 |
+  | `lead_changes` | 0.216667 | 0.133333 | −0.083333 |
+  | `margin` | 1.266667 | 1.366667 | +0.100000 |
+  | `duration` | 111.359444 | 105.746667 | −5.612778 |
+  | `ai_dribble_carry_s` | 23.850278 | 23.413333 | −0.436944 |
+  | `ai_dribble_close_share` | 0.830922 | 0.828519 | −0.002403 |
+  | `ai_dribble_sprint_share` | 0.307297 | 0.329530 | +0.022234 |
+  | `ai_dribble_juke_share` | 0.044071 | 0.037168 | −0.006902 |
+  | `ai_dribble_touches_per_min` | 80.050033 | 76.443611 | −3.606422 |
+  | `ai_dribble_heavy_losses_per_min` | 0.526422 | 0.546803 | +0.020382 |
+  | `ai_jukes` | 17.683333 | 15.850000 | −1.833333 |
+
+  Unlike the collapse the entry directly below records, this shift is a
+  broad recovery, not just at the mean: `fun`'s `sd` rises too (0.159168 →
+  0.347420) and so does its `max` (0.761599 → 0.895041), so the whole
+  per-match distribution widens back out rather than staying compressed
+  toward zero. `passes` and `shots` both fall (27.1 → 25.7; 27.4 → 25.6) —
+  consistent with the gate refusing backward-facing candidates outright and
+  the deflection model pricing more contested lanes as unsafe, so fewer
+  marginal releases are attempted — while `pass_completion` still rises
+  slightly (0.527 → 0.532) among the passes that ARE attempted. `save_rate`
+  and `shots_per_goal` both ease back toward their bands (0.796 → 0.778
+  against `[0.45 .. 0.75]`; 12.6 → 12.1 against `[2.5 .. 6]`), still well
+  outside either. As with the entry below, no single banded metric's mean
+  shift explains a swing this size in the composite score on its own — the
+  per-match geometric mean is far more sensitive to a metric clearing a zero
+  edge on an individual match than a mean-level table shows — so this is
+  reported as a measured outcome, not a mechanism proven by this table
+  alone.
+
+  This entry covers only the frozen combat-disabled Outfield AI baseline.
+  Any other frozen artifact this same change invalidates is re-recorded, and
+  its own before/after numbers logged, at that artifact's own site — per
+  this document's convention of not duplicating another artifact's frozen
+  numbers here.
+
+- **2026-08-25 — the `PASS_*` family is rescaled a second time, correcting two
+  reach/aim defects the futsal pitch resize introduced (#622, owner-approved,
+  deliberate).** `baseline_version` **17 → 18**, signature
+  `4e266983b13aa51e` → `a85b73658ba8996c`; `identity.policy_id` unchanged
+  (`outfield_ai_policy/v1/combat_disabled/f982f42bdd2ac756` — the eight
+  rescaled knobs are `Passing`-category tuning, not one of the nine
+  `AI`-category defaults the policy id hashes); `identity.config`/
+  `config_hash` unchanged (`field=1648x927;...`, `7b608c384f500257` — no pitch
+  or match-config change this time); `identity.content_hash` unchanged
+  (`e6c01365e6311f12` — no authored content moved); `identity.tuning_hash`
+  `cba159e8c6c655e2` → `b191686a9a29bc63` (the eight defaults below moved, out
+  of the 40 this hash covers); `identity.fixture_hash` `f106904838b5bb33` →
+  `44c762ed2aa9bdb5`; `identity.seed_hash`, `identity.snapshot_version` and
+  `identity.input_version` all unchanged — no seed set and no schema moved.
+  Re-frozen via `record_outfield_ai_baseline`, per that module's own
+  re-freeze protocol.
+
+  **The cause.** Two defects were reported after play-testing the pitch
+  re-dimensioning recorded in the entry directly below (960×540 → 1648×927,
+  k = 1.7166667): every `PASS_*` knob had been left at its pre-resize default
+  while everything else on the pitch scaled up by roughly 1.72×.
+
+  1. **Passes died short.** `passing::speed_for` solves launch speed from
+     target distance but clamps at `PASS_SPEED_MAX`, so
+     `PASS_SPEED_MAX / FRICTION` is a hard physical reach ceiling. At the old
+     default (700) that ceiling was 583 px against a 560 px eligibility
+     window — a 23 px margin the larger pitch erased. Measured over 40
+     seeds: releases clamped at the ceiling rose 1.7% → 7.9%, releases that
+     physically died short rose 0.8% → 2.4%, and the mean shortfall among
+     those grew 64 px → 241 px.
+  2. **Passes chose the wrong receiver.** Receiver
+     `score = distance + PASS_ANGULAR_WEIGHT * chord`, chord in `[0, 2]`.
+     Distances grew by the full ~1.72× pitch factor while the weight did
+     not move, so the angular term lost that much authority: a teammate
+     dead on aim at 500 px scored 500, while one directly BEHIND the passer
+     at 150 px scored `150 + 140*2 = 430` and won, against a candidate the
+     aim stick was never pointed at.
+
+  **The fix.** All eight knobs below were rescaled; `PASS_SPEED_MAX` is
+  deliberately NOT the plain k-scale (k · 700 = 1200 would restore the old
+  near-miss, not fix it) — the reach ceiling has to clear the furthest point
+  a pass can legally be aimed at, `PASS_ELIGIBLE_MAX` plus the lead solve's
+  own projection of a running receiver (`PASS_LEAD_TIME_MAX` 0.9 s ×
+  280 px/s top speed) = 1212 px; 1460 gives a 1217 px reach and clears it —
+  an invariant that never actually held even at the pre-resize pair (it
+  violated it by 193 px too, just rarely enough to look like bad luck).
+  `gc_sim::passing::reach` and three new tests in `gc-sim/tests/passing.rs`
+  now pin the relationship so it cannot silently drift again;
+  `gc_sim::ball_flight::FRICTION` was made `pub` so a test can see it, and
+  stays fixed — it is shared ball physics, not a knob.
+
+  | knob | old default | new default | old range | new range |
+  | --- | --- | --- | --- | --- |
+  | `PASS_RANGE_MIN` | 110 | 190 | `60..300` | `100..520` |
+  | `PASS_RANGE_MAX` | 520 | 890 | `300..800` | `520..1380` |
+  | `PASS_ELIGIBLE_MIN` | 20 | 34 | `5..45` | `9..77` |
+  | `PASS_ELIGIBLE_MAX` | 560 | 960 | `200..1100` | `340..1880` |
+  | `PASS_ARRIVE_PACE` | 120 | 210 | `40..300` | `70..520` |
+  | `PASS_SPEED_MIN` | 420 | 720 | `200..600` | `340..1030` |
+  | `PASS_SPEED_MAX` | 700 | 1460 | `450..1000` | `770..1720` |
+  | `PASS_ANGULAR_WEIGHT` | 140 | 240 | `10..400` | `20..690` |
+
+  **What moved, and why.** All numbers, 60 seeds (`20001..20060`), the
+  frozen fixture:
+
+  | metric | frozen (v17) | re-frozen (v18) | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.303255 | 0.062577 | −0.240678 |
+  | `goals_total` | 2.600000 | 2.566667 | −0.033333 |
+  | `goals_home` | 0.983333 | 1.333333 | +0.350000 |
+  | `goals_away` | 1.616667 | 1.233333 | −0.383333 |
+  | `shots` | 24.500000 | 27.400000 | +2.900000 |
+  | `shots_per_goal` | 11.396429 (n=56) | 12.606034 (n=58) | +1.209606 |
+  | `save_rate` | 0.773048 | 0.796459 | +0.023411 |
+  | `passes` | 25.266667 | 27.066667 | +1.800000 |
+  | `pass_completion` | 0.487333 | 0.526884 | +0.039551 |
+  | `turnovers_per_min` | 9.496413 | 8.446749 | −1.049664 |
+  | `possession_balance` | 0.552855 | 0.518765 | −0.034089 |
+  | `longest_drought_s` | 17.306389 | 13.875556 | −3.430833 |
+  | `decided_late` | 0.709683 | 0.687952 | −0.021731 |
+  | `lead_changes` | 0.183333 | 0.216667 | +0.033333 |
+  | `margin` | 1.266667 | 1.266667 | +0.000000 |
+  | `duration` | 112.430556 | 111.359444 | −1.071111 |
+  | `ai_dribble_carry_s` | 31.020278 | 23.850278 | −7.170000 |
+  | `ai_dribble_close_share` | 0.778921 | 0.830922 | +0.052001 |
+  | `ai_dribble_sprint_share` | 0.311694 | 0.307297 | −0.004397 |
+  | `ai_dribble_juke_share` | 0.048617 | 0.044071 | −0.004546 |
+  | `ai_dribble_touches_per_min` | 91.841378 | 80.050033 | −11.791345 |
+  | `ai_dribble_heavy_losses_per_min` | 0.229923 | 0.526422 | +0.296498 |
+  | `ai_jukes` | 25.333333 | 17.683333 | −7.650000 |
+
+  Passing itself plays as intended: `passes` rises (25.3 → 27.1) and
+  `pass_completion` rises toward its `[0.55 .. 0.85]` band (0.487 → 0.527,
+  still below it but closer) — consistent with fewer releases clamping
+  short of a legal receiver and the angular term regaining the authority
+  the aim stick needs. `ai_dribble_carry_s` and `ai_dribble_touches_per_min`
+  both fall sharply (31.0 s → 23.9 s; 91.8 → 80.1 per minute) — the AI now
+  off-loads the ball by pass rather than carrying it further looking for
+  one that will actually arrive.
+
+  But the composite `fun` score falls hard (0.303 → 0.063), and not just its
+  mean — `sd` (0.345 → 0.159) and `max` (0.794 → 0.762) fall too, so the
+  whole per-match distribution compresses toward zero. `save_rate` and
+  `shots_per_goal` both move further from their good bands (0.773 → 0.796
+  against `[0.45 .. 0.75]`; 11.4 → 12.6 against `[2.5 .. 6]`) while
+  `turnovers_per_min` and `pass_completion` move toward theirs, so no single
+  banded metric's aggregate mean explains a collapse this size on its own —
+  the per-match geometric-mean product is far more sensitive to a metric
+  crossing near a zero edge on an individual match than mean-level
+  arithmetic shows. That is a question for a future sensitivity pass against
+  these still-provisional bands (this document's own banner: the fun
+  tripwire is not wired into any gate), not evidence against the
+  reach/receiver fix itself, which is what `gc-sim/tests/passing.rs`'s 16
+  tests and its reach-invariant cases exist to pin.
+
+  This entry covers only the frozen combat-disabled Outfield AI baseline.
+  Any other frozen artifact this same knob rescale invalidates is
+  re-recorded, and its own before/after numbers logged, at that artifact's
+  own site — per this document's convention of not duplicating another
+  artifact's frozen numbers here.
+
 - **2026-08-25 — the pitch is re-dimensioned to regulation futsal
   proportions, 960×540 → 1648×927 (owner-approved, deliberate; no issue filed
   yet).** `baseline_version` **15 → 17**, signature `01fd23fdf736b799` →
