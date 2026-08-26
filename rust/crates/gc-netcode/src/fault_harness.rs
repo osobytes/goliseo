@@ -54,7 +54,8 @@
 //! between this module's own control-channel pump and the
 //! `Box<dyn StarTransportAdapter>` [`FaultHarness::start_match`] hands to
 //! [`crate::match_driver::new`] once that client's freeze lands (via
-//! [`SharedFaultTransport`], a thin delegating wrapper).
+//! [`crate::fault_transport::SharedFaultTransport`], a thin delegating
+//! wrapper).
 //!
 //! Concretely, [`FaultHarness::reach_start`] returning `true` means: every
 //! client's coordinator independently processed a real encoded
@@ -153,9 +154,9 @@ use crate::coordinator;
 use crate::fake_relay::{self, FakeRelayTransport};
 use crate::fake_star::{self, FakeStarTransport};
 use crate::fault_transport::{
-    FaultTransport, FaultTransportOptions, FaultTransportPollOrder, StarTransportAdapter,
-    TransportChannel, TransportMessage, TransportMessageType, TransportPeerEvent,
-    TransportPeerEventKind, TransportPeerState, TransportResult, TransportRole,
+    FaultTransport, FaultTransportOptions, FaultTransportPollOrder, SharedFaultTransport,
+    StarTransportAdapter, TransportChannel, TransportMessage, TransportMessageType,
+    TransportPeerEvent, TransportPeerEventKind, TransportPeerState, TransportResult, TransportRole,
     TransportStarDiagnostics, TransportState,
 };
 use crate::match_driver::{self, MatchDriverCheckpoint, MatchDriverStatus};
@@ -765,88 +766,6 @@ pub struct FaultHarnessOptions {
     /// Clamps every endpoint's simulated send buffer. Clamping is only a
     /// fault if it actually latches — see [`FaultHarness::expect_backpressure`].
     pub buffered_amount_limit: Option<i64>,
-}
-
-/// A cheap `Clone` handle onto one client's [`FaultTransport`], substitutable
-/// for the endpoint it wraps. Mirrors the module doc's "a `Rc<RefCell<...>>`
-/// per client, shared between the harness's own control-channel pump and the
-/// `Box<dyn StarTransportAdapter>` handed to `match_driver::new`". Delegating
-/// through the shared cell is the whole point: [`FaultHarness`] keeps its own
-/// handle (for the pre-match control pump and for resource sampling) while
-/// [`FaultHarness::start_match`] boxes another handle into the driver, and
-/// both observe the identical impairment state.
-struct SharedFaultTransport(Rc<RefCell<FaultTransport>>);
-
-impl StarTransportAdapter for SharedFaultTransport {
-    fn initialize(&mut self) -> TransportResult<bool> {
-        self.0.borrow_mut().initialize()
-    }
-    fn shutdown(&mut self) -> TransportResult<bool> {
-        self.0.borrow_mut().shutdown()
-    }
-    fn role(&self) -> TransportRole {
-        self.0.borrow().role()
-    }
-    fn capacity(&self) -> i64 {
-        self.0.borrow().capacity()
-    }
-    fn open_peer(&mut self, peer_id: &str) -> TransportResult<i64> {
-        self.0.borrow_mut().open_peer(peer_id)
-    }
-    fn close_peer(&mut self, peer_id: &str, reason: Option<&str>) -> TransportResult<bool> {
-        self.0.borrow_mut().close_peer(peer_id, reason)
-    }
-    fn peer_ids(&self) -> Vec<String> {
-        self.0.borrow().peer_ids()
-    }
-    fn peer_state(&self, peer_id: &str) -> Option<TransportPeerState> {
-        self.0.borrow().peer_state(peer_id)
-    }
-    fn request_offer(&mut self, peer_id: &str) -> TransportResult<bool> {
-        self.0.borrow_mut().request_offer(peer_id)
-    }
-    fn accept_offer(&mut self, signal: &str) -> TransportResult<bool> {
-        self.0.borrow_mut().accept_offer(signal)
-    }
-    fn accept_answer(&mut self, peer_id: &str, signal: &str) -> TransportResult<bool> {
-        self.0.borrow_mut().accept_answer(peer_id, signal)
-    }
-    fn take_signal(&mut self, peer_id: &str) -> TransportResult<Option<String>> {
-        self.0.borrow_mut().take_signal(peer_id)
-    }
-    fn send(
-        &mut self,
-        peer_id: &str,
-        channel: TransportChannel,
-        message: TransportMessage,
-    ) -> TransportResult<bool> {
-        self.0.borrow_mut().send(peer_id, channel, message)
-    }
-    fn broadcast(
-        &mut self,
-        channel: TransportChannel,
-        message: TransportMessage,
-    ) -> TransportResult<i64> {
-        self.0.borrow_mut().broadcast(channel, message)
-    }
-    fn poll(&mut self) -> Option<crate::fault_transport::TransportPeerMessage> {
-        self.0.borrow_mut().poll()
-    }
-    fn poll_batch(
-        &mut self,
-        limit: Option<i64>,
-    ) -> Vec<crate::fault_transport::TransportPeerMessage> {
-        self.0.borrow_mut().poll_batch(limit)
-    }
-    fn poll_event(&mut self) -> Option<TransportPeerEvent> {
-        self.0.borrow_mut().poll_event()
-    }
-    fn state(&self) -> TransportState {
-        self.0.borrow().state()
-    }
-    fn diagnostics(&self) -> TransportStarDiagnostics {
-        self.0.borrow().diagnostics()
-    }
 }
 
 fn expectation_for(manifest: &Value) -> coordinator::ManifestExpectation {
@@ -1558,7 +1477,7 @@ impl FaultHarness {
                 peer_id: client.peer_id.clone(),
                 freeze: driver_freeze,
                 manifest: driver_manifest,
-                transport: Box::new(SharedFaultTransport(client.transport.clone())),
+                transport: Box::new(SharedFaultTransport::new(client.transport.clone())),
                 initial_snapshot,
                 max_rollback_ticks: None,
                 hash_interval_ticks: Some(hash_interval_ticks),
