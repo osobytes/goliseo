@@ -373,13 +373,17 @@ fn tuning_still_round_trips_the_untagged_panel_blob_byte_for_byte() {
 fn pass_range_min_is_registry_backed_and_reaches_the_simulation() {
     // The spot-check (#487): `PASS_RANGE_MIN` was `const PASS_RANGE_MIN: f64 =
     // 110.0` in `match.rs`, invisible to the sweep and to the config hash.
+    // That value was itself rescaled 110 -> 190 for the 960x540 -> 1648x927
+    // futsal pitch re-dimensioning (k = 1.7166667; see
+    // `gc-data/src/tunables.rs`), so the golden value asserted here tracks
+    // gc-data's current shipped default, not the pre-rescale literal above.
     let shipped = tunable_registry::shipped();
     let def = shipped
         .def("PASS_RANGE_MIN")
         .expect("PASS_RANGE_MIN is a registered tunable");
     assert_eq!(
-        def.default, 110.0,
-        "the registered default IS the old constant"
+        def.default, 190.0,
+        "the registered default IS the shipped gc-data constant"
     );
     assert_eq!(def.tier, Tier::Sim);
     assert!(shipped.sweepable_ids().contains(&"PASS_RANGE_MIN"));

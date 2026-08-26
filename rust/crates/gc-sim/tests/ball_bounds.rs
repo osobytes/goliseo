@@ -5,7 +5,10 @@ use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
 use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize, Team};
 use gc_sim::tuning::Tuning;
 
-const FIELD: PitchSize = PitchSize { w: 960.0, h: 540.0 };
+const FIELD: PitchSize = PitchSize {
+    w: 1648.0,
+    h: 927.0,
+};
 const PLAYER_RADIUS: f64 = 12.0;
 
 fn no_input() -> MatchInput {

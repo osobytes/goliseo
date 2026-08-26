@@ -5,24 +5,52 @@
 //! release-tick call on the same state return the same answer, and a
 //! resimulated release re-resolves identically.
 //!
-//! ## Soft cone, not a gate
+//! ## Soft cone forward of square, hard half-plane behind
 //!
 //! What this replaced was a hard 60-degree acceptance cone: a teammate one
 //! degree outside it was invisible, so a near-miss on the aim stick produced
-//! *no pass at all* and the player was back to guessing. The score is now a
+//! *no pass at all* and the player was back to guessing. The score is a
 //! blend — distance plus a weighted angular term — with no acceptance test on
-//! the angle at all:
+//! the angle anywhere forward of square:
 //!
 //! ```text
 //! score(t) = distance_term(t) + PASS_ANGULAR_WEIGHT * angular_term(t)
 //! ```
 //!
 //! Aim biases the choice toward whoever is roughly in the aimed direction and
-//! reasonably close; selection still always resolves to someone eligible. The
-//! only exclusions left are the two *distance* bounds (`PASS_ELIGIBLE_MIN`,
-//! `PASS_ELIGIBLE_MAX`), which are about what a pass **is** — a handoff to
-//! someone at your elbow is not a pass, and neither is a punt to the far
-//! corner — rather than about how well you aimed.
+//! reasonably close. The exclusions are the two *distance* bounds
+//! (`PASS_ELIGIBLE_MIN`, `PASS_ELIGIBLE_MAX`), which are about what a pass
+//! **is** — a handoff to someone at your elbow is not a pass, and neither is
+//! a punt to the far corner — rather than about how well you aimed, and one
+//! *directional* invariant, below.
+//!
+//! ### Never opposite to the aim — an invariant, not a knob
+//!
+//! A candidate in the half-plane **behind** the aim — negative dot of
+//! (candidate − passer) with the aim, equivalently chord > √2 — is rejected
+//! before scoring. This is the owner's design ruling from the futsal
+//! re-dimensioning play-test: "the pass should never go to a player that is
+//! on the opposite direction towards where I'm aiming." It became reachable
+//! because the aim term maxes at `2 × PASS_ANGULAR_WEIGHT` while a charged
+//! `|d − range|` term scales with the pitch: at full charge
+//! (`PASS_RANGE_MAX` = 890) a teammate dead behind the aim at the charged
+//! range out-scored a teammate on the aim line at 300 px. No finite weight
+//! fixes that shape — it only moves the crossover — so the rule is
+//! structural, hard-coded here rather than registered as a tunable (a knob
+//! would need a §9 knob-moves-metric contract and a declared metric
+//! direction, and "never" has no direction to sweep; an invariant needs
+//! tests, and `tests/passing.rs` carries them).
+//!
+//! This deliberately survives #491's objection to gates. That issue deleted
+//! the 60-degree cone because a *tight* gate turns near-misses into
+//! non-passes: a 61-degree miss got nobody. The half-plane rejects only what
+//! the ruling says must never happen — the ball travelling against the
+//! player's own stick — while a 45-degree miss, an 89-degree miss, and a
+//! dead-square teammate all still pass, arbitrated by the same soft blend as
+//! before. When the half-plane empties the candidate set, selection returns
+//! `None` exactly as it does when the distance bounds exclude everyone, and
+//! the callers' existing no-eligible-receiver handling (openness fallback in
+//! `sim::r#match::select_pass_target`) takes over unchanged.
 //!
 //! ## The angular term is a CHORD, and that is a determinism requirement
 //!
@@ -80,10 +108,11 @@
 //!
 //! The squash is also at the *back*, where the term is already dominant and a
 //! teammate is already losing. `PASS_ANGULAR_WEIGHT`'s unit is therefore
-//! authored as `px/chord`, not `px/rad`, and its declared range is the
-//! issue's metric prior converted at this project's pitch scale (960 px over
-//! a full-size pitch is about 9 px per metre) and then widened — a range
-//! quoted in radian units would not transfer.
+//! authored as `px/chord`, not `px/rad` — a range quoted in radian units
+//! would not transfer. Its declared range began as a metric prior converted
+//! at a mistaken pitch scale and was then widened by play-testing; see
+//! `gc_data::tunables`'s Passing note for why the conversion is not worth
+//! reconstructing and the widened range is the real authority.
 //!
 //! ## The charge range is a distance TARGET, not a distance
 //!
@@ -179,10 +208,12 @@ pub fn score(from: Vec2, aim: Vec2, target: Vec2, range: Option<f64>, angular_we
 /// Pick the index (0-based — this is an in-memory position, not a wire
 /// format, per ARCHITECTURE.md §3 rule 3) of the best teammate to pass to.
 ///
-/// Soft-scored, with no angular acceptance test: the only way to return
-/// `None` is for every teammate to fall outside `[eligible_min,
-/// eligible_max]`. Recomputed from scratch on every call and never cached —
-/// the world moves, so the answer must too.
+/// Soft-scored forward of square, with the behind-the-aim half-plane
+/// rejected outright (the module doc's "never opposite to the aim"
+/// invariant): the only ways to return `None` are for every teammate to fall
+/// outside `[eligible_min, eligible_max]` or behind the aim. Recomputed from
+/// scratch on every call and never cached — the world moves, so the answer
+/// must too.
 ///
 /// **Ties break on the lower index**, and that is load-bearing rather than
 /// incidental: `>` would let a later teammate displace an equal-scoring
@@ -203,6 +234,16 @@ pub fn select_receiver(
     let mut best_score = f64::INFINITY;
     for (i, &p) in teammates.iter().enumerate() {
         if !eligible(p.dist(from), knobs) {
+            continue;
+        }
+        // The half-plane aim gate (module doc: "never opposite to the
+        // aim"). Strictly negative, so a dead-square teammate (dot == 0)
+        // stays a soft-cone candidate — the gate rejects only the half-plane
+        // BEHIND the aim. A zero aim normalizes to the zero vector, making
+        // every dot exactly 0.0: nobody is rejected and selection falls
+        // through to distance, matching `angular_term`'s own zero-aim rule.
+        let offset = p.sub(from);
+        if offset.x * aim.x + offset.y * aim.y < 0.0 {
             continue;
         }
         let s = score(from, aim, p, range, knobs.angular_weight);
@@ -238,4 +279,27 @@ pub fn speed_for(d: f64, tune: &Tuning) -> f64 {
     let lo = tune.value(SPEED_MIN_KNOB);
     let hi = tune.value(SPEED_MAX_KNOB).max(lo);
     (tune.value(ARRIVE_PACE_KNOB) + crate::ball_flight::FRICTION * d).clamp(lo, hi)
+}
+
+/// How far a ground pass can physically roll, at most.
+///
+/// [`speed_for`] clamps at `PASS_SPEED_MAX`, and the ball sheds speed at
+/// `FRICTION` per second, so `PASS_SPEED_MAX / FRICTION` is a hard ceiling on
+/// distance travelled that no amount of charge or skill can exceed. Aim a pass
+/// further than this and the ball provably stops short of it -- not sometimes,
+/// always, and by exactly the difference.
+///
+/// This exists to be asserted against. The furthest a pass may legally be
+/// AIMED is `PASS_ELIGIBLE_MAX` (the selection filter) plus whatever
+/// [`crate::pass_lead`] projects a running receiver ahead by, and nothing
+/// previously required those two quantities to be compatible. They were not:
+/// before the futsal re-dimensioning the aimable maximum exceeded this reach
+/// by 193 px, which is why long passes to a running teammate died short often
+/// enough to be noticed but rarely enough to look like variance.
+/// `tests/passing.rs` pins the relationship now.
+#[must_use]
+pub fn reach(tune: &Tuning) -> f64 {
+    let lo = tune.value(SPEED_MIN_KNOB);
+    let hi = tune.value(SPEED_MAX_KNOB).max(lo);
+    hi / crate::ball_flight::FRICTION
 }

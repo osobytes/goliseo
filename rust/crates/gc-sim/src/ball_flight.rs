@@ -43,7 +43,12 @@ use gc_core::vec2::Vec2;
 // declarative tunable registry requires folding the live value into that
 // fingerprint — see `ball_prediction::ball_fingerprint`'s doc comment.
 pub(crate) const BALL_RADIUS: f64 = 6.0;
-pub(crate) const FRICTION: f64 = 1.2;
+/// Ground friction: the fraction of horizontal speed the ball sheds per
+/// second. Deliberately not a tunable (see this block's own comment above),
+/// and `pub` because it is half of the pass reach invariant that
+/// `passing::reach` and `tests/passing.rs` assert -- a test cannot check a
+/// relationship it cannot see.
+pub const FRICTION: f64 = 1.2;
 pub(crate) const NET_DAMP: f64 = 0.3;
 pub(crate) const NET_ROLLOUT: f64 = 200.0;
 pub(crate) const GRAVITY: f64 = 900.0;

@@ -116,8 +116,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::registry::{self, Entry};
 
-const FIELD_W: f64 = 960.0;
-const FIELD_H: f64 = 540.0;
+const FIELD_W: f64 = 1648.0;
+const FIELD_H: f64 = 927.0;
 
 /// Build the eight canonical slot assignments from two five-player rosters
 /// (`[keeper, outfield_1, outfield_2, outfield_3, outfield_4]`), matching

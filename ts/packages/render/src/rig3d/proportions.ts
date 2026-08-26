@@ -110,8 +110,19 @@ export const RIG_MEDIUM: RigProportions = {
   motion_scale: 0.88,
 };
 
-// Approximate standing height in metres: the bone chain up to the head plus the
-// skull the head builder puts on top of it. Used to frame the camera.
+// Approximate standing height of the authored mesh, in the rig's OWN space:
+// the bone chain up to the head plus the skull the head builder puts on top of
+// it. Used to fit the mesh -- `ppmForRadius` divides by this and then scales
+// the mesh by the result, so it cancels and a player always draws exactly
+// `PLAYER_RADIUS * HEIGHT_IN_RADII * 2` = 72 px.
+//
+// THIS IS NOT THE PROJECT'S METRE SCALE. It sums to about 1.57 m, which is not
+// a claim about how tall a footballer is -- this is a stylised ~5.4-head
+// arcade silhouette, and `equipment.ts` is authored in the same space without
+// ever reading these values. The world-unit-to-metre scale is declared
+// separately and deliberately, as `player_renderer_3d.METRES_PER_WORLD_UNIT`;
+// see its doc comment for why the two were separated and what went wrong while
+// they were conflated. `scale.spec.ts` asserts they stay distinct.
 export function height(rig: RigProportions): number {
   const s = rig.seg;
   const f = rig.form;

@@ -491,8 +491,8 @@ It is stricter than the commands above in ways that matter:
   gitignored, so a Rust fix that was never folded into a rebuilt artifact is
   a fix nothing downstream can see.
 - it asserts, twice and independently, that the freshly built module's
-  `runDeterminismEvidence()` returns exactly `final_hash=bfbb106aea5480f8` /
-  `sequence_digest=0bfd0ed355f87322` — once through
+  `runDeterminismEvidence()` returns exactly `final_hash=02085004777f30a4` /
+  `sequence_digest=bcf2dfa7e1ae7221` — once through
   `packages/wasm/src/determinism.spec.ts`'s own vitest assertions, and again
   by loading the same module directly (bypassing vitest) and comparing in
   plain bash. This is one of the most important assertions in the

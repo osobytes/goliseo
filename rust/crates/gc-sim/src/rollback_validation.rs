@@ -243,7 +243,10 @@ fn synthetic_goal_tape(tune: &Tuning) -> InputTape {
     let mut state = sim_match::new(NewMatchOptions {
         home,
         away,
-        field: match_snapshot::PitchSize { w: 960.0, h: 540.0 },
+        field: match_snapshot::PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,
@@ -267,7 +270,11 @@ fn synthetic_goal_tape(tune: &Tuning) -> InputTape {
         away_keeper.receive_timer = 1.0;
     }
     sim_match::set_owner(&mut state, None);
-    state.ball = Vec2::new(965.0, 270.0);
+    // 5 px past the away goal line, dead centre of the mouth: the synthetic
+    // goal has only three neutral frames to score in, so it starts already
+    // across. Was (965, 270) when the pitch was 960x540 -- the same two
+    // relationships, restated for 1648x927.
+    state.ball = Vec2::new(1653.0, 463.5);
     state.ball_vel = Vec2::new(600.0, 0.0);
     state.ball_z = 0.0;
     state.ball_vz = 0.0;
@@ -286,7 +293,7 @@ fn synthetic_goal_tape(tune: &Tuning) -> InputTape {
         source: "omp2-synthetic-goal-kickoff-v1".to_string(),
         content: "nebula-orion-showcase-content-v1".to_string(),
         tuning: tune.serialize(),
-        config: "field=960x540;duration=2;max_goals=3;tick_rate=60".to_string(),
+        config: "field=1648x927;duration=2;max_goals=3;tick_rate=60".to_string(),
         fixture: "omp2-goal-kickoff".to_string(),
         seed: 83.0,
         tick_rate: fixed_clock::TICK_RATE as i64,
@@ -306,7 +313,10 @@ fn combat_validation_tape(config: &Omp2RollbackValidationData, tune: &Tuning) ->
     let mut state = sim_match::new(NewMatchOptions {
         home,
         away,
-        field: match_snapshot::PitchSize { w: 960.0, h: 540.0 },
+        field: match_snapshot::PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,
@@ -361,7 +371,7 @@ fn combat_validation_tape(config: &Omp2RollbackValidationData, tune: &Tuning) ->
         content: "nebula-orion-showcase-content-v1".to_string(),
         tuning: tune.serialize(),
         config: format!(
-            "field=960x540;duration=20;max_goals=99;tick_rate=60;ticks={}",
+            "field=1648x927;duration=20;max_goals=99;tick_rate=60;ticks={}",
             fixture.frame_count
         ),
         fixture: fixture.id.to_string(),
@@ -623,7 +633,10 @@ pub fn combat_load_tape(fixture: &Omp2RollbackCombatLoadFixture, tune: &Tuning) 
     let mut state = sim_match::new(NewMatchOptions {
         home,
         away,
-        field: match_snapshot::PitchSize { w: 960.0, h: 540.0 },
+        field: match_snapshot::PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,
@@ -676,7 +689,7 @@ pub fn combat_load_tape(fixture: &Omp2RollbackCombatLoadFixture, tune: &Tuning) 
         content: "nebula-orion-showcase-content-v1".to_string(),
         tuning: tune.serialize(),
         config: format!(
-            "field=960x540;duration={};max_goals=99;tick_rate=60;ticks={};layout={};loadout={}",
+            "field=1648x927;duration={};max_goals=99;tick_rate=60;ticks={};layout={};loadout={}",
             fixture.duration,
             fixture.frame_count,
             match fixture.layout {
@@ -738,7 +751,7 @@ fn late_window_tape(tune: &Tuning) -> InputTape {
     identity.build = "omp2-rollback-validation-v1".to_string();
     identity.source = "omp2-late-window-v1".to_string();
     identity.fixture = "omp2-late-window".to_string();
-    identity.config = "field=960x540;duration=120;max_goals=3;tick_rate=60;ticks=40".to_string();
+    identity.config = "field=1648x927;duration=120;max_goals=3;tick_rate=60;ticks=40".to_string();
     input_tape::new(&identity, &initial, &frames, tune)
         .expect("late window tape is always well formed")
 }

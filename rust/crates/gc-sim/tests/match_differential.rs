@@ -4,7 +4,7 @@
 //! # What this proves
 //!
 //! One 7,200-tick fully AI-driven match (`human_controlled: false`, seed 11,
-//! `nebula` vs `orion`, 960x540) stepped with
+//! `nebula` vs `orion`, 1648x927) stepped with
 //! `StepInput::Legacy(MatchInput::default())` — no human input stream, no
 //! wire round trip — reproduces a recorded trajectory bit for bit, at every
 //! tick, across 31 fields: the six ball quantities, the owner, both scores,
@@ -149,7 +149,10 @@ fn fresh_match() -> gc_sim::match_snapshot::MatchState {
     sim_match::new(NewMatchOptions {
         home,
         away,
-        field: PitchSize { w: 960.0, h: 540.0 },
+        field: PitchSize {
+            w: 1648.0,
+            h: 927.0,
+        },
         home_formation: None,
         tactic: None,
         away_tactic: None,

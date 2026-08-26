@@ -70,8 +70,27 @@ import { loadSimHost } from "./index.ts";
 // `c165170216a8ec28`; native, via
 // `cargo test -p gc-sim --test determinism_evidence`, the same two. They
 // AGREE, so this is not #517.
-const EXPECTED_FINAL_HASH = "0e41232666bc8568";
-const EXPECTED_SEQUENCE_DIGEST = "c165170216a8ec28";
+//
+// The 2026-08-25 pitch re-dimensioning (960x540 -> 1648x927, owner-approved;
+// see docs/design/fun_metrics.md's drift log) moved BOTH this time, unlike
+// #572/#578: the frozen input frames are untouched, but the match they
+// replay against is a different-sized pitch from tick 0, so every boundary
+// diverges, not just the tail of the chain. Discriminating measurement
+// re-run before this line moved — wasm, via the header's own `node -e`
+// one-liner against the freshly built `dist/pkg/gc_wasm.cjs`: final
+// `6ec141ef9e898b24`, sequence `941f2be1cfc9acc6`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`, the same two. They
+// AGREE, so this is not #517.
+//
+// LOCO_PACE_REF_HI's default settled at 280 (was 300 when the pair above was
+// recorded — see the tunable's own comment in gc_data::tunables) shortly
+// after, moving both values again. Discriminating measurement re-run before
+// THIS line moved — wasm, via the same freshly rebuilt `dist/pkg/gc_wasm.cjs`:
+// final `02085004777f30a4`, sequence `bcf2dfa7e1ae7221`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`, the same two. They
+// AGREE, so this is not #517 either.
+const EXPECTED_FINAL_HASH = "02085004777f30a4";
+const EXPECTED_SEQUENCE_DIGEST = "bcf2dfa7e1ae7221";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

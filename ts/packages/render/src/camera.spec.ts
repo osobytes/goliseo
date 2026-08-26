@@ -256,7 +256,10 @@ describe("camera perspective mode", () => {
       near(frac(960, 540), frac(2560, 1080), 1e-9);
       near(frac(960, 540), frac(3000, 1235), 1e-9);
       // ...and it must land on the framing that derivation solved for.
-      near(frac(1280, 720), 0.121, 5e-4);
+      // 72 / (2 * L * tan(fov/2)) with L = hypot(887, 1135) ~= 1440.48 and
+      // fov = 27 degrees (camera.PERSPECTIVE's own doc comment, step 4) ~=
+      // 0.1041.
+      near(frac(1280, 720), 0.104, 5e-4);
     });
   });
 
@@ -351,15 +354,23 @@ describe("camera.perspectiveRig / camera.rigAngleRad", () => {
     expect(rig.far).toBe(8000);
   });
 
-  it("rigAngleRad reports a downward tilt of 45 degrees, matching camera.PERSPECTIVE's Strikers framing", () => {
+  it("rigAngleRad reports a downward tilt of 38 degrees, matching camera.PERSPECTIVE's broadcast framing", () => {
     const deg = (camera.rigAngleRad(field) * 180) / Math.PI;
-    near(deg, 45, 0.1);
+    near(deg, 38, 0.1);
   });
 
-  it("puts the tilt at 45 degrees by construction: height and distance are equal", () => {
-    // camera.PERSPECTIVE's derivation picks the tilt FIRST and splits L by it,
-    // and 45 degrees is the one tilt where that split is verifiable by eye.
-    expect(camera.PERSPECTIVE.height).toBe(camera.PERSPECTIVE.distance);
+  it("puts the tilt at 38 degrees, recoverable as atan(height / distance)", () => {
+    // camera.PERSPECTIVE's derivation still picks the tilt FIRST and splits
+    // L by it (camera.ts's PERSPECTIVE doc comment, step 5) -- but 38
+    // degrees, unlike the 45 this rig used before the broadcast reframe, is
+    // not the self-verifying case where height and distance land on the
+    // same number: height = L * sin(38 deg) and distance = L * cos(38 deg)
+    // are two different numbers by construction now. What still holds, and
+    // is what this asserts, is that recovering the tilt from that split
+    // lands back on 38 degrees.
+    const deg =
+      (Math.atan2(camera.PERSPECTIVE.height, camera.PERSPECTIVE.distance) * 180) / Math.PI;
+    near(deg, 38, 0.1);
   });
 
   it("rigAngleRad matches atan(height / distance) directly off camera.PERSPECTIVE", () => {
@@ -472,7 +483,7 @@ const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
 // full derivation). This table used to be an independent reference capture,
 // the same way FIXED_REFERENCE/FIXED_ZOOM_REFERENCE still are -- but
 // `camera.PERSPECTIVE` was deliberately retuned away from the reference
-// implementation's framing for the true-perspective Strikers camera work,
+// implementation's framing for the true-perspective broadcast camera work,
 // so a byte-for-byte reference capture at the OLD tuning is no longer a
 // meaningful regression target for the NEW one -- the two cameras are not
 // the same shot on purpose. What still needs pinning is that
@@ -486,7 +497,7 @@ const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
 // perspective mode" describe block above is what still protects the
 // CONVERGENCE/FORESHORTENING invariants independent of tuning.
 //
-// Regenerated for the STRIKERS REFRAME (height 660 -> 495, distance
+// Regenerated for the BROADCAST REFRAME (height 660 -> 495, distance
 // 554 -> 495 -- tilt 50 -> 45 degrees, L 862 -> 700; fov 46 unchanged; and
 // the `scale_k` constant REMOVED, the `scale` column now being the derived
 // `vp.h / (2 * w * tan(fov/2))` pixels-per-world-unit -- see camera.ts's
@@ -494,20 +505,28 @@ const FIXED_ZOOM_REFERENCE: readonly CameraReferenceRow[] = [
 // with a scratch vitest snippet evaluating this same unchanged pipeline at
 // the new PERSPECTIVE tuning, per this comment's own instructions.
 //
-// Note the `scale` column is now ~1.2 at the focus rather than ~0.68: it is a
-// real pixels-per-world-unit ratio at THIS viewport (1280x720), not a
+// Regenerated AGAIN, the same way, for the second BROADCAST REFRAME that
+// matched this table to a reference camera table
+// (height 495 -> 887, distance 495 -> 1135 -- tilt 45 -> 38 degrees,
+// L 700 -> 1440.5; fov 46 -> 27, and now VERTICAL rather than an already-
+// vertical-looking pair -- see camera.ts's `camera.PERSPECTIVE` doc comment,
+// step 1, for why that conversion matters). Same sample points, same view,
+// same field/viewport; only the tuning the pipeline is evaluated at moved.
+//
+// Note the `scale` column is now ~1.04 at the focus rather than ~1.2: it is
+// a real pixels-per-world-unit ratio at THIS viewport (1280x720), not a
 // dimensionless sprite fudge, so it necessarily scales with `bigVp.h`. The
 // "scales linearly with viewport height" test below is what pins that
 // property independently of these rows.
 // prettier-ignore
 const PERSPECTIVE_REFERENCE: readonly CameraReferenceRow[] = [
-  { wx: 0, wy: 0, sx: 183.0841097101677, sy: 178.26281749359623, scale: 0.9519081047704837 },
-  { wx: 960, wy: 0, sx: 1096.9158902898323, sy: 178.26281749359623, scale: 0.9519081047704837 },
-  { wx: 0, wy: 540, sx: -159.6028080072064, sy: 678.0400693862066, scale: 1.6658391833483466 },
-  { wx: 960, wy: 540, sx: 1439.6028080072062, sy: 678.0400693862066, scale: 1.6658391833483466 },
-  { wx: 480, wy: 270, sx: 640, sy: 360, scale: 1.2115194060715249 },
-  { wx: 123.456, wy: 78.9, sx: 277.9304247166352, sy: 222.77773316466775, scale: 1.0154975971643465 },
-  { wx: -50, wy: 600, sx: -323.1579278268623, sy: 784.0534258482754, scale: 1.8172791091072868 },
+  { wx: 0, wy: 0, sx: 204.6304513009443, sy: 209.20193332363743, scale: 0.9070198931230327 },
+  { wx: 960, wy: 0, sx: 1075.3695486990557, sy: 209.20193332363743, scale: 0.9070198931230327 },
+  { wx: 0, wy: 540, sx: 53.75040737913551, sy: 563.0580811662155, scale: 1.2213533179601344 },
+  { wx: 960, wy: 540, sx: 1226.2495926208644, sy: 563.0580811662155, scale: 1.2213533179601344 },
+  { wx: 480, wy: 270, sx: 640, sy: 359.99999999999994, scale: 1.0409750979320844 },
+  { wx: 123.456, wy: 78.9, sx: 303.97152981109514, sy: 249.09814087438846, scale: 0.9424600335131283 },
+  { wx: -50, wy: 600, sx: -33.241255607358084, sy: 618.1213862103896, scale: 1.2702665200138832 },
 ];
 
 describe("camera.project differential against the real Lua game.render.camera", () => {

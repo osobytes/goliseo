@@ -13,7 +13,12 @@ use indexmap::IndexMap;
 /// moving one of the public constants below — `sim::outfield_ai_policy`
 /// hashes it, so this is where a deliberate policy change to the file-local
 /// intercept sampling constants is recorded.
-pub const VERSION: i64 = 1;
+///
+/// 2: [`pass_intercept`] learned deflection risk (a body in blocking
+/// position cuts a lane even where the ball is too fast to collect —
+/// mirroring `sim::r#match`'s block rule), a behaviour change to the AI's
+/// lane model with no public constant of its own to move.
+pub const VERSION: i64 = 2;
 
 /// Playable pitch dimensions, as used by [`support_spot`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,6 +218,29 @@ pub struct Threat {
     pub pos: Vec2,
     /// The threat's chase speed, px/s.
     pub speed: f64,
+    /// Contact radius within which this body deflects a fast, low ball —
+    /// the block rule's own `radius + BALL_RADIUS + species::block_reach`,
+    /// per threat because radius and verb are per player. Distinct from
+    /// [`pass_intercept`]'s `reach` parameter, which is the CLEAN-collection
+    /// radius a slow ball is stolen inside.
+    pub block_contact: f64,
+}
+
+/// How [`pass_intercept`] says a lane is cut.
+///
+/// Both variants mean "do not trust this lane": every current caller treats
+/// them identically (see [`pass_intercept`]'s doc for why), and the kind is
+/// reported because the branch already knows it — it costs nothing and lets
+/// a test pin *which* rule fires where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneCut {
+    /// The ball is slow enough (below the collection cap, or dead) for a
+    /// threat to take clean possession.
+    Collect,
+    /// The ball is too fast to collect, but a body reaches blocking
+    /// position in time and ricochets it loose (`sim::r#match`'s block
+    /// rule).
+    Deflect,
 }
 
 /// Interception model for a driven ground pass. Friction sheds a fraction of
@@ -221,21 +249,55 @@ pub struct Threat {
 /// `launch - friction * d`, and it took
 /// `ln(launch / (launch - friction * d)) / friction` seconds to get there. An
 /// opponent cuts the pass out if it can reach some point of the flight before
-/// the ball does — but only where the ball has slowed below the collection
-/// cap (a faster ball rolls straight past everyone), and only after a fixed
-/// reaction delay (a chaser must read the pass and turn before it runs flat
-/// out).
+/// the ball does, in one of two ways, mirroring the two rules the match
+/// actually resolves:
+///
+/// * **Collection** ([`LaneCut::Collect`]): where the ball has slowed below
+///   the collection cap, a threat within collection `reach` takes clean
+///   possession.
+/// * **Deflection** ([`LaneCut::Deflect`]): at or above the cap the ball
+///   rolls past clean feet — but `sim::r#match`'s body-block rule ricochets
+///   a fast, low ball off any outfield body it runs into, once `block_grace`
+///   seconds have elapsed since release. A lane point a threat can occupy
+///   (within its own `block_contact`) before the ball arrives is therefore a
+///   risk at ANY speed. The remaining block-rule conditions hold
+///   structurally rather than needing terms here: this models a driven
+///   GROUND pass (`ball_z` = 0, always under block height — its one
+///   production caller, `pass_risk`, never sees a loft), the threat arrives
+///   facing an incoming ball (the rule's toward-the-body test), threats are
+///   opposing outfielders so the keeper and designated-receiver exclusions
+///   never apply, and the block-grace window is the explicit `block_grace`
+///   term. The same `INTERCEPT_REACT` read-and-turn delay is charged as for
+///   collection: the model asks "can this defender be there in time", the
+///   same question either way.
+///
+/// Both cuts are reported as "lane is cut", undifferentiated in severity: a
+/// deflection scatters the ball loose rather than conceding possession
+/// outright, but every caller consumes this as a boolean lane-safety verdict
+/// plus a lob-over point, and a numeric discount for the milder outcome
+/// would be an unregistered, unmeasured weight — decoration by another name.
+/// The [`LaneCut`] kind is returned so the distinction stays observable
+/// (and testable) without pretending to price it.
 ///
 /// Earliest point of a friction-decayed ground pass that some threat reaches
 /// before the ball. Returns its lane fraction (0..1) — a ready-made
-/// lob-over point — or `None` when the pass outruns every threat.
-/// Closed-form and sampled on a fixed grid: deterministic.
+/// lob-over point — with how it is cut, or `None` when the pass outruns
+/// every threat. Closed-form and sampled on a fixed grid: deterministic.
 ///
 /// `launch_speed` is px/s at release, `friction` is the fraction of ball
 /// speed shed per second, `reach` is the radius within which a threat
-/// collects the ball, and `max_collect_speed` is the speed at/above which a
-/// ball can't be collected.
+/// collects the ball, `max_collect_speed` is the speed at/above which a
+/// ball can't be collected (only deflected), and `block_grace` is the
+/// seconds after release during which the block rule holds fire.
+///
+/// The ln-ratio domain audit (#517, `gc_core::deterministic_math`'s
+/// `LN_MAX_RATIO`) still holds with the deflection term: the new branch
+/// computes the same `launch_speed / v` ratio at `v >= max_collect_speed`,
+/// which is strictly SMALLER than the collection branch's worst case at the
+/// same launch speed (`v` there decays toward 1), so it adds no new domain
+/// edge.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn pass_intercept(
     from: Vec2,
     to: Vec2,
@@ -244,7 +306,8 @@ pub fn pass_intercept(
     threats: &[Threat],
     reach: f64,
     max_collect_speed: f64,
-) -> Option<f64> {
+    block_grace: f64,
+) -> Option<(f64, LaneCut)> {
     let total = from.dist(to);
     if total < 1.0 || threats.is_empty() {
         return None;
@@ -257,15 +320,26 @@ pub fn pass_intercept(
         let v = launch_speed - friction * d;
         if v <= 1.0 {
             // The ball dies on the lane: anyone can walk onto it.
-            return Some(f);
+            return Some((f, LaneCut::Collect));
         }
+        let t_ball = deterministic_math::ln_ratio(launch_speed / v) / friction;
+        let point = from.add(dir.scale(d));
         if v < max_collect_speed {
-            let t_ball = deterministic_math::ln_ratio(launch_speed / v) / friction;
-            let point = from.add(dir.scale(d));
             for th in threats {
                 let t_threat = INTERCEPT_REACT + (point.dist(th.pos) - reach).max(0.0) / th.speed;
                 if t_threat <= t_ball {
-                    return Some(f);
+                    return Some((f, LaneCut::Collect));
+                }
+            }
+        } else if t_ball >= block_grace {
+            // Too fast to collect, but not to block: the match deflects a
+            // fast, low ball off any body it runs into once the release
+            // grace has elapsed.
+            for th in threats {
+                let t_threat =
+                    INTERCEPT_REACT + (point.dist(th.pos) - th.block_contact).max(0.0) / th.speed;
+                if t_threat <= t_ball {
+                    return Some((f, LaneCut::Deflect));
                 }
             }
         }
