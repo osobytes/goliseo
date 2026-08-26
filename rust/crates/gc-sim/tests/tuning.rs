@@ -41,12 +41,12 @@ fn tuning_serializes_only_non_default_knobs_and_round_trips() {
     let mut tuning = Tuning::new();
     assert_eq!(tuning.serialize(), "");
     tuning.set("AI_STEAL_CD", 2.0);
-    tuning.set("PUNT_MAX", 700.0);
+    tuning.set("PUNT_MAX", 1500.0);
     let blob = tuning.serialize();
     tuning.reset(None);
     tuning.deserialize(&blob);
     assert_eq!(tuning.value("AI_STEAL_CD"), 2.0);
-    assert_eq!(tuning.value("PUNT_MAX"), 700.0);
+    assert_eq!(tuning.value("PUNT_MAX"), 1500.0);
     assert!(
         tuning.is_default("MOVE_ACCEL"),
         "untouched knobs stay default"

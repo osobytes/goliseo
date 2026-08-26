@@ -172,6 +172,9 @@ export interface AiDrivenEvidence {
   readonly sequence_digest: string;
   readonly score_home: number;
   readonly score_away: number;
+  /** Shot events across the run — the played-scenario canary asserts on
+   * this rather than goals (a well-played 0-0 still exercises shooting). */
+  readonly shots: number;
 }
 
 /**

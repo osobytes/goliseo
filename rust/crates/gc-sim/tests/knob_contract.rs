@@ -1340,17 +1340,20 @@ fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established(
 /// floor buys now is a slower ball spending longer in the lane where a
 /// defender can cut it. Measured, same harness, down-perturbation:
 ///
-/// | n   | delta   | threshold | verdict          |
-/// | --- | ------- | --------- | ---------------- |
-/// | 96  | -0.0341 | 0.0365    | short of the bar |
-/// | 192 | -0.0328 | 0.0254    | WIRED (1.29x)    |
+/// | n   | delta   | threshold | verdict          | base            |
+/// | --- | ------- | --------- | ---------------- | --------------- |
+/// | 96  | -0.0341 | 0.0365    | short of the bar | pre-#629        |
+/// | 192 | -0.0328 | 0.0254    | WIRED (1.29x)    | pre-#629        |
+/// | 192 | -0.0191 | 0.0205    | short (0.93x)    | #629 juke base  |
+/// | 384 | -0.0220 | 0.0144    | WIRED (1.53x)    | #629 juke base  |
 ///
-/// The delta is stable across n while the bar tightens — underpowered at
-/// 96, real at 192 — and it points DOWN: lowering the floor now costs
-/// completion.
+/// The delta points DOWN on both bases; #629's juke fix (carriers keep the
+/// ball, fewer loose runouts) dilutes the floor's share of completion, so
+/// the committed n moved 192 -> 384 on the #537 more-seeds-never-lower-bar
+/// rule — and at 384 the margin is more comfortable than 192 ever was.
 #[test]
 fn a_lower_pass_speed_floor_now_costs_completion_the_ball_hangs_in_the_lane() {
-    let seeds = seeds(192);
+    let seeds = seeds(384);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "PASS_SPEED_MIN",
         metric: "pass_completion",

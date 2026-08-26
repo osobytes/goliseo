@@ -1081,138 +1081,107 @@ it is re-frozen, and the re-freeze itself is `record_outfield_ai_baseline`,
 under [Commands](#commands) above. The dated entries below are left exactly
 as they were recorded, including where they cite the deleted commands.
 
-- **2026-08-26 — the pass-reception rework: the release cooldown stops
-  blocking the designated receiver, receivers run onto the stored reception
-  point, and the lead solver gains a physical-reach margin (owner-approved,
-  deliberate).** `baseline_version` **19 → 20**, signature
-  `b8bf51b45b96ce84` → `63be204cb653de5e`; `identity.policy_id` unchanged
-  (`outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf` — the rework
-  lives in `r#match`, `pass_lead`, `locomotion` and the ball modules, none
-  of the five declared policy-surface modules); `identity.config`/
-  `config_hash` unchanged; `identity.content_hash` unchanged;
-  `identity.tuning_hash` unchanged — **no registered knob default moved**:
-  every change is code and named constants, which is the point (the defect
-  was never a knob value); `identity.snapshot_version` **14 → 15**
-  (`MatchPlayer::receive_target` and `MatchState::stick_latch`, both
-  ordinary rollback-surviving state); `identity.fixture_hash`
-  `dd491c7603454855` → `e63adc3d3c2fd32f` (downstream of the schema);
-  `identity.seed_hash` and `identity.input_version` unchanged. Re-frozen via
-  `record_outfield_ai_baseline`, per that module's own protocol.
+- **2026-08-26 — the pass-reception rework, plus the futsal-leftover
+  distance rescale it audited on the way (owner-approved, deliberate; one
+  re-freeze, rebased over #629's juke fix).** `baseline_version` **20 →
+  21**, signature `a948bb94f8049dce` → `8e38d3ba8037a5d0`;
+  `identity.policy_id` unchanged
+  (`outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf` — neither
+  change touches a policy-surface module); `identity.config`/`config_hash`
+  and `identity.content_hash` unchanged; `identity.tuning_hash`
+  `1aa75187553ed1a8` → `2a3953ab0be5fc45` (**`PUNT_MAX` 1100 → 1880** is
+  the only registered default that moved — the old value was, to within
+  0.15%, the OLD pitch diagonal, and its whole range k-scales with it
+  1160/2640; the sibling consts `PUNT_MIN` 240 → 412, `DROPKICK_DIST`
+  420 → 721 and bot `LONG_OUTLET_DIST` 240 → 412 move in the same commit
+  set; measured on the pre-rebase base, the punt family alone moved ZERO
+  tracked metrics — punts ride the human/bot input path);
+  `identity.snapshot_version` **14 → 15** (`MatchPlayer::receive_target`,
+  `MatchState::stick_latch`); `identity.fixture_hash` `dd491c7603454855` →
+  `c83e833807525fd0`; `identity.seed_hash`/`input_version` unchanged.
+  Re-frozen via `record_outfield_ai_baseline`.
 
   **The cause.** The 24-seed placement probe
   (`gc-sim/tests/pass_placement_probe.rs`, committed with this change)
   found the lead solver's aim essentially correct — the ball entered the
-  intended receiver's 22 px possession radius on 81.6% of ground passes,
-  flight-time predictions within ~50 ms — yet only 34.5% of passes reached
-  the intended receiver within 2 s, and 31.5% ended at an opponent a median
-  287 px PAST the aim, 1.5 s after release: the pass failed at the meeting
-  point and the runout carried it away. Four mechanisms, landed together:
-
-  1. **The release cooldown is scoped to everyone EXCEPT the designated
-     receiver** (`r#match`'s collection gate). `RELEASE_CD` (0.3 s) gated
-     every collection, receiver included, while ~42% of led flights arrive
-     inside 0.3 s — the solved meeting point was legally uncollectable, the
-     ball blew through at ~500 px/s and rolled 150–470 px on. 50 of 51
-     uncollected near-misses had their closest approach inside the lockout.
-     A receiver mark now also ends on any first possession, so the
-     exemption cannot leak past the pass it belongs to.
-  2. **The reception point is stored and steered onto.** The solver's point
-     used to aim only the ball and was then discarded; the receiver chased
-     the ball's live position (at release: the passer's feet — backwards,
-     for a lead). `MatchPlayer::receive_target` now carries the point, and
-     both AI receive steering and human receive assist run onto it first,
-     then take the live ball for the final meet. For a human passer whose
-     control follows the pass, `MatchState::stick_latch` reads the
-     still-held aim as neutral until released or clearly redirected, so aim
-     residue no longer sprints the receiver off the lane.
-  3. **The solver refuses aims the ball cannot roll to** (`REACH_MARGIN`,
-     95% of `speed / FRICTION`), its release predictor's horizon grows to
-     3.0 s so margin-admissible long leads stop dying as silent prediction
-     misses, and `locomotion::time_to_reach` no longer reports arrivals up
-     to one tick past its budget (12.8% of led releases had leaked). The
-     old reach-invariant arithmetic in `tunables.rs`/`tests/passing.rs` used
-     280 px/s where a sprinting receiver's `run_vel` reaches 378; the led
-     case is now structural, the unled case stays a knob relationship.
-  4. **A dink over a lane-presser keeps the solved lead** instead of
-     lobbing at the receiver's stale pre-release position.
-
-  Probe, before → after (24 seeds, 120 s, defaults): led passes collected
-  by the intended receiver within 2 s **32.3% → 75.9%**, ever 62.5% →
-  81.2%; opponent interceptions **31.1% → 18.0%**; overshoot past the aim
-  p90 **466 → 126 px** (p50 154 → 0); unresolved balls 0.4% → 0.0%. Ball
-  speeds are untouched — the ball stays fast; it just gets received.
-  Committed floors in the probe pin ≥60% / ≤28% / ≤250 px against
-  regression, and the new `pass_meet_runout` headless metric (mean px
-  between a ground pass's aim and where it resolves) measures the runout
-  directly. Two committed knob contracts moved with the mechanics, both
-  re-measured rather than re-thresholded:
-  `a_lower_pass_speed_floor_raises_completion_once_dilution_drops` is now
+  intended receiver's 22 px possession radius on 81.6% of ground passes —
+  yet only 34.5% of passes reached the intended receiver within 2 s, and
+  31.5% ended at an opponent a median 287 px PAST the aim: the pass failed
+  at the meeting point and the runout carried it away. Four mechanisms:
+  (1) the release cooldown (`RELEASE_CD` 0.3 s) no longer blocks the
+  designated receiver — it gated every collection while ~42% of led
+  flights arrive inside 0.3 s, so the solved meeting point was legally
+  uncollectable; collection now also clears every receiver mark. (2) The
+  reception point is stored (`MatchPlayer::receive_target`) and steered
+  onto by AI receive steering and human receive assist alike, instead of
+  tail-chasing the ball's live position (at release: the passer's feet,
+  backwards for a led pass); `MatchState::stick_latch` reads a passer's
+  still-held aim as neutral after the control-follow switch until released
+  or clearly redirected. (3) The solver refuses aims past `REACH_MARGIN`
+  (95%) of the launch's roll-out, its release predictor's horizon grows to
+  3.0 s, and `locomotion::time_to_reach` no longer reports arrivals a tick
+  past its budget. (4) A dink over a lane-presser keeps the solved lead.
+  Probe on this base, defect → fixed: led intended-receiver completion
+  within 2 s **32.3% → 73.5%**, opponent interceptions **31.1% → 17.7%**,
+  overshoot past the aim p90 **466 → 158 px**, unresolved 0.6%. Ball
+  speeds untouched. Two committed knob contracts moved with the mechanics
+  and were re-measured, never re-thresholded (see
   `a_lower_pass_speed_floor_now_costs_completion_the_ball_hangs_in_the_lane`
-  (direction genuinely inverted: WIRED at n=192, delta −0.0328 on 0.0254 —
-  a slower floor no longer rescues an untrappable ball, it just leaves the
-  lane cuttable longer), and
-  `a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer`
-  is retired to the structural
-  `a_tighter_receiver_ceiling_excludes_receivers_but_the_completion_pairing_is_retired`
-  (delta fades 0.94× → 0.96× of threshold as n doubles 288 → 576: a real
-  effect dissolving because forced-shorter passes now complete). Older
-  entries below referring to those tests by their previous names describe
-  the pre-rework contracts.
+  — direction genuinely inverted, WIRED 1.53x at n=384 on this base — and
+  `a_tighter_receiver_ceiling_excludes_receivers_but_the_completion_pairing_is_retired`);
+  older entries below refer to those tests by their pre-rework names.
 
   **What moved, and why.** All numbers, 60 seeds (`20001..20060`), the
-  frozen fixture:
+  frozen fixture, measured against #629's v20:
 
-  | metric | frozen (v19) | re-frozen (v20) | delta |
+  | metric | frozen (v20) | re-frozen (v21) | delta |
   | --- | --- | --- | --- |
-  | `fun` | 0.267774 | 0.409468 | +0.141694 |
-  | `goals_total` | 2.633333 | 3.066667 | +0.433333 |
-  | `goals_home` | 1.300000 | 1.666667 | +0.366667 |
-  | `goals_away` | 1.333333 | 1.400000 | +0.066667 |
-  | `shots` | 25.616667 | 24.916667 | −0.700000 |
-  | `shots_per_goal` | 12.126316 | 11.138889 | −0.987427 |
-  | `save_rate` | 0.778390 | 0.801852 | +0.023462 |
-  | `passes` | 25.650000 | 26.566667 | +0.916667 |
-  | `pass_completion` | 0.532042 | 0.531958 | −0.000083 |
-  | `turnovers_per_min` | 8.480897 | 7.459766 | −1.021131 |
-  | `possession_balance` | 0.513253 | 0.548826 | +0.035574 |
-  | `longest_drought_s` | 14.058333 | 14.695278 | +0.636944 |
-  | `decided_late` | 0.682557 | 0.757383 | +0.074827 |
-  | `lead_changes` | 0.133333 | 0.233333 | +0.100000 |
-  | `margin` | 1.366667 | 1.166667 | −0.200000 |
-  | `duration` | 105.746667 | 105.663611 | −0.083056 |
-  | `ai_dribble_carry_s` | 23.413333 | 22.768611 | −0.644722 |
-  | `ai_dribble_close_share` | 0.828519 | 0.797879 | −0.030640 |
-  | `ai_dribble_sprint_share` | 0.329530 | 0.272951 | −0.056579 |
-  | `ai_dribble_juke_share` | 0.037168 | 0.056726 | +0.019557 |
-  | `ai_dribble_touches_per_min` | 76.443611 | 93.422972 | +16.979361 |
-  | `ai_dribble_heavy_losses_per_min` | 0.546803 | 0.269866 | −0.276937 |
-  | `ai_jukes` | 15.850000 | 20.033333 | +4.183333 |
+  | `fun` | 0.286302 | 0.139099 | −0.147204 |
+  | `goals_total` | 2.933333 | 3.766667 | +0.833333 |
+  | `goals_home` | 1.350000 | 2.066667 | +0.716667 |
+  | `goals_away` | 1.583333 | 1.700000 | +0.116667 |
+  | `shots` | 28.333333 | 26.350000 | −1.983333 |
+  | `shots_per_goal` | 12.312147 | 8.002011 | −4.310135 |
+  | `save_rate` | 0.717255 | 0.664716 | −0.052540 |
+  | `passes` | 34.750000 | 30.366667 | −4.383333 |
+  | `pass_completion` | 0.620753 | 0.618074 | −0.002679 |
+  | `turnovers_per_min` | 9.656915 | 10.863187 | +1.206273 |
+  | `possession_balance` | 0.511814 | 0.556278 | +0.044464 |
+  | `longest_drought_s` | 13.470278 | 11.125556 | −2.344722 |
+  | `decided_late` | 0.712779 | 0.804376 | +0.091597 |
+  | `lead_changes` | 0.266667 | 0.366667 | +0.100000 |
+  | `margin` | 1.266667 | 1.300000 | +0.033333 |
+  | `duration` | 108.668611 | 92.992222 | −15.676389 |
+  | `ai_dribble_carry_s` | 33.787500 | 29.863056 | −3.924444 |
+  | `ai_dribble_close_share` | 0.810562 | 0.803450 | −0.007111 |
+  | `ai_dribble_sprint_share` | 0.258792 | 0.236219 | −0.022573 |
+  | `ai_dribble_juke_share` | 0.083963 | 0.091610 | +0.007647 |
+  | `ai_dribble_touches_per_min` | 33.877144 | 32.059560 | −1.817583 |
+  | `ai_dribble_heavy_losses_per_min` | 0.171240 | 0.166774 | −0.004467 |
+  | `ai_jukes` | 18.366667 | 17.250000 | −1.116667 |
 
-  The signature of the shift is coherent with the mechanism rather than
-  merely co-occurring with it: `turnovers_per_min` falls a full point (8.48
-  → 7.46) and `possession_balance` firms up (+0.036) because a completed
-  reception is a possession that continues instead of a runout that flips;
-  `ai_dribble_touches_per_min` jumps 76 → 93 with heavy losses HALVED
-  (0.547 → 0.270) because carriers now start their dribbles from a clean
-  first touch at the meeting point rather than a full-speed chase of a
-  rolling ball. The flattest row is the most diagnostic:
-  whole-match `pass_completion` is unchanged to the fourth decimal while
-  the probe's intended-receiver completion doubled — the census's own
-  "leading changes WHERE the ball meets the receiver, not usually WHETHER"
-  (`knob_contract.rs`), measured. `fun` rises 0.268 → 0.409 with `sd` and
-  `max` moving too; as the two entries below caution, the composite's
-  per-match geometric mean is more sensitive to individual matches clearing
-  band edges than any mean-level table shows, so the +0.14 is reported as a
-  measured outcome, not a mechanism proven by this table alone.
-  `longest_drought_s` ticking up (+0.64 s) alongside more goals is worth a
-  hands-on look in play-testing — sustained possession lengthens the gaps
-  between scoring bursts.
+  **The finding this table carries — flagged for balance, not buried.**
+  On the PRE-juke base this same rework RAISED `fun` 0.268 → 0.409. On
+  #629's base it lowers it 0.286 → 0.139, and the mechanism is legible in
+  the rows: the juke fix made carriers durable, this rework makes passes
+  reliable, and the two together double-buff attack with no defensive
+  counterweight in this window — goals jump +28% (3.77/match), matches hit
+  the 3-goal cap ~16 s sooner (`duration` −15.7 s), `shots_per_goal`
+  drops 12.3 → 8.0, `save_rate` slides to 0.665. The composite punishes
+  the early-capped, faster-deciding matches. The reworks are each doing
+  exactly what they promise (`pass_completion` flat while
+  intended-receiver completion doubles — "leading changes WHERE, not
+  WHETHER", measured; heavy dribble losses stay at #629's floor); what the
+  pitch now needs is the defensive half of the ledger, and the in-flight
+  keeper interception work (#628) is the natural counterweight to
+  re-measure against.
 
   This entry covers only the frozen combat-disabled Outfield AI baseline.
   Any other frozen artifact this same change invalidates is re-recorded,
   and its own before/after numbers logged, at that artifact's own site —
   per this document's convention of not duplicating another artifact's
   frozen numbers here.
+
 - **2026-08-26 — a juke keeps the ball instead of striking it away (#629,
   bug fix, deliberate).** `baseline_version` **19 → 20**, signature
   `b8bf51b45b96ce84` → `a948bb94f8049dce`. **Every identity field is

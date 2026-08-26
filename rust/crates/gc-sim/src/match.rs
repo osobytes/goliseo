@@ -207,7 +207,11 @@ const PARRY_SPEED_MULT: f64 = 0.6;
 const MIN_PARRY_CLEAR: f64 = 260.0;
 const PARRY_POP_VZ: f64 = 240.0;
 const KEEPER_HOLD: f64 = 0.9;
-const PUNT_MIN: f64 = 240.0;
+// 2026-08-26: 240 -> 412, the futsal rescale (k = 1.7167) this constant was
+// missed by — an uncharged punt is an on-pitch distance and shrank to 58%
+// of its designed share of the pitch when everything around it grew. 412 px
+// is exactly k x 240, a 10.0 m tap at the declared 41.1 px/m.
+const PUNT_MIN: f64 = 412.0;
 const PUNT_CLEAR_H: f64 = 60.0;
 const KEEPER_DIVE_DURATION: f64 = 0.32;
 const KEEPER_HANDS: f64 = 30.0;
@@ -215,7 +219,11 @@ const SAVE_TIMEOUT_PAD: f64 = 0.25;
 const DEAD_SHOT_SPEED: f64 = 30.0;
 const KEEPER_SAFE_DIST: f64 = 60.0;
 const THROW_MIN_OPEN: f64 = 30.0;
-const DROPKICK_DIST: f64 = 420.0;
+// 2026-08-26: 420 -> 721 (k = 1.7167), missed by the futsal rescale like
+// PUNT_MIN above. 420/960 was 44% of the old pitch length; 721/1648 keeps
+// that proportion (a 17.5 m clearance), and this one DOES reach AI play:
+// `commit_keeper_pass_intent`'s no-outlet fallback dropkicks through it.
+const DROPKICK_DIST: f64 = 721.0;
 const DROPKICK_CLEAR_H: f64 = 46.0;
 const THROW_CLEAR_H: f64 = 34.0;
 const THROW_LANE_W: f64 = 60.0;

@@ -230,7 +230,9 @@ fn charges_a_deliberate_long_pass() {
     s.ball = s.players[controlled].pos.add(Vec2::new(18.0, 0.0));
     for (i, p) in s.players.iter_mut().enumerate() {
         if p.team == Team::Home && i != controlled && !p.is_keeper {
-            p.pos = Vec2::new(520.0, 100.0 + i as f64 * 40.0);
+            // Past LONG_OUTLET_DIST (412 since the futsal-leftover rescale;
+            // was 240), so the outlet still reads as a deliberate long ball.
+            p.pos = Vec2::new(650.0, 100.0 + i as f64 * 40.0);
         } else if p.team == Team::Away && !p.is_keeper {
             p.pos = Vec2::new(230.0, 270.0);
         }

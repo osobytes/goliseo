@@ -1501,10 +1501,19 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Max punt range",
         cat: "Keeper",
-        default: 1100.0,
+        // 2026-08-26: 1100 -> 1880, the futsal rescale (k = 1.7167) this
+        // knob was missed by. The old default was, to within 0.15%, the OLD
+        // pitch diagonal (hypot(960, 540) = 1101.45): a fully charged punt
+        // was designed to reach anywhere. On the 1648x927 pitch that value
+        // covered only 58% of the 1891.3 px diagonal. k x 1100 = 1888.3;
+        // 1880 is the nearest step below it, still 99.4% of the diagonal
+        // (45.7 m at 41.1 px/m — a full-court keeper launch, the same
+        // intent at the new scale). Range k-scaled with it (680/1540 ->
+        // 1160/2640) — the old ceiling sat BELOW the corrected default.
+        default: 1880.0,
         unit: "px",
-        min: 680.0,
-        max: 1540.0,
+        min: 1160.0,
+        max: 2640.0,
         step: 20.0,
         desc: "Range of a fully charged keeper punt.",
     },
