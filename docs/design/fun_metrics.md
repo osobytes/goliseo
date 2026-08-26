@@ -967,8 +967,13 @@ The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
 - **2026-08-25 — the grounded first-touch shot lands as a core verb (#623,
-  owner-directed, deliberate).** `baseline_version` **19 → 20**, signature
-  `b8bf51b45b96ce84` → `82cb3b3319de78b4`; `identity.policy_id`
+  owner-directed, deliberate).** `baseline_version` **19 → 21**, signature
+  `b8bf51b45b96ce84` → `700d652704a1624b` (v20, `82cb3b3319de78b4`, existed
+  only inside #623's own PR: the verb landed as v20, and the play-test
+  arrival-arbitration follow-up re-froze as v21 before merge — the grounded
+  swing no longer gates on the aerial verb's `header_cd`, and a designated
+  receiver holding the strike no longer jockey-shuffles toward its own
+  pass); `identity.policy_id`
   `outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf` →
   `.../0e9a3e0c722f489e` — moved because the collection seam itself changed
   (a designated receiver can now resolve an instant strike where possession
@@ -983,8 +988,10 @@ The ritual still stands: a sim change that moves the fun signature owes a
   `keeper_shadow_classifier` re-pin (20654 → 20562 candidates) and the
   `session_ai_driven` / `ai_driven_evidence` re-records
   (final digest `3291aa8895b160f4` → `bd9b5907b602b658`, sequence
-  `3688b7ab51128e90` → `86dcead0c338c6ce`). The OMP-1 determinism digest did
-  NOT move — its pinned scenario never places a designated receiver in the
+  `3688b7ab51128e90` → `86dcead0c338c6ce`; both survived the v21 follow-up
+  untouched — the arbitration fixes bind only in contested-arrival
+  situations the 7200-tick fixture never reaches). The OMP-1 determinism
+  digest did NOT move — its pinned scenario never places a designated receiver in the
   new branch — so the quad-pinned wasm digest stands.
 
   **The cause.** Where collection would hand a `receive_timer` receiver

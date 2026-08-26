@@ -4172,8 +4172,14 @@ fn move_human_player(
         // Jockey stance (Space held off the ball): shadow the carrier at
         // reduced speed, facing locked toward the ball. Mutually exclusive
         // with sprint (jockey wins). Grants bonus poke reach on release.
-        let jockeying =
-            input.jockey && Some(idx) != s.owner && p.stun_timer <= 0.0 && !aerial_active;
+        // A designated receiver of a live pass is exempt: off-ball ACTION
+        // is also the first-touch wind-up (#623), and the half-speed shadow
+        // shuffle would drag them away from meeting their own pass.
+        let jockeying = input.jockey
+            && Some(idx) != s.owner
+            && p.stun_timer <= 0.0
+            && !aerial_active
+            && !(p.receive_timer > 0.0 && s.owner.is_none());
         if jockeying {
             p.jockey_timer = JOCKEY_HOLD;
         }

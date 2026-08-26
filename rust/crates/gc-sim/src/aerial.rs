@@ -1060,9 +1060,15 @@ pub fn resolve_first_touch_shot(
 ) -> bool {
     {
         let player = &s.players[idx];
+        // `header_cd` is deliberately NOT a gate here, unlike
+        // `choose_candidate`'s aerial eligibility: a pass that is dinked to
+        // a receiver's feet often draws one airborne swing on the way down,
+        // and that attempt's 0.5 s cooldown must not turn the ball landing
+        // a beat later into a forced plain trap -- the grounded swing is
+        // its own instant action, paced by `aerial_recovery` (the animation
+        // actually in progress) rather than by the aerial verb's cooldown.
         if player.is_keeper
             || player.receive_timer <= 0.0
-            || player.header_cd > 0.0
             || player.aerial_recovery > 0.0
             || player.stun_timer > 0.0
             || player.slide_timer > 0.0

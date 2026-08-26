@@ -76,9 +76,14 @@ fn stage_arrival(s: &mut MatchState, receiver: i64, receiver_pos: Vec2, ball_spe
     s.ball_spin = 0.0;
 }
 
+/// The exact shape `slot_input::to_match_input` produces while the ACTION
+/// button is held off the ball: jockey AND aerial_strike together, plus the
+/// held aim. Tests use this rather than a bare `aerial_strike` so the cases
+/// exercise the wiring a real space-bar hold goes through.
 fn strike_input(aim: Vec2) -> MatchInput {
     MatchInput {
         r#move: aim,
+        jockey: true,
         aerial_strike: Some(true),
         aerial_acrobatic: Some(false),
         ..MatchInput::default()
@@ -238,6 +243,44 @@ fn range_zero_turns_the_ai_verb_off() {
     );
     assert_eq!(first_touch_event(&s), None);
     assert_eq!(s.owner, Some(receiver));
+}
+
+#[test]
+fn an_aerial_whiff_moments_earlier_does_not_lock_out_the_grounded_swing() {
+    // The play-test failure shape (#623 follow-up): a dinked pass draws one
+    // airborne swing on the way down; its 0.5 s `header_cd` must not turn
+    // the ball landing a beat later into a forced plain trap. Recovery
+    // (the animation actually in progress) still gates, so the fixture
+    // models the moment recovery has just ended with the cooldown live.
+    let aim = Vec2::new(0.0, -1.0);
+    for seed in 0..40 {
+        let mut s = new_match_seeded(seed as f64, None);
+        let receiver = home_outfielder(&s);
+        stage_arrival(&mut s, receiver, RECEIVER_POS, 250.0);
+        {
+            let rp = &mut s.players[(receiver - 1) as usize];
+            rp.volley_skill = 1.0;
+            rp.header_cd = 0.4; // an aerial attempt 0.1 s ago
+            rp.aerial_recovery = 0.0; // ... whose recovery has finished
+        }
+        sim_match::set_controlled_player(&mut s, receiver);
+        sim_match::step(
+            &mut s,
+            DT,
+            StepInput::Legacy(strike_input(aim)),
+            None,
+            &Tuning::new(),
+        );
+        if let Some(event) = first_touch_event(&s) {
+            assert_eq!(s.owner, None);
+            if event.outcome == Some(AerialOutcome::Clean) {
+                return;
+            }
+        } else {
+            panic!("a live header_cd must not force the receiver into a plain trap");
+        }
+    }
+    panic!("no seed in 0..40 produced a Clean first touch at volley skill 1.0");
 }
 
 #[test]
