@@ -51,6 +51,9 @@
 //! `crate::match_driver` reuses these same types rather than redeclaring
 //! them, since it decorates the identical interface one layer up.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gc_data::network_profiles::{self, NetworkProfileName};
 use gc_sim::input_frame;
 use gc_sim::network_conditions::{self, NetworkConditionDiagnostics, NetworkConditions};
@@ -906,6 +909,110 @@ impl StarTransportAdapter for FaultTransport {
 
     fn diagnostics(&self) -> TransportStarDiagnostics {
         self.transport.diagnostics()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `SharedFaultTransport`: one impairment state, two holders.
+// ---------------------------------------------------------------------------
+
+/// A cheap `Clone` handle onto one endpoint's [`FaultTransport`],
+/// substitutable for the endpoint that transport wraps.
+///
+/// [`FaultTransport::tick`] is the impairment clock and is *not* part of
+/// [`StarTransportAdapter`], so whoever owns the driving loop must keep a
+/// handle on the transport itself — while `match_driver::new` takes the
+/// endpoint by `Box<dyn StarTransportAdapter>` and owns it outright.
+/// Delegating through a shared cell is what reconciles those two: the loop
+/// keeps one handle for `tick`/`hold`/`counters`/resource sampling, the
+/// driver holds another, and both observe the identical impairment state.
+///
+/// Used by [`crate::fault_harness::FaultHarness`] for exactly that, and by
+/// `gc-netcode`'s own driver-level tests when they need a driver to run over
+/// an authored [`gc_data::network_profiles`] profile rather than over an
+/// unimpaired fake star.
+pub struct SharedFaultTransport(Rc<RefCell<FaultTransport>>);
+
+impl SharedFaultTransport {
+    /// A handle onto `transport`.
+    #[must_use]
+    pub fn new(transport: Rc<RefCell<FaultTransport>>) -> Self {
+        SharedFaultTransport(transport)
+    }
+}
+
+impl Clone for SharedFaultTransport {
+    fn clone(&self) -> Self {
+        SharedFaultTransport(self.0.clone())
+    }
+}
+
+impl StarTransportAdapter for SharedFaultTransport {
+    fn initialize(&mut self) -> TransportResult<bool> {
+        self.0.borrow_mut().initialize()
+    }
+    fn shutdown(&mut self) -> TransportResult<bool> {
+        self.0.borrow_mut().shutdown()
+    }
+    fn role(&self) -> TransportRole {
+        self.0.borrow().role()
+    }
+    fn capacity(&self) -> i64 {
+        self.0.borrow().capacity()
+    }
+    fn open_peer(&mut self, peer_id: &str) -> TransportResult<i64> {
+        self.0.borrow_mut().open_peer(peer_id)
+    }
+    fn close_peer(&mut self, peer_id: &str, reason: Option<&str>) -> TransportResult<bool> {
+        self.0.borrow_mut().close_peer(peer_id, reason)
+    }
+    fn peer_ids(&self) -> Vec<String> {
+        self.0.borrow().peer_ids()
+    }
+    fn peer_state(&self, peer_id: &str) -> Option<TransportPeerState> {
+        self.0.borrow().peer_state(peer_id)
+    }
+    fn request_offer(&mut self, peer_id: &str) -> TransportResult<bool> {
+        self.0.borrow_mut().request_offer(peer_id)
+    }
+    fn accept_offer(&mut self, signal: &str) -> TransportResult<bool> {
+        self.0.borrow_mut().accept_offer(signal)
+    }
+    fn accept_answer(&mut self, peer_id: &str, signal: &str) -> TransportResult<bool> {
+        self.0.borrow_mut().accept_answer(peer_id, signal)
+    }
+    fn take_signal(&mut self, peer_id: &str) -> TransportResult<Option<String>> {
+        self.0.borrow_mut().take_signal(peer_id)
+    }
+    fn send(
+        &mut self,
+        peer_id: &str,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<bool> {
+        self.0.borrow_mut().send(peer_id, channel, message)
+    }
+    fn broadcast(
+        &mut self,
+        channel: TransportChannel,
+        message: TransportMessage,
+    ) -> TransportResult<i64> {
+        self.0.borrow_mut().broadcast(channel, message)
+    }
+    fn poll(&mut self) -> Option<TransportPeerMessage> {
+        self.0.borrow_mut().poll()
+    }
+    fn poll_batch(&mut self, limit: Option<i64>) -> Vec<TransportPeerMessage> {
+        self.0.borrow_mut().poll_batch(limit)
+    }
+    fn poll_event(&mut self) -> Option<TransportPeerEvent> {
+        self.0.borrow_mut().poll_event()
+    }
+    fn state(&self) -> TransportState {
+        self.0.borrow().state()
+    }
+    fn diagnostics(&self) -> TransportStarDiagnostics {
+        self.0.borrow().diagnostics()
     }
 }
 
