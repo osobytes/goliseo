@@ -33,7 +33,7 @@
 // context" notes) are exactly the kind of thing this real canvas CAN check.
 
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, cameraFollow, pitch, viewState } from "@gc/render";
+import { SceneRoot, Stadium, cameraFollow, pitch, viewState } from "@gc/render";
 import type { RenderPort } from "@gc/screens";
 import { captureGamepad, captureKeyboard } from "@gc/input";
 import { ok, err, type Result } from "@gc/core";
@@ -135,23 +135,24 @@ async function main(): Promise<void> {
   keyboard.attach();
   const gamepad = new captureGamepad.BrowserGamepadCapture(0);
 
-  // The coliseum stadium + true-perspective broadcast camera (the product
-  // look). Flags first -- `SceneRoot.render` only routes through the world
-  // layer under `camera.perspective_mode`, and `pitch.stadium_mode` hands the
-  // backdrop/floor/markings/goals over to the stadium (see scene.ts /
-  // pitch.ts). The `Stadium` itself needs the field's real geometry (pitch
-  // size, goal rects, crossbar height), which only exists once a match frame
-  // arrives -- built lazily on the first `draw` below and reused for every
-  // match after it (the field is constant across matches).
+  // The coliseum stadium (the product look). Flag first -- `pitch.stadium_mode`
+  // hands the backdrop/floor/markings/goals over to the stadium, which
+  // `SceneRoot` composites underneath the screen-space content as its world
+  // layer (see scene.ts / pitch.ts). The `Stadium` itself needs the field's
+  // real geometry (pitch size, goal rects, crossbar height), which only exists
+  // once a match frame arrives -- built lazily on the first `draw` below and
+  // reused for every match after it (the field is constant across matches).
   //
-  // `pitch.follow_camera` is the third of the set and the one that makes this
-  // a Strikers camera rather than a fixed establishing shot: it points every
+  // `pitch.follow_camera` is the other half, and the one that makes this a
+  // broadcast camera rather than a fixed establishing shot: it points every
   // projection at camera_follow.ts's smoothed, ball-tracking focus instead of
   // the whole-pitch centre. It only does anything now that `@gc/screens`'s
   // `match.ts` actually DRIVES `cameraFollow.update` (see that file's
   // `updateCameraFollow` -- an earlier version had dropped this call site,
   // leaving the module inert and this flag unable to change the picture).
-  camera.perspective_mode = true;
+  //
+  // The projection itself is no longer a choice: `camera.project` IS the
+  // true-perspective rig (`camera.PERSPECTIVE`).
   pitch.stadium_mode = true;
   pitch.follow_camera = true;
   let stadium: Stadium | undefined;
