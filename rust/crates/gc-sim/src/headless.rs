@@ -406,6 +406,8 @@ pub fn run_match_debug(opts: &HeadlessOpts<'_>) -> (MatchResult, MatchState, Hea
         (tally.aimed_releases > 0).then(|| tally.aim_error_sum / tally.aimed_releases as f64);
     m.pass_lead_time =
         (tally.ground_releases > 0).then(|| tally.lead_time_sum / tally.ground_releases as f64);
+    m.pass_meet_runout =
+        (tally.resolved_ground > 0).then(|| tally.meet_runout_sum / tally.resolved_ground as f64);
     let (fun, per) = metrics::fun_score(&m);
     m.fun = Some(fun);
     let winner = if s.score.home > s.score.away {

@@ -1230,7 +1230,14 @@ fn canonical_digest(digest: &str) -> bool {
 /// the hash moved with it. `cce72804f0c6b446` -> `2bfc8e9018cecab2`. This one
 /// IS the kickoff scenario changing, exactly the second trigger this
 /// constant's own doc above names.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "2bfc8e9018cecab2";
+///
+/// Re-recorded again by the pass-reception rework, the same mechanism as
+/// #489/#490 above: `match_snapshot::VERSION` bumps 14 -> 15 for the two new
+/// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields, both
+/// on the boundary-zero kickoff checkpoint like any other tick and both
+/// idle (`Nil`) there — no pass has been thrown at tick zero, so this is a
+/// SCHEMA move, not a behavioural one. `2bfc8e9018cecab2` -> `0de5d3e5ef9d7a8a`.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "0de5d3e5ef9d7a8a";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and

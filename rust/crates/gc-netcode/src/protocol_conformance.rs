@@ -56,6 +56,16 @@ pub struct Golden {
 /// again the evidence that nothing but the manifest moved. Recorded the same
 /// way.
 ///
+/// Repinned a third time by the pass-reception rework, 2026-08-26: identical
+/// mechanism and identical list of what moved as #489/#490 above --
+/// `match_snapshot::COMBAT_VERSION` bumps 15 -> 16 (`MatchPlayer::receive_target`,
+/// `MatchState::stick_latch`), so `manifest_id` and `transcript_id` move, and
+/// the eight manifest-carrying kinds move with them; the seven that carry no
+/// manifest id, and `vocabulary_id`, reproduced unchanged below, confirming
+/// nothing else moved. Recorded the same way: a throwaway probe printing
+/// `protocol::manifest_id`/`transcript_id`/`encode` directly against this
+/// build's `fixture::manifest(None)`/`fixture::messages()`.
+///
 /// `vocabulary_id` repinned by #612, a genuinely different mechanism from
 /// every repin above: this one moves the vocabulary itself, not the
 /// manifest it happens to embed. `Start`'s allowed phases widen from
@@ -69,23 +79,23 @@ pub struct Golden {
 /// directly against this build.
 pub const GOLDEN: Golden = Golden {
     vocabulary_id: "93f9c16ad1674b97",
-    manifest_id: "90b90970080d7978",
-    transcript_id: "1b8407df3614a2cb",
+    manifest_id: "2329a3ebebc76bf9",
+    transcript_id: "30a56d5c43e9d754",
     complete_kind: MessageKind::ManifestAccept,
-    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:90b90970080d7978s4:kinds15:\
+    complete_wire: "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:2329a3ebebc76bf9s4:kinds15:\
 manifest_accepts10:message_ids32:GCMI;1;13:session_alpha4:host1:2s7:peer_ids4:\
 hosts8:sequencei1:2s10:session_ids13:session_alphas7:versioni1:1",
     wire_digests: &[
         (MessageKind::Handshake, "2722abf054051350"),
-        (MessageKind::ManifestProposal, "2a10a74246a5726e"),
-        (MessageKind::ManifestAccept, "d0907dd1786309f5"),
+        (MessageKind::ManifestProposal, "4494e3a557e1b9d5"),
+        (MessageKind::ManifestAccept, "6c33b73a29c3ef6b"),
         (MessageKind::PeerAssignment, "fa48b31571dfe543"),
-        (MessageKind::SlotAssignment, "1f7ffb57d280ab31"),
-        (MessageKind::Ready, "afc5d647cce1a54a"),
-        (MessageKind::PairPreference, "1c6b6fe00fe76e34"),
-        (MessageKind::PairPreferenceResult, "630f49fb19190887"),
-        (MessageKind::Countdown, "97c7990799ceab51"),
-        (MessageKind::Start, "5d499e95a75c125a"),
+        (MessageKind::SlotAssignment, "953b5d90953801d3"),
+        (MessageKind::Ready, "0f3775e8106735b8"),
+        (MessageKind::PairPreference, "112306e659ac2836"),
+        (MessageKind::PairPreferenceResult, "8fb5ca28faa5d725"),
+        (MessageKind::Countdown, "53565c1d08eaf63b"),
+        (MessageKind::Start, "bf304a954b57302c"),
         (MessageKind::MatchPhase, "1671940891b78f1f"),
         (MessageKind::HashReport, "4405d9323b1e5b0f"),
         (MessageKind::ResultAck, "5f466e6740c6d4cf"),

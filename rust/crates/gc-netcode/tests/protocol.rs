@@ -164,7 +164,11 @@ fn replace_manifest_player_id(
 fn omp3_online_protocol_pins_the_accepted_input_snapshot_tape_and_combat_schema_versions() {
     assert_eq!(protocol::CURRENT_VERSIONS.protocol, 1);
     assert_eq!(protocol::CURRENT_VERSIONS.input, 2);
-    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 15);
+    // 2026-08-26: `match_snapshot::COMBAT_VERSION` moved 15 -> 16 for the
+    // pass-reception rework (`MatchPlayer::receive_target`,
+    // `MatchState::stick_latch`); `CURRENT_VERSIONS.snapshot` mirrors it
+    // directly (`protocol::CurrentVersions`'s own doc comment).
+    assert_eq!(protocol::CURRENT_VERSIONS.snapshot, 16);
     assert_eq!(protocol::CURRENT_VERSIONS.tape, 2);
     assert_eq!(protocol::CURRENT_VERSIONS.combat, 3);
 }
@@ -174,17 +178,18 @@ fn omp3_online_protocol_matches_literal_wire_manifest_transcript_and_per_kind_go
     let report = conformance::verify();
     // #489: repinned alongside `protocol_conformance::GOLDEN` -- see that
     // constant's doc comment. `match_snapshot::COMBAT_VERSION` moved
-    // 13 -> 14 under #489 and 14 -> 15 under #490.
-    assert_eq!(report.manifest_id, "90b90970080d7978");
-    assert_eq!(report.transcript_id, "1b8407df3614a2cb");
+    // 13 -> 14 under #489, 14 -> 15 under #490, and 15 -> 16 under the
+    // pass-reception rework (2026-08-26).
+    assert_eq!(report.manifest_id, "2329a3ebebc76bf9");
+    assert_eq!(report.transcript_id, "30a56d5c43e9d754");
     assert_eq!(report.message_count, 15);
     assert_eq!(
         gc_core::fnv1a64::hash(conformance::GOLDEN.complete_wire.as_bytes()),
-        "d0907dd1786309f5"
+        "6c33b73a29c3ef6b"
     );
     assert_eq!(
         conformance::marker(&report),
-        "GC_PROTOCOL|golden|schema=1|manifest_id=90b90970080d7978|transcript_id=1b8407df3614a2cb|messages=15"
+        "GC_PROTOCOL|golden|schema=1|manifest_id=2329a3ebebc76bf9|transcript_id=30a56d5c43e9d754|messages=15"
     );
 }
 
@@ -1381,28 +1386,36 @@ fn handshake_build_declaration_counts_the_declaration_as_part_of_the_vocabulary_
 // and nothing outside that set moves. Re-derived the same way: a throwaway
 // probe calling `protocol::manifest_id`/`transcript_id`/`encode` against the
 // same fixture, plus temporary `eprintln!`s for the two intermediate wires.
+//
+// RE-RECORDED AGAIN by the pass-reception rework, 2026-08-26, identical
+// mechanism and the `_489` suffixes still unchanged for the same reason:
+// `match_snapshot::COMBAT_VERSION` bumps 15 -> 16 (`MatchPlayer::receive_target`,
+// `MatchState::stick_latch`), so the same set moves once more and nothing
+// outside it does. Re-derived the same way: `MANIFEST_ID`/`TRANSCRIPT_ID` via
+// a throwaway probe, `MIN_WIRE`/`MAXIMAL_WIRE`'s length and hash via a
+// temporary `eprintln!` added to each assertion, run, then removed.
 // ---------------------------------------------------------------------------
 
 /// See the module-section doc comment above.
-const MIN_WIRE_BASELINE_489: &str = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:90b90970080d7978s4:kinds15:\
+const MIN_WIRE_BASELINE_489: &str = "GCOP;1;t7:s4:bodyt1:s11:manifest_ids16:2329a3ebebc76bf9s4:kinds15:\
 manifest_accepts10:message_ids16:GCMI;1;1:s1:p1:0s7:peer_ids1:ps8:sequencei1:0s10:session_ids1:ss7:versioni1:1";
 /// See the module-section doc comment above. Unchanged from the frozen
 /// fixture's `MIN_WIRE_LEN` — the new and old manifest ids are both 16-byte
 /// hex hashes, so wire length does not move even though the bytes do.
 const MIN_WIRE_LEN_BASELINE_489: usize = 176;
 /// See the module-section doc comment above.
-const MIN_WIRE_HASH_BASELINE_489: &str = "b398e49a73452b3b";
+const MIN_WIRE_HASH_BASELINE_489: &str = "d2212456b0d849d5";
 /// See the module-section doc comment above.
-const MAXIMAL_MANIFEST_ID_BASELINE_489: &str = "9fbc7b2c02f50b0b";
+const MAXIMAL_MANIFEST_ID_BASELINE_489: &str = "e862dc21bf835fae";
 /// See the module-section doc comment above. Unchanged from the frozen
 /// fixture's `MAXIMAL_WIRE_LEN`, same reasoning as `MIN_WIRE_LEN_BASELINE_489`.
 const MAXIMAL_WIRE_LEN_BASELINE_489: usize = 7240;
 /// See the module-section doc comment above.
-const MAXIMAL_WIRE_HASH_BASELINE_489: &str = "1f436d15827652d2";
+const MAXIMAL_WIRE_HASH_BASELINE_489: &str = "3c0a40b30a462cdd";
 /// See the module-section doc comment above.
-const MANIFEST_ID_BASELINE_489: &str = "90b90970080d7978";
+const MANIFEST_ID_BASELINE_489: &str = "2329a3ebebc76bf9";
 /// See the module-section doc comment above.
-const TRANSCRIPT_ID_BASELINE_489: &str = "1b8407df3614a2cb";
+const TRANSCRIPT_ID_BASELINE_489: &str = "30a56d5c43e9d754";
 
 /// #612, found by the implementing PR rather than pre-decided — flagged for
 /// explicit reviewer confirmation, the same class of call #489's three rows

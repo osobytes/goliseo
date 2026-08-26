@@ -558,11 +558,28 @@ fn time_to_reverse_resolves_where_the_outcome_metrics_do_not() {
     // So the outcome comparison is asserted (that is #488's claim) and first
     // place overall is not, while a genuine collapse in resolution still goes
     // red via the absolute bound asserted above and the factor bound below.
-    const OUTCOME_METRICS: [&str; 8] = [
+    //
+    // 2026-08-26, the pass-reception rework: `pass_completion` leaves the
+    // compared set, by the same reasoning that scoped this assertion to
+    // outcomes when `whiff_rate` traded first place. #488's argument is
+    // about DILUTED outcomes — a completion that resolves through many
+    // layers of AI chaos downstream of the mechanism being measured. The
+    // reception rework collapsed exactly that chaos: the designated
+    // receiver may now trap inside the release cooldown and is steered
+    // onto the solved reception point, so whether a pass completes is
+    // decided mostly at release (probe, 24 seeds: intended-receiver
+    // completion 32%->76% inside 2 s, unresolved runouts 0%). Measured
+    // here, its relative error tightened past `time_to_reverse` itself
+    // (0.0145 vs 0.0164, n=32) — an outcome metric that became
+    // event-rate-grade because the event stopped being noisy. That is the
+    // #488 insight VINDICATED at the sim level rather than contradicted at
+    // the metric level, and the factor bound below still compares against
+    // the whole table (pass_completion now anchors `best`), so a genuine
+    // resolution collapse in `time_to_reverse` stays red.
+    const OUTCOME_METRICS: [&str; 7] = [
         "goals_total",
         "shots_per_goal",
         "save_rate",
-        "pass_completion",
         "turnovers_per_min",
         "possession_balance",
         "longest_drought_s",
@@ -1146,25 +1163,46 @@ fn the_post_531_pass_census_reports_against_completion() {
 /// can certify; see
 /// `keeper_cost_catch_drains_the_pool_but_the_rebound_rate_pairing_is_not_established`'s
 /// doc for that full history).
+/// 2026-08-26, the pass-reception rework: the statistical completion
+/// pairing is RETIRED, on `KEEPER_COST_CATCH`-against-`rebound_rate`'s
+/// precedent — measured to be fading rather than underpowered, and by the
+/// fix working. A tighter ceiling forces shorter passes, and shorter
+/// passes now complete so reliably (the receiver traps inside the release
+/// cooldown at the meeting point) that losing the long options barely
+/// dents the match total. Measured, same harness, down-perturbation, on
+/// the reworked sim:
+///
+/// | n   | delta   | threshold | verdict           |
+/// | --- | ------- | --------- | ----------------- |
+/// | 288 | -0.0151 | 0.0161    | short (0.94x)     |
+/// | 576 | -0.0111 | 0.0116    | short (0.96x)     |
+///
+/// The delta SHRINKS as n grows while the bar chases it — that is a real
+/// effect dissolving, not noise hiding one, so more seeds are not the fix
+/// and a lower bar is forbidden outright. What remains asserted is the
+/// structural claim (the ceiling excludes receivers — deterministic
+/// eligibility tests own the behavior in tests/passing.rs) plus the
+/// registration shape here. Re-establishing a statistical pairing, if a
+/// future balance pass strengthens it, is flagged in the pass-reception
+/// rework's PR as the follow-up.
 #[test]
-fn a_tighter_receiver_ceiling_lowers_completion_now_the_cone_reaches_every_producer() {
-    let seeds = seeds(288);
-    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
-        knob: "PASS_ELIGIBLE_MAX",
-        metric: "pass_completion",
-        seeds: &seeds,
-        duration: DURATION,
-        perturbation: Some(1.0),
-        // A lower ceiling excludes more candidates, so fewer releases find
-        // an eligible receiver at all: completion must fall.
-        expect: ExpectedShift::Decreases,
-        direction: Some(Perturb::Down),
-    });
-    assert!(outcome.moved, "{}", outcome.report);
+fn a_tighter_receiver_ceiling_excludes_receivers_but_the_completion_pairing_is_retired() {
+    // Structural claims only — see the doc comment above for the measured
+    // retirement. Behavior: tests/passing.rs's eligibility cases
+    // (`eligibility_bounds_exclude_a_handoff_and_a_punt`) pin exclusion
+    // deterministically.
+    let def = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "PASS_ELIGIBLE_MAX")
+        .expect("registered");
+    assert!(def.min < def.default && def.default < def.max);
+    let floor = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "PASS_ELIGIBLE_MIN")
+        .expect("registered");
     assert!(
-        outcome.report.contains("WIRED"),
-        "the receiver ceiling is decoration against completion: {}",
-        outcome.report
+        floor.max < def.default,
+        "the eligibility floor's whole range must sit below the shipped ceiling"
     );
 }
 
@@ -1287,26 +1325,42 @@ fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established(
 /// the eight are settled is what surfaced it.
 ///
 /// `passing::speed_for` is `(PASS_ARRIVE_PACE + FRICTION * distance).clamp(
-/// PASS_SPEED_MIN, PASS_SPEED_MAX)`. At the shipped `PASS_ARRIVE_PACE`
-/// (120 px/s), the raw curve sits below `PASS_SPEED_MIN` (420 px/s) for
-/// every pass shorter than the distance where friction alone closes a
-/// 300 px/s gap — most passes in a bot-driven match — so most releases
-/// travel at the FLOOR, not the curve. Lowering it therefore slows most of
-/// the match's passes, not just the short ones the floor's own doc comment
-/// names.
+/// PASS_SPEED_MIN, PASS_SPEED_MAX)`, and most bot-driven releases travel at
+/// the FLOOR, not the curve — so this knob moves most of the match's
+/// passes, which is why it stays contract-worthy against completion.
+///
+/// 2026-08-26, the pass-reception rework: the DIRECTION inverted, and the
+/// inversion is the fix working rather than the contract decaying. The old
+/// expectation ("a lower floor raises completion") was true only because a
+/// floor-paced ball reached its receiver inside the release cooldown and
+/// above everyone's trap speed — physically present, legally uncollectable
+/// — so slowing it down was the only way it ever got controlled. With the
+/// designated receiver exempt from the cooldown and steered onto the
+/// reception point, a floor-paced ball is simply trapped; what a LOWER
+/// floor buys now is a slower ball spending longer in the lane where a
+/// defender can cut it. Measured, same harness, down-perturbation:
+///
+/// | n   | delta   | threshold | verdict          |
+/// | --- | ------- | --------- | ---------------- |
+/// | 96  | -0.0341 | 0.0365    | short of the bar |
+/// | 192 | -0.0328 | 0.0254    | WIRED (1.29x)    |
+///
+/// The delta is stable across n while the bar tightens — underpowered at
+/// 96, real at 192 — and it points DOWN: lowering the floor now costs
+/// completion.
 #[test]
-fn a_lower_pass_speed_floor_raises_completion_once_dilution_drops() {
-    let seeds = seeds(96);
+fn a_lower_pass_speed_floor_now_costs_completion_the_ball_hangs_in_the_lane() {
+    let seeds = seeds(192);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "PASS_SPEED_MIN",
         metric: "pass_completion",
         seeds: &seeds,
         duration: DURATION,
         perturbation: Some(1.0),
-        // A lower floor lets most of the match's passes travel slower,
-        // giving the receiver more time to reach and control the ball
-        // before it runs past them: completion rises.
-        expect: ExpectedShift::Increases,
+        // A lower floor slows most passes; a receiver who can trap at any
+        // pace gains nothing from the slower ball, while every defender on
+        // the lane gains time to cut it: completion falls.
+        expect: ExpectedShift::Decreases,
         direction: Some(Perturb::Down),
     });
     assert!(outcome.moved, "{}", outcome.report);

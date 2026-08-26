@@ -86,11 +86,11 @@ import { loadSimHost } from "./index.ts";
 // recorded — see the tunable's own comment in gc_data::tunables) shortly
 // after, moving both values again. Discriminating measurement re-run before
 // THIS line moved — wasm, via the same freshly rebuilt `dist/pkg/gc_wasm.cjs`:
-// final `02085004777f30a4`, sequence `bcf2dfa7e1ae7221`; native, via
+// final `61c50495d826ce10`, sequence `f7d42a56513aa355`; native, via
 // `cargo test -p gc-sim --test determinism_evidence`, the same two. They
 // AGREE, so this is not #517 either.
-const EXPECTED_FINAL_HASH = "02085004777f30a4";
-const EXPECTED_SEQUENCE_DIGEST = "bcf2dfa7e1ae7221";
+const EXPECTED_FINAL_HASH = "61c50495d826ce10";
+const EXPECTED_SEQUENCE_DIGEST = "f7d42a56513aa355";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

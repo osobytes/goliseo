@@ -554,7 +554,17 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // `boundary_hash_lines()[last]` -- this digest folds in every one of
     // those boundaries, so it moves whenever any of them do, same as the
     // #572/#578 entries above.
-    assert_eq!(rollback_lab::tape_digest(&tape), "f2ab89ab575b4d1a");
+    //
+    // And again for the pass-reception rework (`MatchPlayer::receive_target`
+    // and `MatchState::stick_latch` added, `match_snapshot::VERSION` 14 ->
+    // 15, `COMBAT_VERSION` 15 -> 16): every derived boundary hash moved,
+    // including the first (a schema bump, same reasoning as #531/#489/#490
+    // above), same commit as `gc_data::omp1_determinism`'s own re-record of
+    // `expected_final_hash`, `expected_sequence_digest`,
+    // `boundary_hash_lines()[0]` and `boundary_hash_lines()[last]`, and
+    // `identity.snapshot_version` 14 -> 15 (f2ab89ab575b4d1a ->
+    // 728456d9392e8bee).
+    assert_eq!(rollback_lab::tape_digest(&tape), "728456d9392e8bee");
 }
 
 #[test]

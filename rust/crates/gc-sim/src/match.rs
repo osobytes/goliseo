@@ -582,6 +582,7 @@ fn build_team(
             grab_timer: 0.0,
             throw_timer: 0.0,
             receive_timer: 0.0,
+            receive_target: None,
             sprint_meter: 1.0,
             sprint_dur: stats::sprint_duration(effective_stats),
             sprinting: false,
@@ -675,6 +676,10 @@ pub fn reset_run_states(s: &mut MatchState) {
 /// human cannot retain a serialized AI choice from earlier in this tick.
 pub fn set_controlled_player(s: &mut MatchState, player_idx: i64) {
     s.controlled = player_idx;
+    // Any control switch invalidates a pending stale-stick latch: the latch
+    // describes the previous handoff's held aim, and only the pass-follow
+    // switch in `release_pass` re-arms it (after this call).
+    s.stick_latch = None;
     {
         let player = &mut s.players[(player_idx - 1) as usize];
         if !player.is_keeper
@@ -785,6 +790,7 @@ fn place_kickoff(s: &mut MatchState, kicking: Team) {
         p.grab_timer = 0.0;
         p.throw_timer = 0.0;
         p.receive_timer = 0.0;
+        p.receive_target = None;
         p.sprint_meter = 1.0;
         p.sprinting = false;
         p.save_pending = None;
@@ -1037,6 +1043,7 @@ pub fn new(opts: NewMatchOptions<'_>) -> MatchState {
         owner: None,
         controlled,
         human_controlled: opts.human_controlled != Some(false),
+        stick_latch: None,
         score: crate::match_snapshot::ByTeam { home: 0, away: 0 },
         time_left: opts.duration.unwrap_or(120.0),
         max_goals: opts.max_goals.unwrap_or(NO_GOAL_LIMIT),
@@ -1462,6 +1469,11 @@ fn release_pass(
         }
     }
 
+    // A new release supersedes any pass still marked on somebody else:
+    // exactly one player may be running onto a reception point at a time.
+    for p in &mut s.players {
+        p.receive_target = None;
+    }
     // The receive window is set AFTER the launch below, from the pass's own
     // estimated flight time -- see `receive_window` (#623 follow-up).
     s.events.push(MatchEvent {
@@ -1486,14 +1498,17 @@ fn release_pass(
     s.pickup_cd = RELEASE_CD;
     s.block_grace = BLOCK_GRACE;
     if let Some(f) = blocker_f {
-        let (vel, vz) = lob_launch(
-            owner_pos,
-            land_pos.unwrap_or(target_pos),
-            f,
-            clear_h.unwrap_or(LOB_CLEAR_H),
-        );
+        // A dink over a lane-presser keeps the solved lead: the arc is
+        // slower than the ground ball it replaces, so a led receiver
+        // arrives early and waits — strictly better than landing the ball
+        // at the spot they vacated at release. A planned throw (land_pos)
+        // already chose its own landing.
+        let lob_aim =
+            land_pos.unwrap_or_else(|| lead.map_or(target_pos, |solution| solution.point));
+        let (vel, vz) = lob_launch(owner_pos, lob_aim, f, clear_h.unwrap_or(LOB_CLEAR_H));
         s.ball_vel = vel;
         s.ball_vz = vz;
+        s.players[(target_idx - 1) as usize].receive_target = Some(lob_aim);
     } else {
         // Aim at the solved lead point when one was admissible, and at the
         // receiver's feet otherwise — the issue's unled fallback, which is a
@@ -1502,12 +1517,33 @@ fn release_pass(
         pass_shadow_record(|tally| {
             tally.ground_releases += 1;
             tally.lead_time_sum += lead.map_or(0.0, |solution| solution.lead_time);
+            tally.open_ground_aim = Some(aim_pt);
         });
         let d = owner_pos.dist(aim_pt);
         let owner_verb = s.players[(owner_idx - 1) as usize].owned_verb;
         let pass_speed = passing::speed_for(d, tune) * species::link_pass_speed(owner_verb);
+        pass_probe_record(|| PassProbeRecord {
+            time_left: s.time_left,
+            owner_idx,
+            target_idx,
+            target_is_keeper,
+            owner_pos,
+            ball_pos: s.ball,
+            target_pos,
+            target_run_vel: s.players[(target_idx - 1) as usize].run_vel,
+            target_move_speed: s.players[(target_idx - 1) as usize].move_speed,
+            aim: aim_pt,
+            launch_speed: pass_speed,
+            lead,
+        });
         s.ball_vel = aim_pt.sub(owner_pos).normalized().scale(pass_speed);
         s.ball_vz = 0.0;
+        // The solved point is not just the ball's aim — it is the
+        // receiver's RENDEZVOUS. Storing it is what lets the receiver's
+        // steering actually run onto the pass instead of tail-chasing the
+        // ball's live position (which, at release, is the passer's feet —
+        // the opposite direction from a lead).
+        s.players[(target_idx - 1) as usize].receive_target = Some(aim_pt);
     }
     s.ball_vel = apply_ai_outfield_execution_error(s, owner_idx, s.ball_vel);
     // The receive window must OUTLIVE the flight (#623 follow-up). The old
@@ -1540,6 +1576,16 @@ fn release_pass(
         && !target_is_keeper
     {
         set_controlled_player(s, target_idx);
+        // The stick that AIMED this pass is, at this instant, still held —
+        // and from this tick it steers the receiver instead. Holding that
+        // same direction is aim residue, not a decision to run the
+        // receiver off the reception point, so latch the launch bearing:
+        // while the held input stays inside the latch cone the receive
+        // assist keeps steering (as if the stick were neutral), and a
+        // release or a clear redirect hands control back
+        // (`consume_stick_latch`).
+        let launch = s.ball_vel;
+        s.stick_latch = (launch.length() > 1e-9).then(|| launch.normalized());
     }
 }
 
@@ -3098,7 +3144,9 @@ fn sanitize_run_states(s: &mut MatchState, combat_state: Option<&CombatMatchStat
                 } else {
                     let receive_timer = s.players[index].receive_timer;
                     let fallback = if receive_timer > 0.0 {
-                        s.ball
+                        // Same two-phase target the receive override uses:
+                        // the pass's reception point, then the live ball.
+                        receive_approach_target(s, idx)
                     } else if ordinary_attack {
                         let mut pos: Vec<Vec2> = s.players.iter().map(|p| p.pos).collect();
                         pos[index] = s.players[index].pos;
@@ -3641,13 +3689,19 @@ pub fn offball_targets(
         }
     }
 
-    // A designated receiver runs onto the incoming ball (overrides its
-    // other role) so a keeper's distribution is actually met and gathered,
-    // not left in space.
-    for (i, p) in s.players.iter().enumerate() {
+    // A designated receiver runs onto the incoming pass (overrides its
+    // other role) so a distribution is actually met and gathered, not left
+    // in space. Onto the PASS, not the ball's live position: the lead
+    // solver certified the reception point against a flat-out run at that
+    // point, and chasing the live ball instead aimed the receiver at the
+    // passer's feet on the release tick — backwards, for a led pass, which
+    // is how solved leads used to arrive at empty grass. The two-phase
+    // helper hands back the live ball for the final meet and for flights
+    // with no stored point.
+    for i in 0..s.players.len() {
         let idx = (i + 1) as i64;
-        if p.receive_timer > 0.0 && targets.contains_key(&idx) {
-            targets.insert(idx, Vec2::new(s.ball.x, s.ball.y));
+        if s.players[i].receive_timer > 0.0 && targets.contains_key(&idx) {
+            targets.insert(idx, receive_approach_target(s, idx));
             urgent.insert(idx, true);
         }
     }
@@ -4109,6 +4163,74 @@ fn move_players(
 }
 
 #[allow(clippy::too_many_lines)]
+/// How closely a held stick must match the latched launch bearing to still
+/// count as aim residue rather than deliberate steering: cos ~45°, generous
+/// enough for analog wobble, tight enough that attacking a different spot
+/// reads as a decision on the first frame it is made.
+const STICK_LATCH_COS: f64 = 0.7;
+
+/// Decide whether the controlled player's held stick is aim residue from the
+/// pass that just handed them control (`MatchState::stick_latch`), clearing
+/// the latch the moment the input stops matching it.
+///
+/// Returns true while the hold is stale — the caller then treats the stick
+/// as neutral, so the receive assist keeps steering the receiver onto the
+/// pass. Neutral input, a redirect outside [`STICK_LATCH_COS`], the pass
+/// resolving (receive window lapsed or an owner appeared), or any control
+/// switch ([`set_controlled_player`]) clears the latch permanently: a fresh
+/// press after any of those is a real decision and steers immediately.
+pub fn consume_stick_latch(s: &mut MatchState, idx: i64, held: Vec2) -> bool {
+    let Some(latch) = s.stick_latch else {
+        return false;
+    };
+    if s.slot_mode || idx != s.controlled {
+        return false;
+    }
+    let p = &s.players[(idx - 1) as usize];
+    if p.receive_timer <= 0.0 || s.owner.is_some() {
+        s.stick_latch = None;
+        return false;
+    }
+    if held.x == 0.0 && held.y == 0.0 {
+        s.stick_latch = None;
+        return false;
+    }
+    let dir = held.normalized();
+    if dir.x * latch.x + dir.y * latch.y < STICK_LATCH_COS {
+        s.stick_latch = None;
+        return false;
+    }
+    true
+}
+
+/// Where a designated receiver's steering should run: the stored reception
+/// point (`MatchPlayer::receive_target`) while the ball is still on its way
+/// there, then the live ball for the final meet — and for any flight the
+/// release did not store a point for (aerial anticipation, older saves).
+///
+/// The two-phase split is what the lead solver's admissibility assumed all
+/// along: it certified a flat-out run AT THE POINT, while chasing the
+/// ball's live position starts the receiver toward the passer's feet —
+/// backwards, for a led pass. Once the receiver is essentially at the point
+/// (or the ball is, or the ball is no longer inbound — deflected, dying),
+/// the live ball is the better target: meeting it early along the lane
+/// shortens the interceptable window, and a dead roll needs chasing, not
+/// waiting.
+pub fn receive_approach_target(s: &MatchState, idx: i64) -> Vec2 {
+    let p = &s.players[(idx - 1) as usize];
+    if p.receive_timer > 0.0
+        && let Some(point) = p.receive_target
+    {
+        let to_point = point.sub(p.pos);
+        let ball_to_point = point.sub(s.ball);
+        let inbound = s.ball_vel.x * ball_to_point.x + s.ball_vel.y * ball_to_point.y > 0.0;
+        if inbound && to_point.length() > POSSESS_DIST && ball_to_point.length() > POSSESS_DIST {
+            return point;
+        }
+    }
+    Vec2::new(s.ball.x, s.ball.y)
+}
+
 fn move_human_player(
     s: &mut MatchState,
     i: usize,
@@ -4121,6 +4243,10 @@ fn move_human_player(
     let field = s.field;
     let neutral = MatchInput::default();
     let input = *inputs.get(&idx).unwrap_or(&neutral);
+    // Both before the player borrow: the latch mutates match state, and the
+    // assist target reads all of it.
+    let stale_hold = consume_stick_latch(s, idx, input.r#move);
+    let receive_assist_target = receive_approach_target(s, idx);
     let aerial_active = aerial_active_for_input(s, idx, &input);
     // A tackle charge only ever names an OPPOSING owner as its target --
     // never a teammate and never the presser's own self, so a ball-carrying
@@ -4211,7 +4337,10 @@ fn move_human_player(
         p.run_vel = Vec2::new(0.0, 0.0);
     } else {
         let dir = input.r#move;
-        let moving = dir.x != 0.0 || dir.y != 0.0;
+        // A stale hold (aim residue latched at the pass-follow control
+        // switch) reads as a neutral stick: the receive assist steers until
+        // the player releases or clearly redirects.
+        let moving = (dir.x != 0.0 || dir.y != 0.0) && !stale_hold;
         // Jockey stance (Space held off the ball): shadow the carrier at
         // reduced speed, facing locked toward the ball. Mutually exclusive
         // with sprint (jockey wins). Grants bonus poke reach on release.
@@ -4293,16 +4422,19 @@ fn move_human_player(
             && s.owner.is_none()
         {
             // Receive assist: the designated receiver of a pass works to
-            // meet it by default — hold a direction to override and attack
-            // a different spot instead. EXCEPT while the strike is held
-            // (#623): winding a first touch turns the stick into the shot's
-            // AIM — the same stick-for-the-next-touch split the dribble
-            // hook above gives the carrier — so the assist keeps the body
-            // on the meet line no matter where the shot is aimed. Release
-            // the strike to regain free movement.
-            let to_ball = s.ball.sub(p.pos);
-            if to_ball.length() > 1.0 {
-                desired = to_ball.normalized().scale(mv);
+            // meet it by default — hold a (fresh, unlatched) direction to
+            // override and attack a different spot instead. The assist runs
+            // onto the pass's reception point first, then the live ball
+            // (`receive_approach_target`), instead of tail-chasing the
+            // ball's position from the moment of release. EXCEPT while the
+            // strike is held (#623): winding a first touch turns the stick
+            // into the shot's AIM — the same stick-for-the-next-touch split
+            // the dribble hook above gives the carrier — so the assist
+            // keeps the body on the meet line no matter where the shot is
+            // aimed. Release the strike to regain free movement.
+            let to_meet = receive_assist_target.sub(p.pos);
+            if to_meet.length() > 1.0 {
+                desired = to_meet.normalized().scale(mv);
             }
         }
         // Aerial magnet: going up for a dropping ball nearby (holding the
@@ -5364,6 +5496,21 @@ pub struct PassShadowTally {
     /// ground releases (see `ground_releases`'s doc comment for the caveat
     /// that a solved lead can still be discarded into a lob afterward).
     pub total_releases: i64,
+    /// The most recent ground release still awaiting resolution: where it
+    /// was aimed. Resolved into the two sums below by the next first
+    /// possession or pass-ending body ricochet; superseded unresolved by
+    /// the next ground release if the ball went out or died first.
+    pub open_ground_aim: Option<Vec2>,
+    /// Ground releases whose resolution was observed.
+    pub resolved_ground: i64,
+    /// Sum over resolved ground releases of the distance, px, between the
+    /// release's aim point and the ball at the moment the pass resolved.
+    /// Divided by `resolved_ground` this is `pass_meet_runout`: how far
+    /// from where it was aimed a pass actually gets settled. The number
+    /// the reception rework exists to move — a pass collected at its aim
+    /// point contributes ~0, a pass that blows through the receiver and is
+    /// chased down the runout contributes the whole chase.
+    pub meet_runout_sum: f64,
 }
 
 thread_local! {
@@ -5388,6 +5535,71 @@ fn pass_shadow_record<F: FnOnce(&mut PassShadowTally)>(f: F) {
     PASS_SHADOW.with(|cell| {
         if let Some(tally) = cell.borrow_mut().as_mut() {
             f(tally);
+        }
+    });
+}
+
+/// One ground-pass release, recorded when the per-release probe log is
+/// armed. TEMPORARY DIAGNOSTIC SEAM for the pass-placement probe
+/// (`tests/pass_placement_probe.rs`): everything here is a copy of values
+/// `release_pass` already has in hand at the ground-launch site.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassProbeRecord {
+    /// `s.time_left` at release.
+    pub time_left: f64,
+    /// Releasing owner (1-based).
+    pub owner_idx: i64,
+    /// Intended receiver (1-based).
+    pub target_idx: i64,
+    /// Whether the intended receiver is a keeper (lead solve is gated off).
+    pub target_is_keeper: bool,
+    /// The passer's position at release (the aim origin).
+    pub owner_pos: Vec2,
+    /// The ball's position at release.
+    pub ball_pos: Vec2,
+    /// The receiver's position at release.
+    pub target_pos: Vec2,
+    /// The receiver's run velocity at release (what the lead extrapolates).
+    pub target_run_vel: Vec2,
+    /// The receiver's top speed.
+    pub target_move_speed: f64,
+    /// The point the ball was aimed at (lead point, or receiver's feet).
+    pub aim: Vec2,
+    /// Launch speed before execution error, px/s.
+    pub launch_speed: f64,
+    /// The lead solution, `None` for an unled pass.
+    pub lead: Option<pass_lead::LeadSolution>,
+}
+
+thread_local! {
+    static PASS_PROBE: std::cell::RefCell<Option<Vec<PassProbeRecord>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Arm the per-release probe log on this thread. Diagnostic only.
+pub fn pass_probe_begin() {
+    PASS_PROBE.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
+}
+
+/// Drain records captured so far, leaving the log armed.
+#[must_use]
+pub fn pass_probe_drain() -> Vec<PassProbeRecord> {
+    PASS_PROBE.with(|cell| match cell.borrow_mut().as_mut() {
+        Some(log) => std::mem::take(log),
+        None => Vec::new(),
+    })
+}
+
+/// Disarm the probe log, discarding anything undrained.
+pub fn pass_probe_end() {
+    PASS_PROBE.with(|cell| *cell.borrow_mut() = None);
+}
+
+fn pass_probe_record<F: FnOnce() -> PassProbeRecord>(f: F) {
+    PASS_PROBE.with(|cell| {
+        if let Some(log) = cell.borrow_mut().as_mut() {
+            log.push(f());
         }
     });
 }
@@ -6958,8 +7170,16 @@ fn update_ball(
                             // The ricochet ends the pass: nobody is
                             // receiving this ball any more (a keeper's save
                             // reflexes included).
+                            let deflected_at = s.ball;
+                            pass_shadow_record(|tally| {
+                                if let Some(aim) = tally.open_ground_aim.take() {
+                                    tally.resolved_ground += 1;
+                                    tally.meet_runout_sum += deflected_at.dist(aim);
+                                }
+                            });
                             for q in &mut s.players {
                                 q.receive_timer = 0.0;
+                                q.receive_target = None;
                                 q.keeper_set = 0.0;
                                 q.save_style = None;
                                 q.save_tip_emitted = false;
@@ -7012,14 +7232,29 @@ fn update_ball(
     // loose ball it can reach there (with its hands), beating outfielders
     // even if they are a touch closer. Otherwise the nearest eligible
     // player grabs it.
-    if s.pickup_cd == 0.0 {
+    // The release cooldown is the RELEASER's re-collection lockout and
+    // everyone else's head start — it was never meant to be the designated
+    // receiver's problem, and applying it to them made ~42% of led passes
+    // (every flight shorter than the 0.3 s window) structurally
+    // uncollectable at the solved meeting point: the ball arrived, passed
+    // through the receiver's feet while pickup was illegal, and rolled
+    // 150-470 px beyond — which read as "the pass went somewhere far away".
+    // So the gate is per-candidate now: `receive_timer > 0` (the pass's own
+    // designated-receiver mark, set at release) exempts exactly the player
+    // the ball is for, and nobody else.
+    let pickup_ok = s.pickup_cd == 0.0;
+    if pickup_ok || s.players.iter().any(|p| p.receive_timer > 0.0) {
         let speed = s.ball_vel.length();
         let mut best: Option<i64> = None;
         let mut best_dist: Option<f64> = None;
 
         for (i, p) in s.players.iter().enumerate() {
             let idx = (i + 1) as i64;
-            if p.is_keeper
+            // Hand claims stay behind the full cooldown: a keeper snatching
+            // a teammate's pass out of the air inside the release window is
+            // the back-pass FEET path's job, not the claim's.
+            if pickup_ok
+                && p.is_keeper
                 && combat_state.is_none_or(|cs| cs.players[i].forced_ticks == 0)
                 && p.save_pending.is_none() // a committed save resolves on contact instead
                 && p.receive_timer <= 0.0 // a teammate's pass is taken with the FEET below
@@ -7044,9 +7279,11 @@ fn update_ball(
                 };
                 // A ball above head height flies over everyone — not
                 // collectable. The DESIGNATED receiver traps a driven pass
-                // at full pace (the first touch is theirs); everyone else
-                // needs it slowed down.
-                let eligible = (p.is_keeper || p.receive_timer > 0.0 || speed < POSSESS_MAX_SPEED)
+                // at full pace (the first touch is theirs) and inside the
+                // release cooldown (the pass exists to be met); everyone
+                // else needs the ball slowed down and the cooldown lapsed.
+                let eligible = (pickup_ok || p.receive_timer > 0.0)
+                    && (p.is_keeper || p.receive_timer > 0.0 || speed < POSSESS_MAX_SPEED)
                     && s.ball_z <= GROUND_GRAB_HEIGHT
                     && combat_state.is_none_or(|cs| cs.players[i].forced_ticks == 0);
                 let d = p.pos.dist(s.ball);
@@ -7078,10 +7315,27 @@ fn update_ball(
                 return;
             }
             let bp = s.players[(best - 1) as usize].clone();
+            // First possession resolves any open ground pass: how far from
+            // its aim the ball was settled is the whole point of the
+            // `pass_meet_runout` diagnostic.
+            let settled_at = s.ball;
+            pass_shadow_record(|tally| {
+                if let Some(aim) = tally.open_ground_aim.take() {
+                    tally.resolved_ground += 1;
+                    tally.meet_runout_sum += settled_at.dist(aim);
+                }
+            });
             for player in &mut s.players {
                 player.keeper_set = 0.0;
                 player.save_style = None;
                 player.save_tip_emitted = false;
+                // Collection resolves the pass: nobody is receiving this
+                // ball any more. Without this, a receiver who collects and
+                // is immediately dispossessed would carry the mark — and
+                // its cooldown exemption above — into a ball that is no
+                // longer theirs.
+                player.receive_timer = 0.0;
+                player.receive_target = None;
             }
             if bp.is_keeper && bp.receive_timer <= 0.0 {
                 // A keeper gather: claim event + gather pose, then it
@@ -7519,6 +7773,7 @@ pub fn step(
     if s.owner.is_some() && s.owner != prev_owner {
         for p in &mut s.players {
             p.receive_timer = 0.0;
+            p.receive_target = None;
         }
     }
 

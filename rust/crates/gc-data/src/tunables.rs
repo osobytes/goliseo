@@ -1065,16 +1065,22 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
     //     set.
     //
     // `PASS_SPEED_MAX` is the one value NOT simply k-scaled: k would give 1200,
-    // and 1200 restores the old near-miss rather than fixing it. The reach
-    // ceiling has to clear the FURTHEST point a pass can legally be aimed at,
-    // which is `PASS_ELIGIBLE_MAX` plus the lead solve's own projection of a
-    // running receiver (`PASS_LEAD_TIME_MAX` 0.9 s x 280 px/s top speed), so
-    // 960 + 252 = 1212 px. 1460 gives a 1217 px reach and clears it. That
-    // invariant never actually held -- the old pair violated it by 193 px too,
-    // just rarely enough to look like bad luck. `passing::reach` and
-    // `tests/passing.rs`'s invariant test now pin it so it cannot silently
-    // drift again. `FRICTION` stays fixed: it is shared ball physics, not a
-    // knob (see `passing::speed_for`'s own doc).
+    // and 1200 restores the old near-miss rather than fixing it. 1460 was
+    // originally derived to make the reach ceiling (`PASS_SPEED_MAX /
+    // FRICTION` = 1217 px) clear the furthest legal aim, computed as
+    // `PASS_ELIGIBLE_MAX` + `PASS_LEAD_TIME_MAX` x 280. That derivation used
+    // the WRONG receiver speed: the lead solver reads `run_vel`, whose
+    // sprinting maximum is 280 x `SPRINT_MULT` (1.35) = 378 px/s, so the
+    // true worst-case aim was 1300 px and the claimed 5 px of headroom was
+    // really an 83 px deficit. The led case is therefore no longer a knob
+    // relationship at all: `gc_sim::pass_lead::solve` structurally refuses
+    // any candidate past `REACH_MARGIN` (95%) of its own launch's roll-out,
+    // and `tests/passing.rs` pins only what remains knob-shaped -- an UNLED
+    // pass (aimed at the receiver's feet, capped by `PASS_ELIGIBLE_MAX`)
+    // must always be able to roll to its aim, and the clamped led maximum
+    // must stay past the eligibility ceiling. 1460 keeps its empirical
+    // value. `FRICTION` stays fixed: it is shared ball physics, not a knob
+    // (see `passing::speed_for`'s own doc).
     //
     // Every range below STARTED as a prior converted from the metric ranges
     // the issue proposed, at a pitch scale of "960 px across a full-size

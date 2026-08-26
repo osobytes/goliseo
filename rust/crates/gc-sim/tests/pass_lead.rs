@@ -505,3 +505,111 @@ fn a_lead_point_is_clamped_to_the_pitch() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// the physical-reach margin and the release horizon (pass-reception rework)
+// ---------------------------------------------------------------------
+
+/// A futsal-sized state: the reach-margin geometry needs distances past
+/// 1100 px, which the frozen 960x540 solver fixture cannot host.
+fn futsal_state() -> MatchState {
+    let mut state = new_state();
+    state.field = PitchSize {
+        w: 1648.0,
+        h: 927.0,
+    };
+    state
+}
+
+#[test]
+fn a_candidate_past_the_reach_margin_is_refused_outright() {
+    let tune = Tuning::new();
+    let state = futsal_state();
+    let mut predictor = pass_lead::release_predictor();
+    let passer = Vec2::new(60.0, 463.0);
+    // Every candidate for this receiver lies past REACH_MARGIN of the
+    // launch's own roll-out (PASS_SPEED_MAX / FRICTION * 0.95 ~ 1156 px):
+    // even the shortest lead asks the ball to roll where it physically
+    // cannot with margin, so the solver must fall back to unled rather
+    // than promise it.
+    let receiver = runner(&state, Vec2::new(1275.0, 463.0), Vec2::new(300.0, 0.0));
+    let solution = pass_lead::solve(
+        &state,
+        &mut predictor,
+        passer,
+        &receiver,
+        CAPTURE,
+        1.0,
+        &tune,
+    );
+    assert!(
+        solution.is_none(),
+        "an aim past the margin must be refused, got {solution:?}"
+    );
+
+    // Pulled inside the margin, the short candidates become answerable —
+    // and whatever wins must itself satisfy the margin invariant.
+    let receiver = runner(&state, Vec2::new(1160.0, 463.0), Vec2::new(300.0, 0.0));
+    let solution = pass_lead::solve(
+        &state,
+        &mut predictor,
+        passer,
+        &receiver,
+        CAPTURE,
+        1.0,
+        &tune,
+    )
+    .expect("a margin-respecting lead exists here");
+    let distance = passer.dist(solution.point);
+    assert!(
+        distance * gc_sim::ball_flight::FRICTION < solution.speed * pass_lead::REACH_MARGIN,
+        "the winning candidate must respect the reach margin: d={distance:.1}, v={:.1}",
+        solution.speed
+    );
+}
+
+#[test]
+fn the_release_horizon_covers_every_margin_admissible_candidate() {
+    // The pairing REACH_MARGIN's doc promises: a candidate the margin
+    // admits must be answerable inside RELEASE_HORIZON, or long leads die
+    // as silent prediction misses again. Coverage of the roll-out within
+    // the horizon is 1 - (1 - FRICTION*dt)^ticks under the engine's exact
+    // per-tick decay.
+    let dt = fixed_clock::TICK_SECONDS;
+    let ticks = (pass_lead::RELEASE_HORIZON / dt).round() as i32;
+    let coverage = 1.0 - (1.0 - gc_sim::ball_flight::FRICTION * dt).powi(ticks);
+    assert!(
+        coverage > pass_lead::REACH_MARGIN + 0.01,
+        "horizon coverage {coverage:.4} must clear REACH_MARGIN {} with room",
+        pass_lead::REACH_MARGIN
+    );
+}
+
+// ---------------------------------------------------------------------
+// the arrival model's budget honesty (pass-reception rework)
+// ---------------------------------------------------------------------
+
+#[test]
+fn time_to_reach_never_reports_an_arrival_past_its_budget() {
+    let tune = Tuning::new();
+    let state = new_state();
+    let receiver = runner(&state, Vec2::new(100.0, 270.0), Vec2::new(0.0, 0.0));
+    let body = body_of(&receiver, &tune);
+    let target = Vec2::new(400.0, 270.0);
+    let full = locomotion::time_to_reach(&body, target, CAPTURE, 10.0, DT, &tune)
+        .expect("a 300 px straight dash is reachable in 10 s");
+    // A budget half a tick short must refuse. The pre-fix ceil admitted
+    // arrivals up to one tick PAST the budget, which let the lead solver
+    // certify meetings the receiver missed by exactly that tick.
+    assert_eq!(
+        locomotion::time_to_reach(&body, target, CAPTURE, full - DT / 2.0, DT, &tune),
+        None,
+        "an arrival later than the budget is not an arrival"
+    );
+    // Half a tick of slack (dodging float-representation ambiguity at the
+    // exact boundary) still answers, with the same arrival.
+    assert_eq!(
+        locomotion::time_to_reach(&body, target, CAPTURE, full + DT / 2.0, DT, &tune),
+        Some(full)
+    );
+}

@@ -988,6 +988,15 @@ pub struct MatchMetrics {
     /// [`Self::pass_aim_error`]. `None` when the match contained no driven
     /// ground pass.
     pub pass_lead_time: Option<f64>,
+    /// Mean distance, px, between a ground pass's aim point and the ball at
+    /// the moment the pass resolved (first possession by anyone, or a
+    /// pass-ending body ricochet) — how far from where it was aimed a pass
+    /// actually gets settled. A pass trapped at its aim point contributes
+    /// ~0; a pass that blows through the receiver and is chased down the
+    /// runout contributes the whole chase. Stamped on by the headless
+    /// runner, same seam and same reason as [`Self::pass_aim_error`].
+    /// `None` when no ground pass resolved.
+    pub pass_meet_runout: Option<f64>,
     /// Composite fun score, stamped on by the headless runner (never set by
     /// [`finish`]).
     pub fun: Option<f64>,
@@ -1104,6 +1113,7 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         // `finish` has no access to it and must not pretend otherwise.
         pass_aim_error: None,
         pass_lead_time: None,
+        pass_meet_runout: None,
         fun: None,
         whiff_rate: (c.tackle_attempts > 0)
             .then(|| c.tackle_misses as f64 / c.tackle_attempts as f64),

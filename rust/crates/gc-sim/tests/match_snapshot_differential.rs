@@ -114,11 +114,11 @@ const CASE_B: &str = include_str!("fixtures/match_snapshot_case_b_baseline.txt")
 /// `match_snapshot::hash_canonical` of case A's snapshot, recorded from this
 /// build alongside `match_snapshot_case_a_baseline.txt` — self-recorded, not
 /// the retired Lua digest. See this file's module doc.
-const CASE_A_BASELINE_HASH: &str = "ab3381aac8746e9d";
+const CASE_A_BASELINE_HASH: &str = "3b4b67db19fb8a6d";
 /// `match_snapshot::hash_canonical` of case B's snapshot, recorded from this
 /// build alongside `match_snapshot_case_b_baseline.txt` — self-recorded, not
 /// the retired Lua digest. See this file's module doc.
-const CASE_B_BASELINE_HASH: &str = "e7f10e3262fb9b55";
+const CASE_B_BASELINE_HASH: &str = "5f1cc3d5ce5f92de";
 
 #[allow(clippy::too_many_arguments)]
 fn make_player(
@@ -190,6 +190,7 @@ fn make_player(
         grab_timer: 0.0,
         throw_timer: 0.0,
         receive_timer: 0.0,
+        receive_target: None,
         sprint_meter: 1.0,
         sprint_dur: 3.0,
         sprinting: false,
@@ -256,6 +257,7 @@ fn base_state() -> MatchState {
         owner: None,
         controlled: 2,
         human_controlled: false,
+        stick_latch: None,
         score: ByTeam { home: 0, away: 0 },
         time_left: 300.0,
         max_goals: 5,

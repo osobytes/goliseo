@@ -103,6 +103,7 @@ fn make_player(
         grab_timer: 0.0,
         throw_timer: 0.0,
         receive_timer: 0.0,
+        receive_target: None,
         sprint_meter: 1.0,
         sprint_dur: 3.0,
         sprinting: false,
@@ -172,6 +173,7 @@ fn new_state() -> MatchState {
         owner: None,
         controlled: 2,
         human_controlled: false,
+        stick_latch: None,
         score: ByTeam { home: 0, away: 0 },
         time_left: 240.0,
         max_goals: 3,
@@ -944,7 +946,7 @@ fn rollback_events_defensively_copies_inputs_diffs_confirmed_records_and_compact
     let next_diff = rollback_events::apply(&mut timeline, 1, 1, &[supplied(&next)]).unwrap();
     assert_eq!(next_diff.added.len(), 0);
     assert_eq!(match_snapshot::hash(&initial), initial_hash);
-    assert_eq!(match_snapshot::VERSION, 14);
+    assert_eq!(match_snapshot::VERSION, 15);
 }
 
 #[test]

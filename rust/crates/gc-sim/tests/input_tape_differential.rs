@@ -557,12 +557,25 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 /// **Re-pinned again, same day**: `LOCO_PACE_REF_HI`'s default settled at
 /// 280 (`gc-data/src/tunables.rs`), moving all five values once more.
 /// Re-derived and confirmed the same way.
+///
+/// **Re-pinned 2026-08-26** for the pass-reception rework
+/// (`match_snapshot::VERSION` 14 -> 15 / `COMBAT_VERSION` 15 -> 16, plus the
+/// real steering change: the release pickup cooldown no longer blocks the
+/// designated receiver, who now steers onto the pass's stored reception
+/// point). This recording carries no combat companion and slot 4's edges
+/// fire a pass on tick 2, so both the schema change (new `receive_target`/
+/// `stick_latch` fields on every boundary, even where `Nil`) and the real
+/// reception-steering change move all five stepped boundaries. Re-derived
+/// by running this build (`cargo test -p gc-sim --test
+/// input_tape_differential the_stepped_boundaries_reproduce_their_recorded_baseline
+/// -- --nocapture` with a temporary `eprintln!` of `tape.boundary_hashes`,
+/// reverted after capture).
 const STEPPED_BASELINE: [&str; 5] = [
-    "f629336cfa7f0a33",
-    "8c324349669ec26f",
-    "b4dcf06f5c4d1c48",
-    "a84351131a3b445c",
-    "071b6f33ca353367",
+    "da338fca0ad6ef8d",
+    "45e5bc85cc36f33d",
+    "5641028953c50e52",
+    "61a3ecf28fdfc28c",
+    "4f51ca66fd8c9b3f",
 ];
 
 #[test]
