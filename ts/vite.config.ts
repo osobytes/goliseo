@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 
 import { defineConfig, type Plugin } from "vite";
@@ -50,8 +51,43 @@ function thirdPartyNotices(): Plugin {
   };
 }
 
+// Dev-only sink for `@gc/app`'s `match_debug_log` (owner request,
+// 2026-08-26): the running app POSTs one JSONL batch at a time to
+// `/__match_debug?m=<match id>`, and this appends it under
+// `ts/.match-debug/<match id>.jsonl` (gitignored) -- a plain on-disk record
+// of what actually happened in a play-test match, readable after the fact.
+// `apply: "serve"` keeps it out of `vite build` entirely; a production
+// bundle has no sink, and the logger disables itself on the first failed
+// POST anyway.
+function matchDebugSink(): Plugin {
+  return {
+    name: "match-debug-sink",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__match_debug", (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+        const url = new URL(req.url ?? "", "http://localhost");
+        const id = (url.searchParams.get("m") ?? "").replace(/[^a-zA-Z0-9_-]/g, "") || "match";
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          const dir = join(import.meta.dirname, ".match-debug");
+          mkdirSync(dir, { recursive: true });
+          appendFileSync(join(dir, `${id}.jsonl`), Buffer.concat(chunks));
+          res.statusCode = 204;
+          res.end();
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [thirdPartyNotices()],
+  plugins: [thirdPartyNotices(), matchDebugSink()],
   server: {
     fs: {
       // Serve from the whole ts workspace (pnpm's workspace symlinks

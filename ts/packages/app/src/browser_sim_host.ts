@@ -39,6 +39,7 @@
 // documented at the cast site below.
 
 import { inputSample } from "@gc/input";
+import { matchDebugLog } from "./match_debug_log.ts";
 import type { inputSampleTypes } from "@gc/input";
 import { dispossessionFlinch, frameBuffer, releaseFollow } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
@@ -151,6 +152,17 @@ class BrowserWasmSimHost implements SimHostPort {
       options.homeStarterIds !== undefined ? [...options.homeStarterIds] : undefined,
     );
     this.clock = new gcWasmWeb.FixedClock();
+    // Dev-only match debug log (no-op outside `vite dev`): the match's
+    // constant facts once, then per-tick events from `frame()` below.
+    matchDebugLog.begin({
+      home: homeTeamId,
+      away: awayTeamId,
+      seed,
+      duration_seconds: durationSeconds,
+      max_goals: maxGoals,
+      combat: options.combatEnabled === true,
+      local_slot: localSlot,
+    });
   }
 
   private assertLive(): void {
@@ -211,6 +223,9 @@ class BrowserWasmSimHost implements SimHostPort {
     const decoded = frameBuffer.decode(words);
     const frame = frameBuffer.toRenderFrame(decoded, this.rosterInternal());
     this.frameCache = { tick, kickFollowSlots, dispossessedSlots, frame };
+    // Dev-only: a same-tick rebuild (mask change) is skipped inside the
+    // logger, so this logs each simulated tick's events exactly once.
+    matchDebugLog.frame(tick, frame, this.rosterInternal().ids);
     return frame;
   }
 
@@ -241,6 +256,7 @@ class BrowserWasmSimHost implements SimHostPort {
     if (this.disposed) {
       return;
     }
+    matchDebugLog.end(this.session.inputTick);
     this.disposed = true;
     this.session.free();
   }
