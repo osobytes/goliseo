@@ -57,15 +57,19 @@ love . --tripwire [write] fun-signature snapshot vs data/fun_baseline.lua
                           (in check.sh; exit 1 on drift; `write` refreshes)
 ```
 
-**Today there is no CLI.** The same measurements are library calls in
-`gc-sim`, reached from a Rust test or a scratch harness:
-`headless::run_batch` plays a seeded batch and `headless::report` prints it;
-`sweep::sensitivity` and `sweep::paired_delta` do the per-knob sweep;
+**Today there is no CLI**, and the Rust workspace has no `[[bin]]` target at
+all. The same measurements are library calls in `gc-sim`, reached from a Rust
+test or a scratch harness: `headless::run_batch` plays a seeded batch and
+`headless::report` prints it; `sweep::sensitivity` and `sweep::paired_delta`
+do the per-knob sweep;
 `tripwire::measure` / `compare` / `report` produce and check the fun
 signature, and `tripwire::serialize` emits a `gc_data::fun_baseline` literal
 to paste over `rust/crates/gc-data/src/fun_baseline.rs`;
 `outfield_ai_baseline::measure` reproduces the frozen control. Rebuilding a
-runnable entry point over them is not done — see the banner above.
+general entry point over them is not done. What *is* runnable is a set of
+`#[ignore]`d recorder tests, one per frozen artifact — they are the real
+re-freeze procedure and they are listed under
+[Commands](#commands) below.
 
 **Status (2026-07-10, pre-port):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
 runs 30 seeded matches in check.sh and fails the gate when any banded-metric
@@ -542,11 +546,70 @@ fixture through `gc_sim::outfield_ai_baseline::measure` and compares it against
 the frozen `gc_data::outfield_ai_baseline::RECORD`, so it runs inside
 the workspace test suite — gate 3 of `./scripts/check.sh` (`cargo nextest run
 --workspace` since #594), which `.github/workflows/ci.yml`'s gate jobs invoke
-rather than mirroring, so the two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
-`outfield_ai_baseline::serialize` over a fresh `measure` and pasting the result
-over `rust/crates/gc-data/src/outfield_ai_baseline.rs`; the ceremony below is
-what the acknowledgement flag used to enforce, and it is now enforced by review
-rather than by an argument parser.
+rather than mirroring, so the two cannot drift (AGENTS.md §9).
+
+A deliberate re-freeze is the `#[ignore]`d **recorder** in that same test
+file. It prints to stdout and writes nothing: a recorder that overwrote its
+own fixture during a test run would turn a balance regression into a no-op.
+**Splice, do not redirect** — `serialize` emits the module doc header and the
+`pub const RECORD` block only, so overwriting the whole target file deletes
+the type definitions that live between them and does not compile.
+
+```sh
+cd rust
+cargo test -p gc-sim --test outfield_ai_baseline -- \
+    --ignored --nocapture record_outfield_ai_baseline \
+  | sed -n '/^\/\/! Frozen/,/^};$/p' \
+  > /tmp/outfield_ai_baseline.rs
+```
+
+Then replace `rust/crates/gc-data/src/outfield_ai_baseline.rs`'s
+`/// The frozen baseline recording.` + `pub const RECORD … };` block with the
+one in `/tmp`, leaving everything above it in place, and re-run the test file
+to verify. `record_outfield_ai_baseline`'s own doc comment is the authority on
+this workflow — the block here is a pointer to it, not a second copy to drift
+from. The ceremony in "The non-refresh rule" below is what the pre-port
+acknowledgement flag used to enforce; it is now enforced by review rather than
+by an argument parser.
+
+Every other frozen artifact a trajectory-moving change can redden has a
+recorder of the same shape, each documented at its own `#[ignore]`d test:
+
+| Artifact | Recorder | Test file (under `rust/crates/`) |
+| --- | --- | --- |
+| `gc_data::outfield_ai_baseline::RECORD` | `record_outfield_ai_baseline` | `gc-sim/tests/outfield_ai_baseline.rs` |
+| `gc_data::omp1_determinism` (derived half only) | `record_omp1_derived_baseline` | `gc-sim/tests/determinism_evidence.rs` |
+| `fixtures/match_step_ai_ai_baseline.txt` | `record_match_step_ai_ai_baseline` | `gc-sim/tests/match_differential.rs` |
+| `fixtures/match_snapshot_case_{a,b}_baseline.txt` | `record_match_snapshot_case_a_baseline`, `..._case_b_baseline` | `gc-sim/tests/match_snapshot_differential.rs` |
+| `fixtures/session_ai_driven_baseline.txt` | `record_session_ai_driven_baseline` | `gc-sim/tests/session_ai_driven_differential.rs` |
+| `fixtures/session_legacy_ordinary_baseline.txt` | `record_session_legacy_ordinary_baseline` | `gc-sim/tests/session_legacy_differential.rs` |
+| `fixtures/rollback_session_baseline.txt` | `record_rollback_session_baseline` | `gc-sim/tests/rollback_session_differential.rs` |
+
+Read the recorder's doc comment before running it: each one's capture pipeline
+differs (`sed` range, `grep` filter, single line) because each fixture's shape
+does, and every one of them documents why a `>` redirect straight onto the
+fixture is wrong. They are invoked with `cargo test`, not the gate's
+`cargo nextest run` — `--ignored --nocapture` is the invocation their doc
+comments give, and a recorder is a print, not an assertion.
+
+**The `love . --sim 100` validation has no current equivalent, and nothing was
+built to replace it.** The pre-port ritual asked a moved signature for a
+100-match run at defaults before the baseline was refreshed; that command
+played 100 seeded matches through the Lua `sim.headless` and printed the
+fun-proxy distribution. There is no binary to run it from — the Rust
+workspace has no `[[bin]]` target at all — and the fun proxy it validated went
+with the tripwire (#630).
+
+What substitutes is narrower and stronger: **the frozen baseline's own 60-seed
+exact comparison** on seeds `20001..20060`, the test named above. It is not a
+100-match statistical sample and does not claim to be. It is a deterministic
+control that either reproduces bit-for-bit or does not, so it needs no sample
+size to be conclusive about whether combat-disabled play moved. Where a change
+makes a *causal* claim about a knob, the standard is
+`gc_sim::knob_contract::assert_moves` (AGENTS.md §9), which measures its own
+noise floor on the caller's seed set instead of assuming a band. A batch at
+defaults is still available as a library call (`headless::run_batch`) for
+anyone who wants the distribution — a diagnostic, not a gate.
 
 **Pre-port**, for reading the history below:
 
@@ -588,9 +651,14 @@ deliberately awkward `--refreeze-ack` ceremony would make that ceremony routine
 and hollow out the one guardrail this artifact has.
 
 In both cases the resolution is the same order of operations: confirm the
-change is intended, log it, and only then run
-`love . --ai-baseline write --refreeze-ack`. Writing without the
-acknowledgement flag is refused. Every re-freeze bumps `baseline_version`, and
+change is intended, log it, and only then run `record_outfield_ai_baseline`
+(the recorder under "Commands" above). The `--refreeze-ack` flag that used to
+refuse an unacknowledged write went with the Lua tree, and nothing replaced
+the parser. What stands in its place is weaker in one way and stronger in
+another: the recorder cannot write at all — it prints, a human splices, and
+review is what checks the drift-log entry came first. Every re-freeze bumps
+`baseline_version` (the recorder does it, reading the frozen record's own
+value and adding one), and
 the `signature` deliberately excludes it, so a re-freeze that changes nothing
 shows up in git as a lone version bump rather than hiding inside a churned
 file.

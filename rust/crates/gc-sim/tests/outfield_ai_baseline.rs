@@ -636,8 +636,11 @@ fn outfield_ai_baseline_cannot_mistake_a_probe_run_for_the_frozen_freeze() {
 /// a 2-seed *self*-reproducibility (see
 /// `outfield_ai_baseline_reproduces_a_fresh_run_of_the_fixture_exactly`
 /// above) and never asserts the full 60-seed run equals the frozen record;
-/// that comparison is a separate build-time check
-/// (`love . --ai-baseline`/`scripts/check.sh`), not a `busted` spec case.
+/// on that tree the comparison was a separate build-time check
+/// (`love . --ai-baseline`, run from `scripts/check.sh`), not a `busted` spec
+/// case. Today it is this test: gate 3 of `./scripts/check.sh` runs it as
+/// part of `cargo nextest run --workspace`, and `record_outfield_ai_baseline`
+/// below is the only way to re-freeze what it compares against.
 ///
 /// This test used to be `#[ignore]`d: a full 60-seed run of the already-
 /// ported simulation did not reproduce the frozen fixture bit-for-bit, even
