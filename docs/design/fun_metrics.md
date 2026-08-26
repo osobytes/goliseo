@@ -24,25 +24,46 @@
 >   a knob today needs a fresh sweep, not a citation. §9 of `AGENTS.md` is the
 >   standard a knob claim has to meet now: `gc_sim::knob_contract::assert_moves`
 >   against a *measured* noise floor.
-> - **The fun tripwire is not currently wired into any gate.** The prose below
->   says it runs in `check.sh` and fails the build on drift; that was true of
->   the Lua tree. `gc_sim::tripwire` ports the measurement and comparison, but
->   nothing calls `tripwire::measure` today, so the 30-seed signature is not
->   checked by `./scripts/check.sh` or CI. The frozen combat-disabled Outfield
->   AI baseline **is** still enforced, as an ordinary Rust test
->   (`gc-sim/tests/outfield_ai_baseline.rs`, run by gate 3).
+> - **The fun tripwire is gone — #630 deleted it, 2026-08-26.** Several
+>   passages below still describe it as live: the roadmap's item 4, the
+>   2026-07-10 status block, and the pre-port command list. Those say a
+>   30-seed signature runs in `check.sh` and fails the build on drift. That
+>   was true of the Lua tree and stopped being true at the port. `gc_sim::tripwire`
+>   and `gc_data::fun_baseline` were carried across but nothing ever called
+>   `tripwire::measure`, so the checked-in signature — `fun 0.442418`,
+>   `goals_total 2.1`, measured on a 960×540 pitch — sat unrefreshed through
+>   thirty drift-log entries including the futsal re-dimensioning, the
+>   locomotion rewrite and the passing rework. It was deleted rather than
+>   re-wired: re-freezing it would have meant building the sweep runner it
+>   never had, re-recording from scratch, and then adding a *second* global
+>   balance gate demanding a re-freeze on every trajectory-moving change.
+>   **Nothing measurable was lost** — `gc_sim::metrics` and
+>   `gc_sim::metric_registry` still compute every one of those metrics,
+>   `controlled_dribble_*` included. What was lost is a frozen *absolute*
+>   snapshot of proxy play, which "The human proxy (the big caveat)" below
+>   already says the instrument cannot support.
+>
+>   What enforces balance today: the frozen combat-disabled Outfield AI
+>   baseline, an ordinary Rust test (`gc-sim/tests/outfield_ai_baseline.rs`,
+>   run by gate 3). What holds a per-knob claim: `gc_sim::knob_contract::assert_moves`
+>   (AGENTS.md §9), which measures its own noise floor on the caller's seed
+>   set rather than assuming a 5% band.
+> - **"A 100-match validation" names a command that does not exist.** Several
+>   passages below ask a moved signature for one, meaning `love . --sim 100`.
+>   There is no such binary — the Rust workspace has no `[[bin]]` target at
+>   all. What substitutes is named under [Commands](#commands) below.
 >
 > The history is kept, not deleted: it records why the bands, the candidates
 > and the non-refresh rule are what they are.
 
 **Scope:** `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
-`gc_sim::tripwire`, and their tests under `rust/crates/gc-sim/tests/`
+and their tests under `rust/crates/gc-sim/tests/`
 (pre-port: `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`,
 `sim/sweep.lua`, `main.lua`, `spec/sim/*`)
 
 Combat evidence is governed separately by
 [`combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md). The
-soccer-only tripwire and its historical `fun` name remain regression tools;
+soccer-only metrics and their historical `fun` name remain regression tools;
 neither is a measurement of human enjoyment or a combat-active baseline.
 
 **Pre-port CLI (deleted with the Lua tree; kept so the runs cited below can be
@@ -61,10 +82,7 @@ love . --tripwire [write] fun-signature snapshot vs data/fun_baseline.lua
 all. The same measurements are library calls in `gc-sim`, reached from a Rust
 test or a scratch harness: `headless::run_batch` plays a seeded batch and
 `headless::report` prints it; `sweep::sensitivity` and `sweep::paired_delta`
-do the per-knob sweep;
-`tripwire::measure` / `compare` / `report` produce and check the fun
-signature, and `tripwire::serialize` emits a `gc_data::fun_baseline` literal
-to paste over `rust/crates/gc-data/src/fun_baseline.rs`;
+do the per-knob sweep; and
 `outfield_ai_baseline::measure` reproduces the frozen control. Rebuilding a
 general entry point over them is not done. What *is* runnable is a set of
 `#[ignore]`d recorder tests, one per frozen artifact — they are the real
@@ -448,13 +466,16 @@ Conclusions:
 
 ## Frozen combat-disabled Outfield AI baseline (#59)
 
-Everything above is the **soccer fun tripwire**: a 30-seed human-proxy smoke
-test with a 5% tolerance band, checked in as `gc_data::fun_baseline`. This
-section is a *different* artifact with a different job, and the two must not be
-confused or merged. The locked evidence contract
-(`docs/design/combat_fun_evidence_contract.md` §4.4) requires the soccer
-tripwire to stay combat-disabled and to never be refreshed from a combat
-fixture; nothing in #59 touches `gc_data::fun_baseline`.
+Everything above was measured with the **soccer fun proxy**, and most of it
+against the 30-seed human-proxy smoke test that used to be checked in as
+`gc_data::fun_baseline`. #630 deleted that artifact (see the banner); this
+section's baseline is the one that survives, and it is a *different* artifact
+with a different job — the two were never to be confused or merged. The locked
+evidence contract (`docs/design/combat_fun_evidence_contract.md` §4.4)
+required the soccer tripwire to stay combat-disabled and never to be refreshed
+from a combat fixture. Nothing in #59 ever touched it, and there is nothing
+left to refresh; the clause is now satisfied vacuously rather than by
+vigilance.
 
 ### Why it exists
 
@@ -524,7 +545,8 @@ by the metric signature below. It is never absorbed.
 
 Seeds `20001..20060` are the same block #149 runs its combat-active arm on, so
 this is a **paired** control under common random numbers rather than an
-independent sample. It deliberately avoids the tripwire's `1..30` and the spent
+independent sample. It deliberately avoids `1..30` — the retired tripwire's
+block, spent whether or not the tripwire still exists — and the spent
 evaluation seeds `1001..1060`.
 
 The file records the full identity #59 asks for: `policy_id`, `fixture_hash`,
@@ -629,7 +651,8 @@ tier of AGENTS.md §9 and must not try to open a GL context on a CI runner.
 cite this artifact as their control, so refreshing it to go green destroys the
 only record that the control moved.
 
-Unlike the fun tripwire this comparison is **exact**. The batch is
+Unlike the retired fun tripwire's 5% drift band, this comparison is
+**exact**. The batch is
 deterministic per seed, and recorded values round-trip through `%.17g`, so any
 metric movement at all is real.
 

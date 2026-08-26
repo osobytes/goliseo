@@ -74,8 +74,8 @@ The showcase product screen remains on its existing fixed-clock, legacy-input
 path. Its render-side `MatchInput` adapter is deliberately separate from the
 fixed-slot simulation boundary while the per-player mode and presentation work
 is defined later. The headless harness also preserves that legacy `MatchInput`
-path whenever both `frames` and `slot_sources` are omitted; this is the normal
-CI gameplay tripwire.
+path whenever both `frames` and `slot_sources` are omitted; this is the path
+the frozen gameplay baselines in CI are recorded and verified on.
 
 `game.match_input_adapter` is the explicit offline compatibility adapter. If a
 later producer converts one of its tick `MatchInput`s with
@@ -91,8 +91,8 @@ select which player's own action state the single legacy input drives.
 Slot-mode heavy-touch losses also cancel the former carrier's pending wind-up
 at that tick boundary. The offline compatibility path intentionally does not
 add this new cancellation to legacy match AI, whose historical heavy-touch
-outcomes remain pinned by the gameplay tripwire; existing tackle and smother
-wind-up cancellations are unchanged in both modes.
+outcomes remain pinned by the frozen gameplay baselines; existing tackle and
+smother wind-up cancellations are unchanged in both modes.
 
 ## Headless recordings
 

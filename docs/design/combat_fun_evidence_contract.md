@@ -121,8 +121,12 @@ field already exists.
 `gc_sim::match` currently supplies score, time, ball/owner state, all player
 positions and soccer commitments, and one-tick `MatchEvent`s for shots, passes,
 touches, tackles, saves, blocks, claims, aerial actions, and jukes.
-`gc_sim::metrics` derives the existing soccer-only `MatchMetrics`, and
-`gc_sim::tripwire` compares its checked-in 30-seed signature.
+`gc_sim::metrics` derives the existing soccer-only `MatchMetrics`. The
+checked-in 30-seed signature comparison over them, `gc_sim::tripwire`, was
+deleted in #630 (2026-08-26) — it was wired to no gate and its frozen values
+had never been re-recorded. The surviving frozen soccer control is
+`gc_data::outfield_ai_baseline` (§3.2 fixture A); the metrics themselves are
+unchanged and still computed per match.
 
 Combat snapshot version 1 and match snapshot version 12 serialize combat state
 and events. Input tape version 2, replay, and rollback-confirmed event handling
@@ -213,9 +217,11 @@ later set early:
 - replacement holdout after an accepted post-holdout amendment:
   `31001..31060`.
 
-The checked-in soccer tripwire remains seeds `1..30`. Historical soccer
-evaluation seeds, including `1001..1060`, are already known and cannot become a
-combat holdout.
+The soccer tripwire's seeds `1..30` remain spent. #630 (2026-08-26) deleted
+the tripwire; deleting the artifact that spent a seed set does not un-spend
+it, and no combat manifest may reclaim `1..30`. Historical soccer evaluation
+seeds, including `1001..1060`, are already known and cannot become a combat
+holdout either.
 
 Calibration, adversarial, and holdout manifests are committed before any
 holdout run. A and B use common random numbers.
@@ -525,6 +531,16 @@ and are never refreshed from a combat fixture. Combat evidence is a separate
 `combat_active_signature/v1` report. `MatchMetrics.fun` retains its historical
 name in the game code but is labeled **soccer-shape proxy** in every research
 export.
+
+> **Note (#630, 2026-08-26): the tripwire and `gc_data::fun_baseline` were
+> deleted.** The clause above stands as written and is now satisfied
+> vacuously — there is no soccer tripwire left to refresh from anything. The
+> surviving combat-disabled soccer control is `gc_data::outfield_ai_baseline`,
+> fixture A of the matrix in §3.2, which is combat-disabled by construction
+> (`gc_sim::headless` never constructs a `CombatMatchState` for it). Whether
+> this P0 clause should be re-pointed at that artifact is an amendment for
+> the decision owner, not an edit to make in passing; it is recorded here so
+> the next reader does not go looking for a module that is gone.
 
 The latest documented 100-match control audit (2026-07-22) already misses
 provisional bands for goals (`1.750 < 2`), shots per goal
