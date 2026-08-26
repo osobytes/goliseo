@@ -441,6 +441,113 @@ fn slide_beats_the_carrier(juking: bool) -> Challenge {
 /// makes them live, so assert they still deny a committed slide — and that
 /// the very same slide wins the ball against a carrier who is not juking,
 /// because an i-frame test that cannot go red proves nothing.
+///
+/// The two tests above both start from a settled close-control jog, so
+/// neither reaches the run-on window this one covers: a juke fired while
+/// the carrier's OWN last touch is still rolling out ahead of the feet.
+/// `update_ball`'s dribble arm orders its four cases ball-runs-free /
+/// close-control / next-touch / just-kicked-run-on, and #629's
+/// `dodge_timer` clause lives in the second — so it claims a tick the
+/// FOURTH would otherwise have taken.
+///
+/// **That ordering improves the run-on case rather than regressing it**,
+/// and the numbers here are measured on this fixture, not assumed. At the
+/// tick the juke fires the ball is 21.7 px ahead (inside the 24 px
+/// `DRIBBLE_TOUCH_REACH`) rolling at 262 px/s, and the carrier is running
+/// at 176 px/s — case 4, because 262 > 176 + `DRIBBLE_CATCH_PACE`. But a
+/// juke replaces realized speed with `move_speed * DODGE_SPEED_MULT`
+/// (160 * 2.4 = 384 px/s here), and 262 is NOT greater than 384 + 10 — so
+/// before the fix the juke tick fell straight through case 4 into case 3
+/// and RE-STRUCK the rolling ball, measured at 596 px/s (= 384 * 1.5 *
+/// weight). Possession was gone before the sidestep ended. The assertions
+/// below pin that arithmetic so the claim cannot rot.
+#[test]
+fn a_juke_keeps_the_ball_even_while_the_last_touch_is_still_running_on() {
+    let tune = Tuning::new();
+    let mut s = new_match();
+    isolate_carrier(&mut s);
+    let controlled = s.controlled;
+    s.players[(controlled - 1) as usize].dribble = 1.0; // clean feet: this is about branch order
+    s.players[(controlled - 1) as usize].sprint_meter = 1.0;
+    let run = input(InputOpts {
+        r#move: Vec2::new(1.0, 0.0),
+        sprint: true,
+    });
+    // Sprint until a real touch fires: only above close-control speed does
+    // the carrier kick the ball ahead of the run at all.
+    let mut struck = false;
+    for _ in 0..90 {
+        step(&mut s, &run, &tune);
+        if count_touches(&s) > 0 {
+            struck = true;
+            break;
+        }
+    }
+    assert!(struck, "the carrier played a touch to run on to");
+
+    // The run-on case is live RIGHT NOW, and this is asserted rather than
+    // assumed so the fixture cannot silently drift into close control and
+    // quietly stop covering what it says it covers.
+    let p = s.players[(controlled - 1) as usize].clone();
+    let speed = p.vel.length();
+    let ball_vel = s.ball_vel.length();
+    assert!(
+        p.pos.dist(s.ball) <= 24.0,
+        "the ball is still within touch reach: {:.1} px",
+        p.pos.dist(s.ball)
+    );
+    assert!(
+        speed >= p.move_speed * tune.value("DRIBBLE_CLOSE"),
+        "above close-control speed, so case 2 is NOT what would claim this \
+         tick: speed={speed:.1}"
+    );
+    assert!(
+        ball_vel > speed + 10.0,
+        "and the touch is still leaving the boot, so case 4 owns it: \
+         ball_vel={ball_vel:.1} speed={speed:.1}"
+    );
+
+    // The pre-fix diagnosis, pinned: a juke's realized speed is high enough
+    // that case 4's own guard flips and case 3 would re-strike the ball.
+    let juke_speed = p.move_speed * 2.4; // DODGE_SPEED_MULT
+    assert!(
+        ball_vel <= juke_speed + 10.0,
+        "a juke inflates realized speed past the run-on guard, which is how \
+         this used to become a second strike: ball_vel={ball_vel:.1} \
+         juke_speed={juke_speed:.1}"
+    );
+
+    let juke = MatchInput {
+        r#move: Vec2::new(1.0, 0.0),
+        dodge: true,
+        ..MatchInput::default()
+    };
+    step(&mut s, &juke, &tune);
+    assert!(
+        s.players[(controlled - 1) as usize].dodge_timer > 0.0,
+        "the juke fired"
+    );
+    let mut touches = count_touches(&s);
+    while s.players[(controlled - 1) as usize].dodge_timer > 0.0 {
+        assert_eq!(
+            s.owner,
+            Some(controlled),
+            "the sidestep keeps the ball even mid-touch-cycle"
+        );
+        step(&mut s, &run, &tune);
+        touches += count_touches(&s);
+    }
+    assert_eq!(
+        s.owner,
+        Some(controlled),
+        "still carrying when the sidestep ends"
+    );
+    assert_eq!(
+        touches, 0,
+        "and the sidestep never became a second strike on the rolling ball"
+    );
+}
+
 #[test]
 fn juke_i_frames_deny_a_committed_slide() {
     let juked = slide_beats_the_carrier(true);

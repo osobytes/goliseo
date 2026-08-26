@@ -6622,6 +6622,26 @@ fn update_ball(
                 // i-frames for `dodge_timer`, which only mean something if
                 // the owner still has the ball. The corrective rest
                 // position follows the body through the sidestep for free.
+                //
+                // The clause sits in the CLOSE-CONTROL arm deliberately,
+                // which means it also claims ticks the run-on arm at the
+                // bottom would otherwise take — a juke fired while the
+                // carrier's OWN last touch is still rolling out ahead of
+                // the feet. Do NOT "fix" that by exempting the run-on
+                // case. Letting the struck ball run on while the body
+                // travels sideways at 2.4x pace puts it outside the
+                // skill-scaled control radius, which is the very
+                // possession loss this clause exists to stop, just
+                // narrowed to "you juked right after touching it". Nor is
+                // it a regression on that window: a juke's realized speed
+                // is `move_speed * DODGE_SPEED_MULT`, big enough that
+                // `ball_vel <= speed + DRIBBLE_CATCH_PACE` flips true, so
+                // BEFORE this clause the juke tick fell past the run-on
+                // arm into the TOUCH arm below and re-struck the rolling
+                // ball at 1.5x the sidestep's pace. Gluing is the
+                // consistent rule: a juke always keeps the ball. Measured
+                // and pinned by `tests/dribble.rs`'s
+                // `a_juke_keeps_the_ball_even_while_the_last_touch_is_still_running_on`.
                 let rest = owner.pos.add(owner.facing.scale(DRIBBLE_LEAD_MIN));
                 let correct = rest
                     .sub(s.ball)
