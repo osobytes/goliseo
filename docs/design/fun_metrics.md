@@ -966,6 +966,58 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-26 — the keeper races winnable loose balls, and the engagement
+  geometry catches up with the futsal box (part of #490's leave-the-line
+  design; the keeper-side follow-up to #622's rescale; owner-requested,
+  deliberate).** `baseline_version` **19 → 20**, signature
+  `b8bf51b45b96ce84` → `44ff0eda9b529776`. **Every identity field is
+  unchanged** — policy id, config/config_hash, content_hash, tuning_hash,
+  fixture_hash, seed_hash, snapshot_version, input_version — because
+  nothing this change touches is on any hashed identity surface: the keeper
+  is match-loop simulation, not part of `outfield_ai_policy`'s declared
+  surface; the two band-set moves (`keeper_engagement` v1 → v2, new
+  `keeper_intercept` v1) are tier-3 set identities, not among the tunable
+  defaults `tuning_hash` covers; and no schema, content, or seed moved. The
+  signature drift is pure trajectory drift from keeper behavior.
+
+  **The cause.** Four cooperating keeper changes, landed together:
+
+  1. **Race-to-ball interception** — #490's "leaving the line" checks,
+     implemented: the earliest claimable meet point off the deterministic
+     ball predictor, a symmetric straight-line time-of-arrival race against
+     the best opponent (win by `win_margin_s` = 0.15 inside
+     `chase_horizon_s` = 1.4, the new `keeper_intercept` band set), a
+     covering-teammate veto, and a wrong-half veto. A winnable race also
+     overrides the through-ball Retreat, which used to concede every 50/50.
+  2. **`keeper_engagement` v2** (206/343, was 120/200): the ×1.7167 the
+     sibling box constants got in #622, so the futsal claim zone's outer
+     band (~depth 215..275, beyond the old 200px radius) can trigger
+     Contain/Advance again.
+  3. **`keeper_aggression` 18..58 → 31..101 px** (`stats.rs`): restores the
+     authored advance depth as a fraction of the claim zone (36%, not the
+     21% the unscaled value had become).
+  4. **`arc_target` wired into `behavior()`** with a real `in_1v1` flag:
+     full aggression depth only against a genuinely unsupported carrier,
+     approach-scaled otherwise. The function was authored, unit-tested, and
+     had zero production call sites until now.
+
+  100-match validation at the new behavior: fun 0.499, goals 2.300,
+  shots/goal 16.293, save rate 0.795, pass completion 0.664, turnovers/min
+  6.599, possession balance 0.529, drought 13.930 s, decided-late 0.745.
+  Versus the 96-seed pre-change reference (fun 0.501, goals 2.365, save
+  rate 0.777, rebound rate 0.342): the keeper stops more, concedes fewer
+  reachable rebounds (0.302), retreats less (`keeper_retreat_s` 3.53 →
+  3.24) and meets shots further off its line (`keeper_shot_depth_mean`
+  23.42 → 24.50). Goals hold inside the 2–5 band. `save_rate` moves
+  further above its 0.45–0.75 ideal band — **that direction is the point
+  of the change** (the owner asked for a keeper that contests rather than
+  concedes); the counterweight the band wants is more beatable shooting,
+  which is #579's shot-quality dial, not keeper passivity. AI-vs-AI keepers
+  almost never see carrier engagement (`keeper_advance_s` 0.45 s/match —
+  the AI shoots from `AI_SHOOT_RANGE` = 410, outside the 275 box), so the
+  engagement rescale principally serves human dribblers and through balls,
+  which this harness cannot exercise.
+
 - **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
   180, and a deflection-aware pass-lane risk model land together (#622 Part
   2 follow-up, owner-approved, deliberate).** `baseline_version` **18 → 19**,

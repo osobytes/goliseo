@@ -2090,6 +2090,12 @@ fn shot_target(s: &MatchState, shooter_team: Team, vbias: f64) -> Vec2 {
 /// keeper comes off its line to gather loose balls here and to close down
 /// a carrier.
 fn in_claim_zone(s: &MatchState, keeper_idx: i64) -> bool {
+    in_claim_zone_at(s, keeper_idx, s.ball)
+}
+
+/// [`in_claim_zone`] for an arbitrary point — the same rect, so a predicted
+/// ball position can be tested for claimability before the ball gets there.
+fn in_claim_zone_at(s: &MatchState, keeper_idx: i64, point: Vec2) -> bool {
     let keeper_team = s.players[(keeper_idx - 1) as usize].team;
     let g = if keeper_team == Team::Home {
         s.goal_home
@@ -2097,13 +2103,13 @@ fn in_claim_zone(s: &MatchState, keeper_idx: i64) -> bool {
         s.goal_away
     };
     let depth = if keeper_team == Team::Home {
-        s.ball.x
+        point.x
     } else {
-        s.field.w - s.ball.x
+        s.field.w - point.x
     };
     depth <= KEEPER_BOX_DEPTH
-        && s.ball.y >= g.y - KEEPER_BOX_PAD
-        && s.ball.y <= g.y + g.h + KEEPER_BOX_PAD
+        && point.y >= g.y - KEEPER_BOX_PAD
+        && point.y <= g.y + g.h + KEEPER_BOX_PAD
 }
 
 /// Where a keeper holds a gathered ball: at its hands, but clamped safely
@@ -4490,6 +4496,93 @@ fn move_ai_owner_keeper(s: &mut MatchState, i: usize, dt: f64, tune: &Tuning) {
     s.players[i] = pm;
 }
 
+/// The probe grid `keeper_intercept_target` samples the ball's future over.
+/// Fixed literals, front-loaded where meets are most contested; the last
+/// probe matches the `keeper_intercept` set's `chase_horizon_s` so nothing
+/// beyond the horizon is ever computed just to be rejected.
+const KEEPER_INTERCEPT_PROBES: [f64; 6] = [0.15, 0.3, 0.5, 0.75, 1.05, 1.4];
+
+/// Straight-line, top-speed time for a body to reach `point` — the same
+/// deliberately optimistic model `BallPredictor::reachable_before_arrival`
+/// documents, applied symmetrically to every runner so the race is fair
+/// even where the model is wrong.
+fn straight_line_time(from: Vec2, point: Vec2, radius: f64, speed: f64) -> f64 {
+    let distance = (from.dist(point) - radius - BALL_RADIUS).max(0.0);
+    if speed > 0.0 {
+        distance / speed
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// A loose incoming ball the keeper should leave its line and race for:
+/// the earliest claimable meet point (inside the claim zone, at grabbable
+/// height) that the keeper reaches in time and wins per
+/// [`keeper::intercept_race`]. `None` when the ball is owned, a live shot
+/// read (`keeper_release_kind` — the save pipeline owns those), on the far
+/// half, moving away, out of reach, or better left to a covering teammate.
+///
+/// SM Strikers' goalie answers this with a layered gate (wrong-half veto,
+/// box-entry projection, a teammate-will-get-it veto) rather than a radius;
+/// this is that shape on top of the deterministic ball predictor.
+fn keeper_intercept_target(s: &MatchState, i: usize, prev: &[Vec2]) -> Option<Vec2> {
+    let p = &s.players[i];
+    let idx = (i + 1) as i64;
+    if s.owner.is_some() || p.keeper_release_kind.is_some() {
+        return None;
+    }
+    let infield_direction = if p.team == Team::Home { 1.0 } else { -1.0 };
+    let ball_depth = if p.team == Team::Home {
+        s.ball.x
+    } else {
+        s.field.w - s.ball.x
+    };
+    // Wrong-half veto: routine loose balls on the far half never pull the
+    // keeper, no matter how winnable the geometry looks.
+    if ball_depth > s.field.w * 0.5 {
+        return None;
+    }
+    // Outside the box the ball must actually be coming at us; inside it, a
+    // lateral through ball is still the keeper's to contest.
+    if !in_claim_zone(s, idx) && s.ball_vel.x * infield_direction >= 0.0 {
+        return None;
+    }
+
+    let mut predictor = BallPredictor::default();
+    for t in KEEPER_INTERCEPT_PROBES {
+        let estimate = predictor.estimate_position_at_time(s, t);
+        if !in_claim_zone_at(s, idx, estimate.pos) || estimate.z > KEEPER_AIR_GRAB {
+            continue;
+        }
+        let keeper_time = straight_line_time(prev[i], estimate.pos, p.radius, p.move_speed);
+        if keeper_time > t {
+            continue;
+        }
+        let mut opponent_time: Option<f64> = None;
+        let mut teammate_time: Option<f64> = None;
+        for (j, other) in s.players.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let arrival = straight_line_time(prev[j], estimate.pos, other.radius, other.move_speed);
+            if other.team != p.team {
+                opponent_time = Some(opponent_time.map_or(arrival, |t0: f64| t0.min(arrival)));
+            } else if !other.is_keeper {
+                teammate_time = Some(teammate_time.map_or(arrival, |t0: f64| t0.min(arrival)));
+            }
+        }
+        if keeper::intercept_race(&keeper::KeeperInterceptContext {
+            claim_time: t,
+            keeper_time,
+            opponent_time,
+            teammate_time,
+        }) {
+            return Some(estimate.pos);
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_lines)]
 fn move_offball_keeper(
     s: &mut MatchState,
@@ -4622,6 +4715,8 @@ fn move_offball_keeper(
         }
     }
 
+    let intercept_target = keeper_intercept_target(s, i, prev);
+
     let mut through_ball_cue = false;
     if s.owner.is_none() && toward_goal && p.keeper_release_kind.is_none() {
         for receiver in &s.players {
@@ -4634,6 +4729,12 @@ fn move_offball_keeper(
             }
         }
     }
+    if intercept_target.is_some() {
+        // A winnable race overrides the designated-receiver retreat: the
+        // keeper contests the through ball instead of conceding it and
+        // backing off (keeper::intercept_race said it gets there first).
+        through_ball_cue = false;
+    }
 
     let behavior = keeper::behavior(&keeper::KeeperBehaviorContext {
         current_state: p.keeper_state,
@@ -4645,6 +4746,11 @@ fn move_offball_keeper(
         aggression: p.keeper_aggression,
         advance_eligible,
         contain_eligible,
+        // A genuinely unsupported carrier is a breakaway: the keeper
+        // commits its full aggression depth (Strikers holds MORE ground on
+        // a clean breakaway); a supported attack earns only an
+        // approach-scaled advance.
+        in_1v1: !support_near && !defender_engaged,
         ground_cue,
         lob_cue,
         through_ball_cue,
@@ -4714,13 +4820,15 @@ fn move_offball_keeper(
         apply_locomotion(field, &mut pm, desired, dt, tune, LocoOpts::offball());
         s.players[i] = pm;
     } else if s.owner.is_none()
-        && in_claim_zone(s, idx)
         && p.keeper_release_kind.is_none()
-        && !through_ball_cue
+        && (intercept_target.is_some() || (in_claim_zone(s, idx) && !through_ball_cue))
     {
-        // Come off the line to claim a loose ball in the box. Predictive
-        // pursuit remains useful for non-designated claims.
-        let aim = ai::pursue(p.pos, s.ball, s.ball_vel, KEEPER_LEAD);
+        // Come off the line to claim a loose ball in the box, or race an
+        // incoming one the keeper wins (`keeper_intercept_target`).
+        // Predictive pursuit remains useful for non-designated claims; a
+        // raced ball aims at the predictor's meet point instead.
+        let aim =
+            intercept_target.unwrap_or_else(|| ai::pursue(p.pos, s.ball, s.ball_vel, KEEPER_LEAD));
         let (_, dir) = ai::steer(p.pos, aim, p.move_speed * dt);
         let desired = if dir.x != 0.0 || dir.y != 0.0 {
             dir.scale(p.move_speed)

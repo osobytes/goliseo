@@ -277,9 +277,18 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         // Re-pinned again the same day once `LOCO_PACE_REF_HI` settled at 280
         // (was 300 for the futsal re-pin above): `final_hash`/`tape_digest`
         // move on the new top speed alone, `initial_hash` untouched.
-        initial_hash: "d0105244c0733817",
-        final_hash: "c71b66a085f366be",
-        tape_digest: "acf9c20f3d23988a",
+        // 2026-08-26: re-pinned again by the goalkeeper race-to-ball rework
+        // (`keeper_engagement` v2, `keeper_aggression`'s rescale in
+        // `stats.rs`, `arc_target` wiring, and the new
+        // `keeper_intercept_target`/`keeper::intercept_race` loose-ball
+        // chase). `initial_hash` moves this time too, unlike a pace-only
+        // change: `keeper_aggression` is baked into every `MatchPlayer`
+        // snapshot at match construction, before any tick steps. Re-derived
+        // the same way: run the failing assertion and read the values it
+        // prints.
+        initial_hash: "6962c0f42c48384f",
+        final_hash: "af3bc20b6674e336",
+        tape_digest: "ba84ab431eba170f",
     },
     // 2026-08-25: the pitch is re-dimensioned to regulation futsal
     // proportions, 960x540 -> 1648x927 (owner-approved, deliberate; no issue
@@ -305,6 +314,23 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     // 2026-08-25, later the same day: `final_hash`/`tape_digest` moved once
     // more, alone, after `LOCO_PACE_REF_HI` settled at 280 (was 300 for the
     // futsal re-pin above) -- `initial_hash` is untouched by a pace default.
+    //
+    // 2026-08-26: the goalkeeper race-to-ball rework (`keeper_engagement`'s
+    // v2 band widening, `keeper_aggression`'s rescale in `stats.rs`,
+    // `keeper::behavior`'s advance target switching to `arc_target`, and the
+    // new `keeper_intercept_target`/`keeper::intercept_race` loose-ball
+    // chase in `match.rs`) moved all twelve values across these four
+    // fixtures again, `initial_hash` included: `keeper_aggression` is baked
+    // into every `MatchPlayer` snapshot from `stats::keeper_aggression` at
+    // match construction, before a single tick steps, so even the
+    // zero-tick `initial_hash` moves on the stat rescale alone, the same
+    // way a schema bump or a field-size change moves it elsewhere in this
+    // file. `final_hash`/`tape_digest` additionally reflect real
+    // stepped-tick divergence from the keeper's changed positioning and
+    // its new willingness to leave its line for a winnable loose ball.
+    // Re-derived the same way this file's other undocumented artifacts
+    // are: run the failing assertion inside `combat_load_tape` and read
+    // the initial/final/digest values it prints.
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-v1",
@@ -315,9 +341,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: None,
-            initial_hash: "cdebda362c3f6f59",
-            final_hash: "c49a6982c7ee6cfe",
-            tape_digest: "b3cccd1705a18f4c",
+            initial_hash: "e70148ba62eb2839",
+            final_hash: "4c81abe5c958ce4e",
+            tape_digest: "68c579b43e0a3a73",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -328,9 +354,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: None,
-            initial_hash: "667f436b38ef03dc",
-            final_hash: "769ff42240184536",
-            tape_digest: "a39c9592c07fbc67",
+            initial_hash: "a7673a4c496a1c44",
+            final_hash: "9a35d48f7aae9fbe",
+            tape_digest: "1819c19486717d88",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -341,9 +367,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "c5449a9d368b65b6",
-            final_hash: "a0da8e6e2aaac181",
-            tape_digest: "46dbfa975b62f2bb",
+            initial_hash: "9a9c6ce31a2f5986",
+            final_hash: "b2db6542366adcc1",
+            tape_digest: "3320ad0039a34263",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -354,9 +380,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "226e2ffd84a6f7aa",
-            final_hash: "749beffdb6008e4e",
-            tape_digest: "3d1e41cdbddfdc2e",
+            initial_hash: "9bab9c645cf6f7ea",
+            final_hash: "d8329c56b69038ee",
+            tape_digest: "a5b23a79a926ec40",
         },
     ],
     budgets: Omp2RollbackBudgets {

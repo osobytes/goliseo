@@ -89,8 +89,22 @@ import { loadSimHost } from "./index.ts";
 // final `02085004777f30a4`, sequence `bcf2dfa7e1ae7221`; native, via
 // `cargo test -p gc-sim --test determinism_evidence`, the same two. They
 // AGREE, so this is not #517 either.
-const EXPECTED_FINAL_HASH = "02085004777f30a4";
-const EXPECTED_SEQUENCE_DIGEST = "bcf2dfa7e1ae7221";
+//
+// 2026-08-26, #622 follow-up (owner-approved): the keeper's race-to-ball
+// interception (`gc_sim::keeper::intercept_race`, a time-of-arrival race with
+// a teammate veto, gated by the new `keeper_intercept` band) and the
+// `keeper_engagement` band's x1.7167 rescale to match the futsal box geometry
+// (see `gc_data::tunables`'s own dated note on that `BandSet`) both change
+// when and how far OMP-1's keeper comes off its line, moving this fixture's
+// whole boundary-hash chain from the first affected decision on. Discriminating
+// measurement re-run before these lines moved — wasm, via the header's own
+// `node -e` one-liner against the freshly built `dist/pkg/gc_wasm.cjs`: final
+// `51d1e26eb1dc66dc`, sequence `831e70be42afdbc1`; native, via
+// `cargo test -p gc-sim --test determinism_evidence`
+// (`gc_data::omp1_determinism`'s JSON fixture), the same two. They AGREE, so
+// this is not #517.
+const EXPECTED_FINAL_HASH = "51d1e26eb1dc66dc";
+const EXPECTED_SEQUENCE_DIGEST = "831e70be42afdbc1";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —

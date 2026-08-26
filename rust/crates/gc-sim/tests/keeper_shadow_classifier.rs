@@ -361,11 +361,35 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
-    assert_eq!(total.candidates, 20654);
-    assert_eq!(total.agree_true, 6539);
-    assert_eq!(total.agree_false, 13610);
-    assert_eq!(total.disagree_deferred, 487);
-    assert_eq!(total.disagree_height, 18);
+    // candidates 20654 -> 14416: the 2026-08-26 goalkeeper race-to-ball
+    // rework lands four changes together -- `keeper_engagement`'s v2 band
+    // widening (206/343, up from 120/200), `keeper_aggression`'s rescale in
+    // `stats.rs` (18/2/2 -> 31/3.5/3.5), `keeper::behavior`'s advance target
+    // switching from an always-full-depth commit to `arc_target` (full
+    // aggression depth only on a genuine unsupported breakaway, an
+    // approach-scaled advance otherwise), and the new
+    // `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase,
+    // which lets an off-ball keeper leave its line to win a time-of-arrival
+    // race for an incoming ball before it ever becomes a shot. The last of
+    // these is the one that removes candidates outright: a through ball the
+    // keeper now collects in the race never reaches `attempt_save` as a
+    // shot to judge, so fewer possession sequences produce a save candidate
+    // at all. `agree_false` absorbs nearly all of the shrunken total in
+    // share (65.9% -> 77.0%) while `agree_true` falls in share
+    // (31.7% -> 22.0%); `disagree_deferred` (487 -> 143) and
+    // `disagree_height` (18 -> 7) both fall sharply and roughly in
+    // proportion to the candidate drop, rather than either one moving
+    // against it -- consistent with fewer marginal, near-resolution shots
+    // reaching the keeper at all, not a change in how the keeper judges the
+    // ones that still do. `new_only` stays structurally 0, which is the
+    // assertion that would have been a finding rather than a re-pin.
+    // Re-pinned in the SAME commit as `gc_data::outfield_ai_baseline`'s
+    // v19 -> v20 re-freeze, per this file's own coupling rule.
+    assert_eq!(total.candidates, 14416);
+    assert_eq!(total.agree_true, 3166);
+    assert_eq!(total.agree_false, 11100);
+    assert_eq!(total.disagree_deferred, 143);
+    assert_eq!(total.disagree_height, 7);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -513,7 +537,18 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
+    // Re-pinned by the 2026-08-26 goalkeeper race-to-ball rework alongside
+    // the counts above: `disagree_height` alone still touches 5/60 matches
+    // (8%), unchanged from the previous re-pin, while folding in
+    // `disagree_deferred` reaches only 26/60 (43%), down from 38/60 -- the
+    // same story as the candidate-count fall above, told per match instead
+    // of in raw counts: the keeper's own loose-ball intercept removes save
+    // candidates from many matches outright rather than changing how the
+    // ones that remain get judged, so fewer matches ever reach a deferred
+    // episode even though the ones that do are unaffected in kind.
+    // Deferred episodes remain the larger of the two buckets. No
+    // historical byte-divergent split to compare against.
     assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 37);
-    assert_eq!(matches_with_either, 38);
+    assert_eq!(matches_with_deferred, 23);
+    assert_eq!(matches_with_either, 26);
 }

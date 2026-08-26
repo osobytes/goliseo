@@ -402,6 +402,10 @@ fn keeper_advance_eligibility_lets_a_loose_touch_create_a_smother_chance_despite
 
     context.loose_touch = false;
     context.attacker_controlled = true;
+    // Between the v2 handoff edge (206) and the v2 advance edge (343): a
+    // controlled ball at this range stays the engaged defender's, exactly
+    // as 150 sat between the v1 edges (120/200) on the pre-futsal pitch.
+    context.threat_distance = 258.0;
     assert!(!keeper::should_advance(&context));
 }
 
@@ -421,6 +425,10 @@ fn behavior_context(state: keeper::KeeperBehaviorState) -> keeper::KeeperBehavio
         aggression: 42.0,
         advance_eligible: false,
         contain_eligible: false,
+        // A breakaway commits full aggression depth, which is exactly the
+        // pre-in_1v1 behavior every assertion below was written against;
+        // the approach-scaled non-1v1 advance has its own tests.
+        in_1v1: true,
         ground_cue: false,
         lob_cue: false,
         through_ball_cue: false,
@@ -682,4 +690,109 @@ fn keeper_chip_counterplay_never_gives_a_moving_keeper_more_reaction_reach_than_
     let moving = keeper::reaction_reach(100.0, 1.0, 0.32);
     assert_eq!(set, 100.0);
     assert!(moving < set);
+}
+
+// ---------------------------------------------------------------------------
+// intercept_race: the SM-Strikers-shaped loose-ball race (a time-of-arrival
+// comparison with a teammate veto, not a radius test). Band edges from the
+// shipped `keeper_intercept` set: win_margin_s = 0.15, chase_horizon_s = 1.4.
+// ---------------------------------------------------------------------------
+
+fn winnable_race() -> keeper::KeeperInterceptContext {
+    keeper::KeeperInterceptContext {
+        claim_time: 0.5,
+        keeper_time: 0.4,
+        opponent_time: Some(0.9),
+        teammate_time: Some(1.2),
+    }
+}
+
+#[test]
+fn keeper_intercept_race_commits_when_the_keeper_beats_the_opponent_by_the_margin() {
+    assert!(keeper::intercept_race(&winnable_race()));
+
+    // Nobody contesting at all is the easiest yes.
+    assert!(keeper::intercept_race(&keeper::KeeperInterceptContext {
+        opponent_time: None,
+        teammate_time: None,
+        ..winnable_race()
+    }));
+}
+
+#[test]
+fn keeper_intercept_race_floors_every_runner_at_the_ball_arrival_moment() {
+    // The opponent "arrives" before the ball does, but nobody can take a
+    // ball that is not there yet: their effective moment is claim_time, and
+    // the keeper (also there by claim_time) has not won it by the margin.
+    assert!(!keeper::intercept_race(&keeper::KeeperInterceptContext {
+        claim_time: 0.5,
+        keeper_time: 0.3,
+        opponent_time: Some(0.4),
+        teammate_time: None,
+    }));
+
+    // An opponent arriving after the ball by at least the margin loses the
+    // race even though the keeper only gets there with the ball itself.
+    assert!(keeper::intercept_race(&keeper::KeeperInterceptContext {
+        claim_time: 0.5,
+        keeper_time: 0.5,
+        opponent_time: Some(0.65),
+        teammate_time: None,
+    }));
+    assert!(!keeper::intercept_race(&keeper::KeeperInterceptContext {
+        claim_time: 0.5,
+        keeper_time: 0.5,
+        opponent_time: Some(0.649),
+        teammate_time: None,
+    }));
+}
+
+#[test]
+fn keeper_intercept_race_defers_to_a_covering_teammate_and_respects_the_horizon() {
+    // A defending outfielder at least as fast to the point covers it — the
+    // keeper stays home even though it would beat the opponent.
+    assert!(!keeper::intercept_race(&keeper::KeeperInterceptContext {
+        teammate_time: Some(0.4),
+        ..winnable_race()
+    }));
+
+    // Beyond the chase horizon the keeper stays positional regardless of
+    // how winnable the geometry looks.
+    assert!(!keeper::intercept_race(&keeper::KeeperInterceptContext {
+        claim_time: 1.5,
+        keeper_time: 0.4,
+        opponent_time: Some(3.0),
+        teammate_time: None,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// behavior()'s advance target is arc_target: full aggression depth only on a
+// genuine breakaway (in_1v1), approach-scaled otherwise.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn keeper_behavior_advance_commits_full_depth_in_a_1v1_and_approach_scales_otherwise() {
+    // Ball at the approach midpoint (depth 549.5, approach fraction 0.5 —
+    // the same probe the arc_target tests use): inside the claim edge the
+    // approach fraction saturates at 1.0 and the two cases coincide.
+    let context = |in_1v1: bool| keeper::KeeperBehaviorContext {
+        advance_eligible: true,
+        in_1v1,
+        ball_pos: Vec2::new(549.5, 463.5),
+        ..behavior_context(keeper::KeeperBehaviorState::Base)
+    };
+    let goal_center = Vec2::new(0.0, 463.5);
+
+    let breakaway = keeper::behavior(&context(true));
+    assert_eq!(breakaway.state, keeper::KeeperBehaviorState::Advance);
+    near(breakaway.target.dist(goal_center), 42.0);
+
+    let supported = keeper::behavior(&context(false));
+    assert_eq!(supported.state, keeper::KeeperBehaviorState::Advance);
+    let supported_depth = supported.target.dist(goal_center);
+    assert!(
+        supported_depth < 42.0 && supported_depth > 0.0,
+        "a supported attack earns only an approach-scaled advance, got {supported_depth}"
+    );
 }

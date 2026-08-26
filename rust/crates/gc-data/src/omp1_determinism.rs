@@ -456,8 +456,16 @@ mod tests {
         // settled at 280 (see gc_data::tunables) shortly after the resize
         // landed, moving both values a second time before either shipped;
         // the pair above is the value at 280, not an intermediate 300.
-        assert_eq!(f.expected_final_hash, "02085004777f30a4");
-        assert_eq!(f.expected_sequence_digest, "bcf2dfa7e1ae7221");
+        // The 2026-08-26 goalkeeper race-to-ball rework (keeper_engagement
+        // v2 band widening, rescaled keeper_aggression in stats.rs, the new
+        // keeper_intercept band set, and arc_target wiring in keeper::behavior)
+        // moved both again: the replay's frozen input frames drive the
+        // outfielders only, but the keeper's own AI reacts to the same ball
+        // state differently from tick 0, so every boundary diverges again.
+        // final hash 02085004777f30a4 -> 51d1e26eb1dc66dc, sequence digest
+        // bcf2dfa7e1ae7221 -> 831e70be42afdbc1.
+        assert_eq!(f.expected_final_hash, "51d1e26eb1dc66dc");
+        assert_eq!(f.expected_sequence_digest, "831e70be42afdbc1");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -473,7 +481,7 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "115aedc598345a71");
+        assert_eq!(boundary_hash_lines()[0], "e0919bfa6379a2a9");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
@@ -487,11 +495,18 @@ mod tests {
         // change, but the kickoff positions this boundary hashes are laid
         // out relative to a pitch that is now a different size
         // (2226cce944213655 -> 115aedc598345a71).
+        // The 2026-08-26 goalkeeper race-to-ball rework moved it again, and
+        // for a third reason: `keeper_aggression` is a per-player field
+        // baked into every `MatchPlayer` snapshot -- including the zero-tick
+        // kickoff one -- straight from `stats::keeper_aggression`, so
+        // rescaling that stat's constants (stats.rs, 18/2/2 -> 31/3.5/3.5)
+        // moves boundary 0 with no simulation ticks run at all
+        // (115aedc598345a71 -> e0919bfa6379a2a9).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "02085004777f30a4"
+            "51d1e26eb1dc66dc"
         );
     }
 

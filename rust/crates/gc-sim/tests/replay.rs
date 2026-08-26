@@ -75,11 +75,27 @@ use gc_sim::tuning::Tuning;
 // captured, which moves boundaries 1..3 again through the stepped-tick
 // locomotion path -- boundary 0 (no ticks stepped) is untouched by a pace
 // tunable and stayed put. Re-derived from this build.
+//
+// 2026-08-26 goalkeeper race-to-ball EXCEPTION: unlike every gameplay-only
+// entry above, this one moves boundary 0 too, and for a reason that has
+// nothing to do with a stepped tick: `keeper_aggression` is a per-player
+// field baked straight into every `MatchPlayer` snapshot from
+// `stats::keeper_aggression` when the match is constructed
+// (`r#match::new`), including the zero-tick kickoff capture this boundary
+// hashes. Rescaling that stat's constants in `stats.rs` (18/2/2 -> 31/3.5/
+// 3.5) therefore moves boundary 0 with no ticks run at all. Boundaries 1..3
+// move again on top of that, through the stepped-tick keeper positioning
+// path (`keeper_engagement`'s v2 band widening, `keeper::behavior`'s
+// advance target switching to `arc_target`, and the new
+// `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase in
+// `match.rs`). All four re-derived from this build (`cargo test -p gc-sim
+// --test replay input_tape_replay_deep_copies_snapshot_frames_identity_and_ownership_at_construction`,
+// reading the `observed sequence=` list its own failure message prints).
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "678924b418c3bd81",
-    "2151ea407a33d69c",
-    "1682934e090e28e9",
-    "1a0b4033d72a9aee",
+    "f4120d2fc9bd6e21",
+    "5fe24dd94ccbe9a4",
+    "943c26a8f187b901",
+    "9db041896e16e526",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

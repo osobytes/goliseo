@@ -554,7 +554,16 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // `boundary_hash_lines()[last]` -- this digest folds in every one of
     // those boundaries, so it moves whenever any of them do, same as the
     // #572/#578 entries above.
-    assert_eq!(rollback_lab::tape_digest(&tape), "f2ab89ab575b4d1a");
+    //
+    // And again for the 2026-08-26 goalkeeper race-to-ball rework
+    // (`keeper_engagement` v2, `keeper_aggression`'s rescale in `stats.rs`,
+    // `keeper::behavior`'s `arc_target` wiring, and the new
+    // `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase),
+    // in the SAME commit as `gc_data::omp1_determinism`'s own re-record of
+    // every one of those fields -- same shape as every prior re-record
+    // above: this digest folds in the OMP-1 fixture's derived boundaries,
+    // so it moves whenever they do.
+    assert_eq!(rollback_lab::tape_digest(&tape), "b006219320f07f5e");
 }
 
 #[test]

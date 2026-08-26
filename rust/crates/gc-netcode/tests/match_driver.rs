@@ -1195,7 +1195,16 @@ fn canonical_digest(digest: &str) -> bool {
 /// the hash moved with it. `cce72804f0c6b446` -> `2bfc8e9018cecab2`. This one
 /// IS the kickoff scenario changing, exactly the second trigger this
 /// constant's own doc above names.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "2bfc8e9018cecab2";
+///
+/// Re-recorded again for the keeper rework (part of #490): `stats.rs`'s
+/// `keeper_aggression` derivation rescaled 18..58 -> 31..101 px for the
+/// futsal box, and that derived stat is a serialized `MatchPlayer` field,
+/// so both keepers' values in the constructed kickoff snapshot moved and
+/// the hash moved with them. `2bfc8e9018cecab2` -> `c58d4d413b3e541a`. Like
+/// #490's `keeper_fatigue` addendum above, no simulation output moved to
+/// produce this hash — tick zero carries the derivation's initial value,
+/// which is the thing that was deliberately retuned.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "c58d4d413b3e541a";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and
