@@ -610,9 +610,26 @@ recorder of the same shape, each documented at its own `#[ignore]`d test:
 Read the recorder's doc comment before running it: each one's capture pipeline
 differs (`sed` range, `grep` filter, single line) because each fixture's shape
 does, and every one of them documents why a `>` redirect straight onto the
-fixture is wrong. They are invoked with `cargo test`, not the gate's
-`cargo nextest run` — `--ignored --nocapture` is the invocation their doc
-comments give, and a recorder is a print, not an assertion.
+fixture is wrong.
+
+**`cargo test`, not the gate's `cargo nextest run` — a pragmatic choice, not a
+capability claim.** nextest handles these fine: `cargo nextest list -- --ignored`
+discovers all eight recorders, and it accepts `--ignored` and `--nocapture`
+verbatim (its own help lists both, alongside `--run-ignored <WHICH>`). The
+reason to reach for plain `cargo test` anyway is that nothing nextest adds
+applies here. Gate 3 runs `cargo nextest run --workspace [--partition
+hash:I/N]` and never passes `--ignored`, so no recorder has ever executed
+under it on either runner; a one-off human recorder run is a single test
+printing to stdout, and it gains nothing from a pinned runner version,
+per-test processes, or a shard matrix. What the documented `cargo test` form
+does have is use in anger: #572 (`37964f9`) re-froze this baseline twice with
+it, and that run surfaced two real defects in the capture pipeline — a `>`
+redirect that overwrote the whole target file, deleting the type definitions
+`serialize` deliberately does not emit, and a `sed -n '/^\/\/! Frozen/,$p'`
+range that swallowed libtest's trailing status lines. Both are corrected in
+the block above. Use the form the recorder documents; if you substitute
+nextest, re-verify your capture pipeline against a throwaway file first,
+because the failure mode is a silently truncated fixture.
 
 **The `love . --sim 100` validation has no current equivalent, and nothing was
 built to replace it.** The pre-port ritual asked a moved signature for a
@@ -1054,8 +1071,15 @@ names; entries from **2026-08-11** onward are measured on `gc-sim` directly,
 via `gc_sim::outfield_ai_baseline`'s recorder protocol, and say so
 individually.
 
-The ritual still stands: a sim change that moves the fun signature owes a
-100-match validation and an entry here before the baseline is refreshed.
+**The ritual still stands, but two of the things it named are gone.** #630
+(2026-08-26) deleted the fun signature (`gc_sim::tripwire` and
+`gc_data::fun_baseline`), and `love . --sim 100` went with the Lua tree, so
+there is no 100-match validation left to run — the banner at the top of this
+file has the detail. What survives is the part that mattered: a sim change
+that moves the **frozen Outfield AI baseline** owes an entry here *before*
+it is re-frozen, and the re-freeze itself is `record_outfield_ai_baseline`,
+under [Commands](#commands) above. The dated entries below are left exactly
+as they were recorded, including where they cite the deleted commands.
 
 - **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
   180, and a deflection-aware pass-lane risk model land together (#622 Part
