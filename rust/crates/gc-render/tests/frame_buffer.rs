@@ -642,5 +642,6 @@ fn numbers_every_enum_from_one_leaving_zero_for_absent() {
         .collect();
     dense_from_one(&event_codes, "EVENT_KIND");
     // #489: 25 -> 26 for the new `TackleMiss` event kind (wire code 26).
-    assert_eq!(event_codes.len(), 26);
+    // #623: 26 -> 27 for the new `FirstTouchShot` event kind (wire code 27).
+    assert_eq!(event_codes.len(), 27);
 }

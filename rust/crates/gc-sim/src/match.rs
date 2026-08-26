@@ -6490,15 +6490,20 @@ fn aerial_resolve_play(
     let aerial_inputs: Vec<Option<MatchInput>> = (0..s.players.len())
         .map(|i| inputs.get(&((i + 1) as i64)).copied())
         .collect();
-    let config = aerial::AerialMatchConfig {
+    aerial::resolve_play(s, &aerial_inputs, &aerial_match_config(), ineligible, tune)
+}
+
+/// The match's tunable constants for `crate::aerial`, shared by the airborne
+/// path ([`aerial_resolve_play`]) and the grounded first-touch shot (#623).
+fn aerial_match_config() -> aerial::AerialMatchConfig {
+    aerial::AerialMatchConfig {
         ground_grab_height: GROUND_GRAB_HEIGHT,
         stick_ahead: STICK_AHEAD,
         gravity: GRAVITY,
         release_cd: RELEASE_CD,
         clear_header_speed: CLEAR_HEADER_SPEED,
         volley_speed: VOLLEY_SPEED,
-    };
-    aerial::resolve_play(s, &aerial_inputs, &config, ineligible, tune)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6960,6 +6965,25 @@ fn update_ball(
         }
 
         if let Some(best) = best {
+            // A designated receiver may strike the arriving pass first time
+            // instead of trapping it (#623). The attempt replaces the grant
+            // entirely this tick — including on a whiff, where the swing
+            // misses and the ball runs on untouched. Combat force-outs were
+            // already filtered by the eligibility checks above.
+            if aerial::resolve_first_touch_shot(
+                s,
+                (best - 1) as usize,
+                inputs.get(&best).copied(),
+                &aerial_match_config(),
+                tune,
+            ) {
+                for player in &mut s.players {
+                    player.keeper_set = 0.0;
+                    player.save_style = None;
+                    player.save_tip_emitted = false;
+                }
+                return;
+            }
             let bp = s.players[(best - 1) as usize].clone();
             for player in &mut s.players {
                 player.keeper_set = 0.0;

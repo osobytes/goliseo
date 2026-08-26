@@ -417,6 +417,9 @@ pub enum MatchEventKind {
     Reception,
     /// A dodge/juke.
     Juke,
+    /// A grounded first-touch shot: a designated receiver strikes an
+    /// arriving pass first time instead of trapping it (#623).
+    FirstTouchShot,
 }
 
 impl MatchEventKind {
@@ -451,6 +454,7 @@ impl MatchEventKind {
             Bicycle => "bicycle",
             Reception => "reception",
             Juke => "juke",
+            FirstTouchShot => "first_touch_shot",
         }
     }
 }

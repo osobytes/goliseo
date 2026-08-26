@@ -361,11 +361,26 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
-    assert_eq!(total.candidates, 20654);
-    assert_eq!(total.agree_true, 6539);
-    assert_eq!(total.agree_false, 13610);
-    assert_eq!(total.disagree_deferred, 487);
-    assert_eq!(total.disagree_height, 18);
+    // Re-pinned by #623 (the grounded first-touch shot), in the SAME commit
+    // as `gc_data::outfield_ai_baseline`'s v19 -> v20 re-freeze.
+    //
+    // candidates 20654 -> 20562: an AI receiver inside `AI_FIRST_TOUCH_RANGE`
+    // now snap-shoots an arriving pass at the collection moment instead of
+    // trapping, winding up and releasing -- a shorter possession sequence,
+    // and a whiffed attempt is an immediate loose ball -- so slightly fewer
+    // sequences run to a shot a keeper has to judge. `agree_true` absorbs
+    // most of the fall (6539 -> 6469) with `agree_false` taking the rest
+    // (13610 -> 13584); `disagree_deferred` is flat (487 -> 488) while
+    // `disagree_height` ticks up (18 -> 21), the upstream
+    // possession-composition signature (which shots get attempted) rather
+    // than the RNG-stream-shifting same-shot timing signature. `new_only`
+    // stays structurally 0, which is the assertion that would have been a
+    // finding rather than a re-pin.
+    assert_eq!(total.candidates, 20562);
+    assert_eq!(total.agree_true, 6469);
+    assert_eq!(total.agree_false, 13584);
+    assert_eq!(total.disagree_deferred, 488);
+    assert_eq!(total.disagree_height, 21);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -513,7 +528,14 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
-    assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 37);
-    assert_eq!(matches_with_either, 38);
+    // Re-pinned by #623 alongside the counts above. The reconciliation
+    // still holds in the same direction: `disagree_height` alone touches
+    // 6/60 matches (10%), and folding in `disagree_deferred` reaches 40/60
+    // (67%) -- still on the right side of the 17/60 byte-divergent split
+    // this paragraph exists to explain, so deferred episodes remain the
+    // dominant driver. The shift from 5/37/38 to 6/38/40 tracks the
+    // composition change and disturbs nothing about the conclusion.
+    assert_eq!(matches_with_disagree, 6);
+    assert_eq!(matches_with_deferred, 38);
+    assert_eq!(matches_with_either, 40);
 }

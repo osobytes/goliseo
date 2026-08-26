@@ -966,6 +966,49 @@ individually.
 The ritual still stands: a sim change that moves the fun signature owes a
 100-match validation and an entry here before the baseline is refreshed.
 
+- **2026-08-25 — the grounded first-touch shot lands as a core verb (#623,
+  owner-directed, deliberate).** `baseline_version` **19 → 20**, signature
+  `b8bf51b45b96ce84` → `82cb3b3319de78b4`; `identity.policy_id`
+  `outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf` →
+  `.../0e9a3e0c722f489e` — moved because the collection seam itself changed
+  (a designated receiver can now resolve an instant strike where possession
+  used to be granted), not because any prior knob default moved;
+  `identity.tuning_hash` `1aa75187553ed1a8` → `edd104c4828fca99` (one new
+  `AI`-category tunable, `AI_FIRST_TOUCH_RANGE` 360, entered the declared
+  surface; every existing default is untouched); `identity.fixture_hash`
+  `dd491c7603454855` → `b7658ececade1fe7`; `identity.config_hash`,
+  `content_hash`, `seed_hash`, `snapshot_version` and `input_version` all
+  unchanged. Re-frozen via `record_outfield_ai_baseline`, per that module's
+  own re-freeze protocol, in the same commit as the
+  `keeper_shadow_classifier` re-pin (20654 → 20562 candidates) and the
+  `session_ai_driven` / `ai_driven_evidence` re-records
+  (final digest `3291aa8895b160f4` → `bd9b5907b602b658`, sequence
+  `3688b7ab51128e90` → `86dcead0c338c6ce`). The OMP-1 determinism digest did
+  NOT move — its pinned scenario never places a designated receiver in the
+  new branch — so the quad-pinned wasm digest stands.
+
+  **The cause.** Where collection would hand a `receive_timer` receiver
+  plain possession, the receiver may now resolve an instant first-time shot
+  instead: humans by holding the strike button (the same held-ACTION signal
+  the aerial path reads), the AI when within `AI_FIRST_TOUCH_RANGE` of the
+  opposing goal-line centre. The resolution is `crate::aerial`'s four-roll
+  Clean/Heavy/Miss against `volley_skill`, with the arriving ball's pace
+  feeding difficulty (a driven pass is harder to one-time) and a fraction of
+  that pace carried into the shot. No charge state, no possession transfer
+  anywhere on the path — #531's owner-only charge invariant is untouched.
+
+  **The signature.** Small movements everywhere, the composition shape of
+  "some trapped-then-shoot sequences became snap shots": `shots` 25.62 →
+  25.50 and `goals_total` 2.63 → 2.62 essentially flat, `shots_per_goal`
+  12.13 → 12.35, `passes` 25.65 → 25.77 with `pass_completion` 0.532 →
+  0.534, `longest_drought_s` 14.06 → 14.24, `ai_dribble_touches_per_min`
+  76.44 → 77.18. `fun` 0.2678 → 0.2633: a small net dip DESPITE the new
+  always-present `first_touch_shots` registry entry inflating the fold
+  (+0.0073 measured at n=96, 120 s — documented on its `MetricDef`), so the
+  behaviour change itself costs slightly more than the fold gains; within
+  the band this fixture's other entries move in, and accepted with the verb
+  rather than tuned away in the same commit.
+
 - **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
   180, and a deflection-aware pass-lane risk model land together (#622 Part
   2 follow-up, owner-approved, deliberate).** `baseline_version` **18 → 19**,

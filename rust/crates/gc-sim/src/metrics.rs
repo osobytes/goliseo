@@ -311,8 +311,10 @@ pub struct MetricsCollector {
     pub prev_home: i64,
     /// Away score as of the last [`observe`] call.
     pub prev_away: i64,
-    /// Outfield strikes at goal (shot/header/volley/bicycle).
+    /// Outfield strikes at goal (shot/header/volley/bicycle/first_touch_shot).
     pub shots: i64,
+    /// Grounded first-touch shot attempts (#623), all outcomes.
+    pub first_touch_shots: i64,
     /// Keeper catches + parries.
     pub saves: i64,
     /// Passes attempted.
@@ -434,6 +436,7 @@ pub fn new(s: &MetricsMatchView) -> MetricsCollector {
         prev_home: s.score.home,
         prev_away: s.score.away,
         shots: 0,
+        first_touch_shots: 0,
         saves: 0,
         passes: 0,
         passes_completed: 0,
@@ -643,10 +646,13 @@ pub fn observe(c: &mut MetricsCollector, s: &MetricsMatchView, dt: f64, tuning: 
                     c.pending_rebound = None;
                 }
             }
-            "shot" | "header" | "volley" | "bicycle" if !is_keeper => {
+            "shot" | "header" | "volley" | "bicycle" | "first_touch_shot" if !is_keeper => {
                 // Keeper "shot" events are punts/clearances, not strikes at
                 // goal.
                 c.shots += 1;
+                if e.kind == "first_touch_shot" {
+                    c.first_touch_shots += 1;
+                }
                 c.longest_drought = c.longest_drought.max(c.t - c.last_chance_t);
                 c.last_chance_t = c.t;
                 c.pending_shot_team = team;
@@ -862,6 +868,8 @@ pub struct MatchMetrics {
     pub decided_late: f64,
     /// Outfield strikes at goal.
     pub shots: i64,
+    /// Grounded first-touch shot attempts (#623), all outcomes, both teams.
+    pub first_touch_shots: i64,
     /// Strikes per goal scored.
     pub shots_per_goal: Option<f64>,
     /// Save rate among on-target attempts.
@@ -1019,6 +1027,7 @@ pub fn finish(c: &mut MetricsCollector, s: &MetricsMatchView) -> MatchMetrics {
         lead_changes: lead_changes(&c.goals),
         decided_late: decided_at(&c.goals, c.t),
         shots: c.shots,
+        first_touch_shots: c.first_touch_shots,
         shots_per_goal: (gh + ga > 0).then(|| c.shots as f64 / (gh + ga) as f64),
         save_rate: (on_target > 0).then(|| c.saves as f64 / on_target as f64),
         passes: c.passes,

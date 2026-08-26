@@ -211,6 +211,23 @@ const RECOVERY_JUMP: f64 = 0.35;
 const RECOVERY_BICYCLE: f64 = 0.6;
 const BICYCLE_SPEED: f64 = 1.4;
 
+// The grounded first-touch shot (#623): the volley verb evaluated at the
+// moment the collection check would hand a designated receiver the ball.
+// `FIRST_TIME_REACH` deliberately exceeds the collection radius that decides
+// the moment (POSSESS_DIST, 22), so a receiver who is close enough to trap is
+// always close enough to swing — the branch never half-fires on geometry.
+const FIRST_TIME_BASE_DIFFICULTY: f64 = 0.10;
+const FIRST_TIME_REACH: f64 = 26.0;
+/// Shot-speed multiplier of a grounded first-time shot; the volley's grounded
+/// sibling (`AerialMatchConfig::volley_speed`, 1.3), a touch under it because
+/// the striker keeps both feet.
+const FIRST_TIME_SPEED: f64 = 1.15;
+/// Fraction of the arriving pass's pace carried into the shot: a one-timer
+/// off a driven ball is faster than one off a dying roll — and the driven
+/// ball is also *harder* (relative pace feeds difficulty), which is the
+/// risk/reward that makes the verb situational rather than dominant.
+const FIRST_TIME_PACE_CARRY: f64 = 0.2;
+
 /// The height above which NO style can touch the ball, even at a full jump —
 /// a flight that stays above this over an opponent simply cannot be attacked.
 /// (Species lift bonuses come on top; leave a margin when using this.)
@@ -807,6 +824,37 @@ fn apply_reception(
     s.ball_spin = 0.0;
 }
 
+/// Where an attacking strike is aimed: a human's held stick direction if
+/// any, otherwise the far half of the opposing goal mouth, biased away
+/// from the side the keeper stands on.
+fn attacking_strike_target(s: &MatchState, idx: usize, input: &MatchInput) -> Vec2 {
+    let player_team = s.players[idx].team;
+    let player_pos = s.players[idx].pos;
+    if is_human_player(s, idx) && (input.r#move.x != 0.0 || input.r#move.y != 0.0) {
+        return player_pos.add(input.r#move.normalized().scale(240.0));
+    }
+    let goal = match player_team {
+        Team::Home => s.goal_away,
+        Team::Away => s.goal_home,
+    };
+    let keeper = s
+        .players
+        .iter()
+        .find(|o| o.team != player_team && o.is_keeper);
+    let vbias = match keeper {
+        Some(k) if k.pos.y < goal.y + goal.h / 2.0 => 0.85,
+        Some(_) => -0.85,
+        None => 0.85,
+    };
+    let goal_x = if player_team == Team::Home {
+        goal.x
+    } else {
+        goal.x + goal.w
+    };
+    let half = goal.h / 2.0 - 8.0;
+    Vec2::new(goal_x, goal.y + goal.h / 2.0 + vbias * half)
+}
+
 fn apply_strike(
     s: &mut MatchState,
     candidate: &MatchAerialCandidate,
@@ -872,29 +920,8 @@ fn apply_strike(
                 72.0
             },
         ))
-    } else if is_human_player(s, idx) && (input.r#move.x != 0.0 || input.r#move.y != 0.0) {
-        player_pos.add(input.r#move.normalized().scale(240.0))
     } else {
-        let goal = match player_team {
-            Team::Home => s.goal_away,
-            Team::Away => s.goal_home,
-        };
-        let keeper = s
-            .players
-            .iter()
-            .find(|o| o.team != player_team && o.is_keeper);
-        let vbias = match keeper {
-            Some(k) if k.pos.y < goal.y + goal.h / 2.0 => 0.85,
-            Some(_) => -0.85,
-            None => 0.85,
-        };
-        let goal_x = if player_team == Team::Home {
-            goal.x
-        } else {
-            goal.x + goal.w
-        };
-        let half = goal.h / 2.0 - 8.0;
-        Vec2::new(goal_x, goal.y + goal.h / 2.0 + vbias * half)
+        attacking_strike_target(s, idx, &input)
     };
 
     let direction = rotate_vector(target.sub(player_pos).normalized(), resolution.angle_error);
@@ -983,4 +1010,140 @@ pub fn resolve_play(
         apply_strike(s, &candidate, inputs, &resolution, config, tune);
     }
     resolution.outcome != AerialOutcome::Miss
+}
+
+/// Whether this receiver wants to strike the arriving ground pass first
+/// time: a human holds the strike button; an AI receiver takes the shot
+/// when within `AI_FIRST_TOUCH_RANGE` of the centre of the opposing goal line.
+fn first_touch_requested(
+    s: &MatchState,
+    idx: usize,
+    input: Option<&MatchInput>,
+    tune: &Tuning,
+) -> bool {
+    if is_human_player(s, idx) {
+        return match input {
+            Some(input) => strike_requested(input),
+            None => false,
+        };
+    }
+    let player = &s.players[idx];
+    let goal = match player.team {
+        Team::Home => s.goal_away,
+        Team::Away => s.goal_home,
+    };
+    let goal_line_x = match player.team {
+        Team::Home => goal.x,
+        Team::Away => goal.x + goal.w,
+    };
+    let goal_line = Vec2::new(goal_line_x, goal.y + goal.h / 2.0);
+    player.pos.dist(goal_line) <= tune.value("AI_FIRST_TOUCH_RANGE")
+}
+
+/// Resolve a grounded first-touch shot (#623), if this receiver wants one:
+/// called by collection at the exact moment it would otherwise grant the
+/// designated receiver (`receive_timer > 0`) plain possession. Returns
+/// whether an attempt was resolved — `true` means the collection grant must
+/// be skipped this tick, INCLUDING on a miss, where the swing whiffs over
+/// the ball and it runs on untouched.
+///
+/// The attempt is the aerial strike verb with a grounded style band: same
+/// four-roll [`resolve`] against `volley_skill`, same Clean/Heavy/Miss
+/// consequences, no charge state and no possession transfer anywhere —
+/// which is what keeps #531's owner-only charge invariant intact.
+pub fn resolve_first_touch_shot(
+    s: &mut MatchState,
+    idx: usize,
+    input: Option<MatchInput>,
+    config: &AerialMatchConfig,
+    tune: &Tuning,
+) -> bool {
+    {
+        let player = &s.players[idx];
+        if player.is_keeper
+            || player.receive_timer <= 0.0
+            || player.header_cd > 0.0
+            || player.aerial_recovery > 0.0
+            || player.stun_timer > 0.0
+            || player.slide_timer > 0.0
+            || player.dodge_timer > 0.0
+        {
+            return false;
+        }
+    }
+    if !first_touch_requested(s, idx, input.as_ref(), tune) {
+        return false;
+    }
+
+    let ft_config = AerialStyleConfig {
+        style: AerialStyle::Volley,
+        min_z: 0.0,
+        max_z: config.ground_grab_height,
+        max_jump: 0.0,
+        reach: FIRST_TIME_REACH,
+        base_difficulty: FIRST_TIME_BASE_DIFFICULTY,
+    };
+    let skill = style_skill(&s.players[idx], AerialStyle::Volley);
+    let context = make_match_context(s, idx, skill, tune);
+    let contact = match build_contact(&context, &ft_config) {
+        Some(c) => c,
+        None => return false,
+    };
+    let resolution = resolve(&context, &contact, s.rng);
+    s.rng = resolution.rng;
+    begin_action(
+        &mut s.players[idx],
+        &contact,
+        resolution.outcome,
+        AerialIntent::Strike,
+    );
+    s.aerial_lock = AERIAL_LOCK_TIME;
+    s.events.push(MatchEvent {
+        kind: MatchEventKind::FirstTouchShot,
+        x: s.ball.x,
+        y: s.ball.y,
+        player: Some(s.players[idx].id.clone()),
+        save_style: None,
+        style: Some(AerialStyle::Volley),
+        outcome: Some(resolution.outcome),
+        jumping: Some(contact.jumping),
+        difficulty: Some(contact.difficulty),
+        shot_type: None,
+        keeper_state: None,
+        keeper_depth: None,
+        on_target: None,
+    });
+    // Swinging consumes the receiver's designation either way: hit or
+    // whiff, this ball is no longer theirs to trap (mirrors apply_strike).
+    for other in &mut s.players {
+        other.receive_timer = 0.0;
+    }
+    if resolution.outcome == AerialOutcome::Miss {
+        // The whiff lets the ball run through the swing before anyone —
+        // including an opponent — can gather it.
+        s.pickup_cd = config.release_cd * 0.5;
+        return true;
+    }
+
+    let input = input.unwrap_or_else(neutral_input);
+    let player_pos = s.players[idx].pos;
+    let target = attacking_strike_target(s, idx, &input);
+    let direction = rotate_vector(target.sub(player_pos).normalized(), resolution.angle_error);
+    let incoming_pace = s.ball_vel.length();
+    let mut speed =
+        s.players[idx].shot_speed * FIRST_TIME_SPEED + incoming_pace * FIRST_TIME_PACE_CARRY;
+    if resolution.outcome == AerialOutcome::Heavy {
+        speed *= 0.65;
+    }
+    speed *= clamp(1.0 + resolution.weight_error, 0.4, 1.35);
+    let vz = if resolution.outcome == AerialOutcome::Clean {
+        20.0
+    } else {
+        200.0 + resolution.angle_error.abs() * 240.0
+    };
+    s.ball_vel = direction.scale(speed);
+    s.ball_vz = vz;
+    s.ball_spin = 0.0;
+    s.pickup_cd = config.release_cd * 0.6;
+    true
 }
