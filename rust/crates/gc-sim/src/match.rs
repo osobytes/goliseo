@@ -6603,11 +6603,25 @@ fn update_ball(
                 // PLAYER goes to the BALL (the hook in move_players), never
                 // the other way around.
                 s.ball_vel = s.ball_vel.scale((1.0 - FRICTION * dt).max(0.0));
-            } else if speed < owner.move_speed * tune.value("DRIBBLE_CLOSE") {
+            } else if owner.dodge_timer > 0.0
+                || speed < owner.move_speed * tune.value("DRIBBLE_CLOSE")
+            {
                 // CLOSE CONTROL (standing through an ordinary jog): the
                 // ball stays glued to the feet with soft corrective
                 // touches — natural, safe, nothing knocked away. Sprinting
                 // breaks into the kick-and-chase below.
+                //
+                // A juke counts as close control WHATEVER the realized
+                // speed says (#629). The sidestep is bespoke movement at
+                // `DODGE_SPEED_MULT` that lands in the same `vel` channel a
+                // sprint does, so reading it as carrier pace kicks the ball
+                // away at 1.5x it again — along the PRE-juke facing, while
+                // the body travels perpendicular. That is the opposite of
+                // what the move is for: `attempt_steals` and
+                // `advance_tackle_actions` both grant the OWNER tackle
+                // i-frames for `dodge_timer`, which only mean something if
+                // the owner still has the ball. The corrective rest
+                // position follows the body through the sidestep for free.
                 let rest = owner.pos.add(owner.facing.scale(DRIBBLE_LEAD_MIN));
                 let correct = rest
                     .sub(s.ball)

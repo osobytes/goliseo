@@ -361,11 +361,33 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
-    assert_eq!(total.candidates, 20654);
-    assert_eq!(total.agree_true, 6539);
-    assert_eq!(total.agree_false, 13610);
-    assert_eq!(total.disagree_deferred, 487);
-    assert_eq!(total.disagree_height, 18);
+    //
+    // Re-pinned by #629 in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s v19 -> v20 re-freeze, per this
+    // file's own coupling rule. A juking carrier now keeps the ball
+    // instead of striking it away at shot pace, so an AI carrier that
+    // reads a committed challenge survives it: carries run ~44% longer
+    // (`ai_dribble_carry_s` 23.4 -> 33.8 s) and heavy-touch losses fall
+    // ~69% (`ai_dribble_heavy_losses_per_min` 0.55 -> 0.17). That is
+    // upstream of every candidate this file counts. `candidates` falls
+    // 20654 -> 19766 (-888) even though `shots` rose, because possession
+    // now ends in a pass more often than in a loose ball a keeper has to
+    // judge: `agree_false` rises (13610 -> 14135, +525) while `agree_true`
+    // falls harder (6539 -> 5384, -1155), consistent with the frozen
+    // baseline's `save_rate` 0.778 -> 0.717. Both near-resolution buckets
+    // shrink -- `disagree_deferred` 487 -> 247, and `disagree_height`
+    // 18 -> 0. A `disagree_height` of zero is the disagreement surface
+    // getting SMALLER, not a check going quiet: the deleted formula and
+    // the real predictor now agree on every resolved candidate this
+    // fixture produces, which cannot weaken the monotonicity argument
+    // (that argument bounds `new_only`, and `new_only` stays structurally
+    // 0 -- the assertion that would have been a finding rather than a
+    // re-pin).
+    assert_eq!(total.candidates, 19766);
+    assert_eq!(total.agree_true, 5384);
+    assert_eq!(total.agree_false, 14135);
+    assert_eq!(total.disagree_deferred, 247);
+    assert_eq!(total.disagree_height, 0);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -513,7 +535,20 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
-    assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 37);
-    assert_eq!(matches_with_either, 38);
+    //
+    // Re-pinned by #629 alongside the counts above: `disagree_height`
+    // alone now touches 0/60 matches, down from 5/60 -- it has to, since
+    // the raw count above reached zero -- while folding in
+    // `disagree_deferred` reaches 20/60 (33%), down from 38/60. Deferred
+    // episodes are now the ONLY bucket with any per-match footprint at
+    // all, which is the strongest form this reconciliation has taken: the
+    // byte-identical split, where one exists, can only be a deferred
+    // (one-tick-later resolution) story here. Both moves track the
+    // candidates-side story above -- fewer possession sequences end in a
+    // shot the keeper has to judge, because the carrier keeps the ball
+    // through a challenge and passes out instead. No historical
+    // byte-divergent split to compare against.
+    assert_eq!(matches_with_disagree, 0);
+    assert_eq!(matches_with_deferred, 20);
+    assert_eq!(matches_with_either, 20);
 }
