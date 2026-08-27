@@ -48,7 +48,7 @@
 
 import init, { Session, __getRawExports } from "../../../ts/packages/wasm/dist/pkg-web/gc_wasm.js";
 import * as THREE from "three";
-import { SceneRoot, Stadium, camera, cameraFollow, effects, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
+import { SceneRoot, Stadium, cameraFollow, effects, frameBuffer, pitch, releaseFollow, viewState } from "@gc/render";
 import type { frameBufferTypes } from "@gc/render";
 
 const DT = 1 / 60;
@@ -112,9 +112,8 @@ interface HarnessStats {
    * geometry to the page.
    *
    * `view_*` are null until `cameraFollow` has a smoothed focus (its own
-   * `view()` returns undefined before the first update) or when
-   * `?stadium=0` leaves the follow camera off. Nothing under ts reads
-   * any of this. */
+   * `view()` returns undefined before the first update). Nothing under ts
+   * reads any of this. */
   playerX: number[];
   playerY: number[];
   ballX: number;
@@ -139,24 +138,21 @@ async function main(): Promise<void> {
   // docs/online/browser_build.md).
   //
   // HISTORY, and why this is no longer load-bearing. This started as a
-  // workaround for #414: `camera.projectFixed` put the viewport factor in
-  // the SCREEN POSITION and not in the depth scale:
+  // workaround for #414, against a fixed-trapezoid projection since retired:
+  // it put the viewport factor in the SCREEN POSITION and not in the depth
+  // scale, so everything sized off that scale (`r = radius * scale`, and so
+  // every character, billboard, shadow and reticle derived from it) had NO
+  // viewport factor. That was invisible whenever vp.w == field.w, which was
+  // the only case the specs covered. Rendering at the window's native size
+  // instead stretched the pitch while the players stayed put -- measured: a
+  // 2x viewport moved pitch width 830 -> 1634 px and left character ppm
+  // bit-identical at 29.8969.
   //
-  //     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
-  //     scale = far_scale + (near_scale - far_scale) * t
-  //
-  // Everything sized off that scale (`r = radius * scale`, and so every
-  // character, billboard, shadow and reticle derived from it) therefore had
-  // NO viewport factor. That was invisible whenever vp.w == field.w, which
-  // was the only case the specs covered. Rendering at the window's native
-  // size instead stretched the pitch while the players stayed put --
-  // measured: a 2x viewport moved pitch width 830 -> 1634 px and left
-  // character ppm bit-identical at 29.8969.
-  //
-  // `camera.ts`'s `projectFixed` now carries a single uniform world-to-pixel
-  // factor into both positions and sizes, so rendering at the window's native
-  // size would be CORRECT here too, and `packages/app`'s browser entry does
-  // exactly that with no workaround of its own.
+  // `camera.project` derives the depth scale as real pixels-per-world-unit
+  // (`vp.h / (2 * w * tan(fov/2))` -- see camera.ts's DEPTH SCALE note), so
+  // rendering at the window's native size would be CORRECT here too, and
+  // `packages/app`'s browser entry does exactly that with no workaround of
+  // its own.
   //
   // Pinning is kept because it is still the right choice for THIS page for
   // two independent reasons that have nothing to do with the defect: the
@@ -342,13 +338,13 @@ async function main(): Promise<void> {
 
   const roster = frameBuffer.decodeRoster(session.rosterNumeric(), session.rosterIdsAndNames());
 
-  // The coliseum stadium + true-perspective broadcast camera. On by default
-  // (it is the product look this harness exists to evaluate); `?stadium=0`
-  // restores the legacy fixed-trapezoid space backdrop for A/B comparison.
-  // The Stadium needs the field's real geometry (pitch size, goal rects,
-  // crossbar height), which only exists once a session is live -- built from
-  // the first decoded frame below, before the loop starts.
-  const stadiumEnabled = params.get("stadium") !== "0";
+  // The coliseum stadium is unconditional: it is the product look this
+  // harness exists to evaluate, and there is no longer a second look to A/B
+  // it against (`?stadium=0` used to restore the fixed-trapezoid space
+  // backdrop, which no longer exists -- `camera.project` IS the perspective
+  // rig now). The Stadium needs the field's real geometry (pitch size, goal
+  // rects, crossbar height), which only exists once a session is live --
+  // built from the first decoded frame below, before the loop starts.
 
   function frameNow(): frameBufferTypes.RenderFrame {
     // The renderer's release follow-through window, as the roster-slot
@@ -403,27 +399,25 @@ async function main(): Promise<void> {
   // calls `diagnostics()` and nothing else.
   (globalThis as unknown as { __gcScene?: unknown }).__gcScene = { sceneRoot, glRenderer, THREE, effects };
 
-  if (stadiumEnabled) {
-    // Flags first, then the layer: `SceneRoot.render` only routes through the
-    // world layer when `camera.perspective_mode` is on (scene.ts), and
-    // `pitch.stadium_mode` hands the backdrop/floor/markings/goals over to
-    // the stadium (pitch.ts) -- setting one without the other draws either
-    // two pitches or none.
-    camera.perspective_mode = true;
-    pitch.stadium_mode = true;
-    // Matches browser_main.ts's product flag set, so a screenshot taken here
-    // is representative of the real shot. Unlike the product this harness
-    // drives `cameraFollow.update` itself (see the loop below): it renders
-    // frames straight from a wasm `Session` and never mounts `@gc/screens`'s
-    // `match.ts`, which is what drives the follow camera in the real app.
-    pitch.follow_camera = true;
-    const stadium = new Stadium({
+  // Flag first, then the layer: `pitch.stadium_mode` hands the
+  // backdrop/floor/markings/goals over to the stadium (pitch.ts), so setting
+  // the layer without the flag draws two pitches and the flag without the
+  // layer draws none.
+  //
+  // Matches browser_main.ts's product flag set, so a screenshot taken here is
+  // representative of the real shot. Unlike the product this harness drives
+  // `cameraFollow.update` itself (see the loop below): it renders frames
+  // straight from a wasm `Session` and never mounts `@gc/screens`'s
+  // `match.ts`, which is what drives the follow camera in the real app.
+  pitch.stadium_mode = true;
+  pitch.follow_camera = true;
+  sceneRoot.setWorldLayer(
+    new Stadium({
       field: frameNow().field,
       home_color: HOME_COLOR,
       away_color: AWAY_COLOR,
-    });
-    sceneRoot.setWorldLayer(stadium);
-  }
+    }),
+  );
 
   stats.status = "running";
 

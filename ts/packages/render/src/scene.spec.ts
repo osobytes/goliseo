@@ -40,7 +40,7 @@ import {
   type PitchDrawOptions,
   type RenderFrame,
 } from "./pitch.ts";
-import { camera, perspectiveRig } from "./camera.ts";
+import { perspectiveRig } from "./camera.ts";
 import { SceneRoot, type WorldLayer } from "./scene.ts";
 import { materialCacheSize, resetMaterialCache } from "./draw2d.ts";
 
@@ -304,21 +304,10 @@ describe("SceneRoot.populate", () => {
 });
 
 // See scene.ts's WORLD LAYER class doc comment section and `populate`'s own
-// WORLD LAYER SYNC doc comment. `camera.perspective_mode` is module-level
-// mutable state shared with camera.spec.ts and every other spec importing
-// camera.ts, so it is saved/restored around this describe block the same
-// way `pitch.rigged_players` is saved/restored above.
+// WORLD LAYER SYNC doc comment. Attaching a layer is the only condition now:
+// `camera.perspective_mode` used to gate this too, and this block had to
+// save/restore that module-level flag around every test.
 describe("SceneRoot world layer", () => {
-  let savedPerspective: boolean;
-
-  beforeEach(() => {
-    savedPerspective = camera.perspective_mode;
-  });
-
-  afterEach(() => {
-    camera.perspective_mode = savedPerspective;
-  });
-
   it("setWorldLayer adds the layer's group to worldScene, and removes it when set back to undefined", () => {
     const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
     const layer = stubWorldLayer();
@@ -344,8 +333,7 @@ describe("SceneRoot world layer", () => {
     expect(first.disposeCalls).toBe(0);
   });
 
-  it("calls the world layer's update(now) during populate when perspective_mode is on", () => {
-    camera.perspective_mode = true;
+  it("calls the world layer's update(now) during populate", () => {
     const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
     const layer = stubWorldLayer();
     scene.setWorldLayer(layer);
@@ -355,26 +343,13 @@ describe("SceneRoot world layer", () => {
     expect(layer.updateCalls).toEqual([12.5]);
   });
 
-  it("does not update the world layer when perspective_mode is off, even with a layer attached", () => {
-    camera.perspective_mode = false;
-    const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
-    const layer = stubWorldLayer();
-    scene.setWorldLayer(layer);
-
-    scene.populate(frame(), { pitch: pitchOptions, now: 12.5 });
-
-    expect(layer.updateCalls).toEqual([]);
-  });
-
-  it("does not update anything when no world layer is attached, even with perspective_mode on", () => {
-    camera.perspective_mode = true;
+  it("does not update anything when no world layer is attached", () => {
     const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
     // No setWorldLayer call at all -- populate must not throw or touch worldCamera meaningfully.
     expect(() => scene.populate(frame(), { pitch: pitchOptions })).not.toThrow();
   });
 
   it("syncs worldCamera position/fov/near/far from camera.perspectiveRig for the frame's field, with aspect from the viewport", () => {
-    camera.perspective_mode = true;
     const scene = new SceneRoot(asRenderer(stubRenderer()), { viewport: VIEWPORT });
     scene.setWorldLayer(stubWorldLayer());
     const f = frame();

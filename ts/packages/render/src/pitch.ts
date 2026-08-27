@@ -116,20 +116,22 @@
 //     render target in this path at all) -- it is a property of the SHARED
 //     CAMERA's convention, which both the old sprite plane and a real
 //     character mesh sit under identically.
-//   - ELEVATION: the old per-character camera looked at the character from
-//     slightly above and behind (`ELEVATION`, see `characterCameraParams`'s
-//     `eye`/`target`) rather than straight on. A shared, un-tilted camera
-//     cannot reproduce that by moving itself per character, but an
-//     orthographic projection commutes with rotating camera-and-subject
-//     together, so the SAME apparent view is reproducible by tilting the
-//     character instead: a rotation of `+ELEVATION` around the shared
-//     camera's local X (screen-horizontal) axis, composed AFTER the
-//     character's own yaw (i.e. `finalQuat = tiltX(ELEVATION).multiply(
-//     yawY(yaw))` in three.js's quaternion convention) -- yaw happens in the
-//     character's own frame (which way it faces on the pitch), the
-//     elevation tilt happens in the CAMERA's frame (how the fixed camera
-//     sees every character alike), so composition order matters and cannot
-//     be collapsed into one axis-angle call. `riggedCharacterObject`
+//   - ELEVATION TILT: the old per-character camera looked at the character
+//     from slightly above and behind (`ELEVATION`, see
+//     `characterCameraParams`'s `eye`/`target`) rather than straight on. A
+//     shared, un-tilted camera cannot reproduce that by moving itself per
+//     character, but an orthographic projection commutes with rotating
+//     camera-and-subject together, so the SAME apparent view is reproducible
+//     by tilting the character instead: a rotation about the shared camera's
+//     local X (screen-horizontal) axis, composed AFTER the character's own
+//     yaw (i.e. `finalQuat = tiltX(angle).multiply(yawY(yaw))` in three.js's
+//     quaternion convention) -- yaw happens in the character's own frame
+//     (which way it faces on the pitch), the elevation tilt happens in the
+//     CAMERA's frame (how the one shared camera sees every character alike),
+//     so composition order matters and cannot be collapsed into one
+//     axis-angle call. The ANGLE is the live camera rig's own downward tilt
+//     rather than the `ELEVATION` constant -- see `characterTilt`'s
+//     CHARACTER TILT COHERENCE comment. `riggedCharacterObject`
 //     PREMULTIPLIES the tilt onto `mesh`'s own already-baked yaw quaternion
 //     (not the wrapper's) -- see that function's own doc comment for why
 //     both rotations have to live on the SAME object as each other, and a
@@ -806,7 +808,7 @@ function pitchProject(frame: RenderFrame, vp: PitchViewport, opts: PitchDrawOpti
   const cameraField: CameraField = field;
   const cameraViewport: CameraViewport = vp;
   return (wx, wy) => {
-    const [sx, sy, scale] = camera.project(wx, wy, cameraField, cameraViewport, undefined, view);
+    const [sx, sy, scale] = camera.project(wx, wy, cameraField, cameraViewport, view);
     const offset = opts.camera_offset;
     return [sx + (offset?.x ?? 0), sy + (offset?.y ?? 0), scale];
   };
@@ -1173,39 +1175,26 @@ export function pitchDrawCommands(
   return dl.commands;
 }
 
-// The elevation tilt (see file header's ELEVATION bullet) as a fixed
-// quaternion, computed once at module load: it is the SAME rotation for
-// every character every frame under the FIXED trapezoid projection (a
-// property of the shared camera's fixed viewing angle, not of any one
-// player), so there is nothing to recompute per player. Rotation about the
-// shared camera's local X axis (== world X here, since the camera has no
-// roll/pitch of its own -- see scene.ts's `SceneRoot`), matching
-// `player_renderer_3d.ts`'s exported `ELEVATION` constant.
-const ELEVATION_TILT = new THREE.Quaternion().setFromAxisAngle(
-  new THREE.Vector3(1, 0, 0),
-  playerRenderer3d.ELEVATION,
-);
-
-// CHARACTER TILT COHERENCE. `ELEVATION_TILT` above approximates the fixed
-// trapezoid's implied viewing angle -- there is no REAL camera behind that
-// projection to match exactly, just a screen-space approximation tuned to
-// look right. Under `camera.perspective_mode` there IS a real camera
-// (`camera.rigAngleRad`, derived from the exact same `PerspectiveRig` the
-// mat4 projection and `scene.ts`'s `worldCamera` both use), and it looks at
-// the pitch from a specific, computed angle that is not generally
-// `playerRenderer3d.ELEVATION` -- using the fixed constant there would tilt
-// every rigged character to an angle the actual camera is not at, which
-// reads as visibly wrong (the character's own silhouette/shading implies a
-// different camera than the one actually rendering it) the moment a
-// character turns and its asymmetry becomes visible. `characterTilt` picks
-// the RIGHT rotation for whichever camera is actually active this frame,
-// computed ONCE per `pitch.draw` call (not per character) via `currentView`
-// -- the same reasoning `ELEVATION_TILT` itself already applies (one shared
-// camera pose, not a per-player one), just now conditional on the mode.
+// CHARACTER TILT COHERENCE. Every rigged character is tilted by the angle
+// the camera ACTUALLY looks down at the pitch from (`camera.rigAngleRad`,
+// derived from the exact same `PerspectiveRig` the mat4 projection and
+// `scene.ts`'s `worldCamera` both use). Tilting them to any other angle
+// reads as visibly wrong -- the character's own silhouette and shading imply
+// a different camera than the one rendering it -- the moment a character
+// turns and its asymmetry becomes visible.
+//
+// This used to be a choice between two rotations: the real rig angle, or a
+// module-level `ELEVATION_TILT` constant built from
+// `player_renderer_3d.ts`'s `ELEVATION`, which approximated the retired
+// fixed trapezoid's IMPLIED viewing angle because that projection had no
+// real camera to ask. With one projection left there is one right answer,
+// and `ELEVATION` stays where it still means something: rig3d's cel shader,
+// which uses it as a SHADING eye direction, not as a camera pose.
+//
+// Still one rotation shared by every character in the frame (one camera
+// pose, not a per-player one), so it is computed ONCE per `pitch.draw` call
+// via `currentView` rather than per character.
 function characterTilt(field: RenderFrameField): THREE.Quaternion {
-  if (!camera.perspective_mode) {
-    return ELEVATION_TILT;
-  }
   const angle = camera.rigAngleRad(field, currentView(field));
   return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), angle);
 }
@@ -1251,10 +1240,9 @@ const CHARACTER_DEPTH_SCALE = 0.05;
  * then-flip-the-image process actually composed (the tilt was baked into the
  * rendered pixels before the image-space flip was ever applied).
  *
- * `tilt` is `characterTilt`'s return for the current frame (`ELEVATION_TILT`
- * under the fixed trapezoid, the real camera's own angle under
- * `perspective_mode`) -- see that function's CHARACTER TILT COHERENCE doc
- * comment. Passed in rather than read from a module constant here so the
+ * `tilt` is `characterTilt`'s return for the current frame -- the real
+ * camera's own downward angle; see that function's CHARACTER TILT COHERENCE
+ * doc comment. Passed in rather than read from a module constant here so the
  * caller computes it ONCE per `pitch.draw` call, not once per character.
  */
 function riggedCharacterObject(
@@ -1333,11 +1321,7 @@ export const pitch = {
   // that is safe with no backdrop rect to clear the canvas. Off by default,
   // matching `follow_camera`'s own reasoning: this changes what a frame
   // looks like, so it stays behind a flag until the app shell (not this
-  // package) decides to flip it -- almost always alongside
-  // `camera.perspective_mode`, since a flat trapezoid pitch with a 3D
-  // stadium underneath it would look broken, but this file does not
-  // enforce that pairing itself (see `characterTilt` below for the one
-  // place this file DOES branch on `camera.perspective_mode` directly).
+  // package) decides to flip it.
   stadium_mode: false,
 
   /**

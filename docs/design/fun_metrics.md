@@ -24,25 +24,46 @@
 >   a knob today needs a fresh sweep, not a citation. §9 of `AGENTS.md` is the
 >   standard a knob claim has to meet now: `gc_sim::knob_contract::assert_moves`
 >   against a *measured* noise floor.
-> - **The fun tripwire is not currently wired into any gate.** The prose below
->   says it runs in `check.sh` and fails the build on drift; that was true of
->   the Lua tree. `gc_sim::tripwire` ports the measurement and comparison, but
->   nothing calls `tripwire::measure` today, so the 30-seed signature is not
->   checked by `./scripts/check.sh` or CI. The frozen combat-disabled Outfield
->   AI baseline **is** still enforced, as an ordinary Rust test
->   (`gc-sim/tests/outfield_ai_baseline.rs`, run by gate 3).
+> - **The fun tripwire is gone — #630 deleted it, 2026-08-26.** Several
+>   passages below still describe it as live: the roadmap's item 4, the
+>   2026-07-10 status block, and the pre-port command list. Those say a
+>   30-seed signature runs in `check.sh` and fails the build on drift. That
+>   was true of the Lua tree and stopped being true at the port. `gc_sim::tripwire`
+>   and `gc_data::fun_baseline` were carried across but nothing ever called
+>   `tripwire::measure`, so the checked-in signature — `fun 0.442418`,
+>   `goals_total 2.1`, measured on a 960×540 pitch — sat unrefreshed through
+>   thirty drift-log entries including the futsal re-dimensioning, the
+>   locomotion rewrite and the passing rework. It was deleted rather than
+>   re-wired: re-freezing it would have meant building the sweep runner it
+>   never had, re-recording from scratch, and then adding a *second* global
+>   balance gate demanding a re-freeze on every trajectory-moving change.
+>   **Nothing measurable was lost** — `gc_sim::metrics` and
+>   `gc_sim::metric_registry` still compute every one of those metrics,
+>   `controlled_dribble_*` included. What was lost is a frozen *absolute*
+>   snapshot of proxy play, which "The human proxy (the big caveat)" below
+>   already says the instrument cannot support.
+>
+>   What enforces balance today: the frozen combat-disabled Outfield AI
+>   baseline, an ordinary Rust test (`gc-sim/tests/outfield_ai_baseline.rs`,
+>   run by gate 3). What holds a per-knob claim: `gc_sim::knob_contract::assert_moves`
+>   (AGENTS.md §9), which measures its own noise floor on the caller's seed
+>   set rather than assuming a 5% band.
+> - **"A 100-match validation" names a command that does not exist.** Several
+>   passages below ask a moved signature for one, meaning `love . --sim 100`.
+>   There is no such binary — the Rust workspace has no `[[bin]]` target at
+>   all. What substitutes is named under [Commands](#commands) below.
 >
 > The history is kept, not deleted: it records why the bands, the candidates
 > and the non-refresh rule are what they are.
 
 **Scope:** `gc_sim::metrics`, `gc_sim::bot`, `gc_sim::headless`, `gc_sim::sweep`,
-`gc_sim::tripwire`, and their tests under `rust/crates/gc-sim/tests/`
+and their tests under `rust/crates/gc-sim/tests/`
 (pre-port: `sim/metrics.lua`, `sim/bot.lua`, `sim/headless.lua`,
 `sim/sweep.lua`, `main.lua`, `spec/sim/*`)
 
 Combat evidence is governed separately by
 [`combat_fun_evidence_contract.md`](combat_fun_evidence_contract.md). The
-soccer-only tripwire and its historical `fun` name remain regression tools;
+soccer-only metrics and their historical `fun` name remain regression tools;
 neither is a measurement of human enjoyment or a combat-active baseline.
 
 **Pre-port CLI (deleted with the Lua tree; kept so the runs cited below can be
@@ -57,15 +78,16 @@ love . --tripwire [write] fun-signature snapshot vs data/fun_baseline.lua
                           (in check.sh; exit 1 on drift; `write` refreshes)
 ```
 
-**Today there is no CLI.** The same measurements are library calls in
-`gc-sim`, reached from a Rust test or a scratch harness:
-`headless::run_batch` plays a seeded batch and `headless::report` prints it;
-`sweep::sensitivity` and `sweep::paired_delta` do the per-knob sweep;
-`tripwire::measure` / `compare` / `report` produce and check the fun
-signature, and `tripwire::serialize` emits a `gc_data::fun_baseline` literal
-to paste over `rust/crates/gc-data/src/fun_baseline.rs`;
+**Today there is no CLI**, and the Rust workspace has no `[[bin]]` target at
+all. The same measurements are library calls in `gc-sim`, reached from a Rust
+test or a scratch harness: `headless::run_batch` plays a seeded batch and
+`headless::report` prints it; `sweep::sensitivity` and `sweep::paired_delta`
+do the per-knob sweep; and
 `outfield_ai_baseline::measure` reproduces the frozen control. Rebuilding a
-runnable entry point over them is not done — see the banner above.
+general entry point over them is not done. What *is* runnable is a set of
+`#[ignore]`d recorder tests, one per frozen artifact — they are the real
+re-freeze procedure and they are listed under
+[Commands](#commands) below.
 
 **Status (2026-07-10, pre-port):** phases 1–4 done. The tripwire (`sim/tripwire.lua`)
 runs 30 seeded matches in check.sh and fails the gate when any banded-metric
@@ -444,13 +466,16 @@ Conclusions:
 
 ## Frozen combat-disabled Outfield AI baseline (#59)
 
-Everything above is the **soccer fun tripwire**: a 30-seed human-proxy smoke
-test with a 5% tolerance band, checked in as `gc_data::fun_baseline`. This
-section is a *different* artifact with a different job, and the two must not be
-confused or merged. The locked evidence contract
-(`docs/design/combat_fun_evidence_contract.md` §4.4) requires the soccer
-tripwire to stay combat-disabled and to never be refreshed from a combat
-fixture; nothing in #59 touches `gc_data::fun_baseline`.
+Everything above was measured with the **soccer fun proxy**, and most of it
+against the 30-seed human-proxy smoke test that used to be checked in as
+`gc_data::fun_baseline`. #630 deleted that artifact (see the banner); this
+section's baseline is the one that survives, and it is a *different* artifact
+with a different job — the two were never to be confused or merged. The locked
+evidence contract (`docs/design/combat_fun_evidence_contract.md` §4.4)
+required the soccer tripwire to stay combat-disabled and never to be refreshed
+from a combat fixture. Nothing in #59 ever touched it, and there is nothing
+left to refresh; the clause is now satisfied vacuously rather than by
+vigilance.
 
 ### Why it exists
 
@@ -520,7 +545,8 @@ by the metric signature below. It is never absorbed.
 
 Seeds `20001..20060` are the same block #149 runs its combat-active arm on, so
 this is a **paired** control under common random numbers rather than an
-independent sample. It deliberately avoids the tripwire's `1..30` and the spent
+independent sample. It deliberately avoids `1..30` — the retired tripwire's
+block, spent whether or not the tripwire still exists — and the spent
 evaluation seeds `1001..1060`.
 
 The file records the full identity #59 asks for: `policy_id`, `fixture_hash`,
@@ -542,11 +568,87 @@ fixture through `gc_sim::outfield_ai_baseline::measure` and compares it against
 the frozen `gc_data::outfield_ai_baseline::RECORD`, so it runs inside
 the workspace test suite — gate 3 of `./scripts/check.sh` (`cargo nextest run
 --workspace` since #594), which `.github/workflows/ci.yml`'s gate jobs invoke
-rather than mirroring, so the two cannot drift (AGENTS.md §9). A deliberate re-freeze means running
-`outfield_ai_baseline::serialize` over a fresh `measure` and pasting the result
-over `rust/crates/gc-data/src/outfield_ai_baseline.rs`; the ceremony below is
-what the acknowledgement flag used to enforce, and it is now enforced by review
-rather than by an argument parser.
+rather than mirroring, so the two cannot drift (AGENTS.md §9).
+
+A deliberate re-freeze is the `#[ignore]`d **recorder** in that same test
+file. It prints to stdout and writes nothing: a recorder that overwrote its
+own fixture during a test run would turn a balance regression into a no-op.
+**Splice, do not redirect** — `serialize` emits the module doc header and the
+`pub const RECORD` block only, so overwriting the whole target file deletes
+the type definitions that live between them and does not compile.
+
+```sh
+cd rust
+cargo test -p gc-sim --test outfield_ai_baseline -- \
+    --ignored --nocapture record_outfield_ai_baseline \
+  | sed -n '/^\/\/! Frozen/,/^};$/p' \
+  > /tmp/outfield_ai_baseline.rs
+```
+
+Then replace `rust/crates/gc-data/src/outfield_ai_baseline.rs`'s
+`/// The frozen baseline recording.` + `pub const RECORD … };` block with the
+one in `/tmp`, leaving everything above it in place, and re-run the test file
+to verify. `record_outfield_ai_baseline`'s own doc comment is the authority on
+this workflow — the block here is a pointer to it, not a second copy to drift
+from. The ceremony in "The non-refresh rule" below is what the pre-port
+acknowledgement flag used to enforce; it is now enforced by review rather than
+by an argument parser.
+
+Every other frozen artifact a trajectory-moving change can redden has a
+recorder of the same shape, each documented at its own `#[ignore]`d test:
+
+| Artifact | Recorder | Test file (under `rust/crates/`) |
+| --- | --- | --- |
+| `gc_data::outfield_ai_baseline::RECORD` | `record_outfield_ai_baseline` | `gc-sim/tests/outfield_ai_baseline.rs` |
+| `gc_data::omp1_determinism` (derived half only) | `record_omp1_derived_baseline` | `gc-sim/tests/determinism_evidence.rs` |
+| `fixtures/match_step_ai_ai_baseline.txt` | `record_match_step_ai_ai_baseline` | `gc-sim/tests/match_differential.rs` |
+| `fixtures/match_snapshot_case_{a,b}_baseline.txt` | `record_match_snapshot_case_a_baseline`, `..._case_b_baseline` | `gc-sim/tests/match_snapshot_differential.rs` |
+| `fixtures/session_ai_driven_baseline.txt` | `record_session_ai_driven_baseline` | `gc-sim/tests/session_ai_driven_differential.rs` |
+| `fixtures/session_legacy_ordinary_baseline.txt` | `record_session_legacy_ordinary_baseline` | `gc-sim/tests/session_legacy_differential.rs` |
+| `fixtures/rollback_session_baseline.txt` | `record_rollback_session_baseline` | `gc-sim/tests/rollback_session_differential.rs` |
+
+Read the recorder's doc comment before running it: each one's capture pipeline
+differs (`sed` range, `grep` filter, single line) because each fixture's shape
+does, and every one of them documents why a `>` redirect straight onto the
+fixture is wrong.
+
+**`cargo test`, not the gate's `cargo nextest run` — a pragmatic choice, not a
+capability claim.** nextest handles these fine: `cargo nextest list -- --ignored`
+discovers all eight recorders, and it accepts `--ignored` and `--nocapture`
+verbatim (its own help lists both, alongside `--run-ignored <WHICH>`). The
+reason to reach for plain `cargo test` anyway is that nothing nextest adds
+applies here. Gate 3 runs `cargo nextest run --workspace [--partition
+hash:I/N]` and never passes `--ignored`, so no recorder has ever executed
+under it on either runner; a one-off human recorder run is a single test
+printing to stdout, and it gains nothing from a pinned runner version,
+per-test processes, or a shard matrix. What the documented `cargo test` form
+does have is use in anger: #572 (`37964f9`) re-froze this baseline twice with
+it, and that run surfaced two real defects in the capture pipeline — a `>`
+redirect that overwrote the whole target file, deleting the type definitions
+`serialize` deliberately does not emit, and a `sed -n '/^\/\/! Frozen/,$p'`
+range that swallowed libtest's trailing status lines. Both are corrected in
+the block above. Use the form the recorder documents; if you substitute
+nextest, re-verify your capture pipeline against a throwaway file first,
+because the failure mode is a silently truncated fixture.
+
+**The `love . --sim 100` validation has no current equivalent, and nothing was
+built to replace it.** The pre-port ritual asked a moved signature for a
+100-match run at defaults before the baseline was refreshed; that command
+played 100 seeded matches through the Lua `sim.headless` and printed the
+fun-proxy distribution. There is no binary to run it from — the Rust
+workspace has no `[[bin]]` target at all — and the fun proxy it validated went
+with the tripwire (#630).
+
+What substitutes is narrower and stronger: **the frozen baseline's own 60-seed
+exact comparison** on seeds `20001..20060`, the test named above. It is not a
+100-match statistical sample and does not claim to be. It is a deterministic
+control that either reproduces bit-for-bit or does not, so it needs no sample
+size to be conclusive about whether combat-disabled play moved. Where a change
+makes a *causal* claim about a knob, the standard is
+`gc_sim::knob_contract::assert_moves` (AGENTS.md §9), which measures its own
+noise floor on the caller's seed set instead of assuming a band. A batch at
+defaults is still available as a library call (`headless::run_batch`) for
+anyone who wants the distribution — a diagnostic, not a gate.
 
 **Pre-port**, for reading the history below:
 
@@ -566,7 +668,8 @@ tier of AGENTS.md §9 and must not try to open a GL context on a CI runner.
 cite this artifact as their control, so refreshing it to go green destroys the
 only record that the control moved.
 
-Unlike the fun tripwire this comparison is **exact**. The batch is
+Unlike the retired fun tripwire's 5% drift band, this comparison is
+**exact**. The batch is
 deterministic per seed, and recorded values round-trip through `%.17g`, so any
 metric movement at all is real.
 
@@ -588,9 +691,14 @@ deliberately awkward `--refreeze-ack` ceremony would make that ceremony routine
 and hollow out the one guardrail this artifact has.
 
 In both cases the resolution is the same order of operations: confirm the
-change is intended, log it, and only then run
-`love . --ai-baseline write --refreeze-ack`. Writing without the
-acknowledgement flag is refused. Every re-freeze bumps `baseline_version`, and
+change is intended, log it, and only then run `record_outfield_ai_baseline`
+(the recorder under "Commands" above). The `--refreeze-ack` flag that used to
+refuse an unacknowledged write went with the Lua tree, and nothing replaced
+the parser. What stands in its place is weaker in one way and stronger in
+another: the recorder cannot write at all — it prints, a human splices, and
+review is what checks the drift-log entry came first. Every re-freeze bumps
+`baseline_version` (the recorder does it, reading the frozen record's own
+value and adding one), and
 the `signature` deliberately excludes it, so a re-freeze that changes nothing
 shows up in git as a lone version bump rather than hiding inside a churned
 file.
@@ -963,11 +1071,141 @@ names; entries from **2026-08-11** onward are measured on `gc-sim` directly,
 via `gc_sim::outfield_ai_baseline`'s recorder protocol, and say so
 individually.
 
-The ritual still stands: a sim change that moves the fun signature owes a
-100-match validation and an entry here before the baseline is refreshed.
+**The ritual still stands, but two of the things it named are gone.** #630
+(2026-08-26) deleted the fun signature (`gc_sim::tripwire` and
+`gc_data::fun_baseline`), and `love . --sim 100` went with the Lua tree, so
+there is no 100-match validation left to run — the banner at the top of this
+file has the detail. What survives is the part that mattered: a sim change
+that moves the **frozen Outfield AI baseline** owes an entry here *before*
+it is re-frozen, and the re-freeze itself is `record_outfield_ai_baseline`,
+under [Commands](#commands) above. The dated entries below are left exactly
+as they were recorded, including where they cite the deleted commands.
+
+- **2026-08-26 — a juke keeps the ball instead of striking it away (#629,
+  bug fix, deliberate).** `baseline_version` **19 → 20**, signature
+  `b8bf51b45b96ce84` → `a948bb94f8049dce`. **Every identity field is
+  unchanged** — `policy_id`
+  `outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf`, `config`
+  `field=1648x927;...`, `config_hash` `7b608c384f500257`, `content_hash`
+  `e6c01365e6311f12`, `tuning_hash` `1aa75187553ed1a8`, `fixture_hash`
+  `dd491c7603454855`, `seed_hash`, `snapshot_version` 14 and `input_version`
+  all held. That is the correct shape here: no knob default moved, no
+  authored content moved, and `gc_sim::ai`'s declared surface did not move.
+  The change is one condition inside `gc_sim::r#match::update_ball`'s
+  dribble arm, which the identity surface does not hash — so this is an
+  `AI BASELINE MOVED` (a tracked metric changed), not an
+  `AI BASELINE STALE` (identity moved, play held). Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  **The cause.** A juke is bespoke movement: it writes `p.pos` directly at
+  `DODGE_SPEED_MULT` (2.4×) for `DODGE_DURATION` (0.16 s), and realized
+  velocity is derived from that position delta afterwards. `update_ball`
+  read that ~672 px/s as the carrier's *dribble* pace, cleared the
+  close-control threshold, and played a full kick-and-chase touch —
+  ~1008 px/s (~24.5 m/s at the declared metre scale), **1.8× the hardest
+  touch the game can otherwise produce**, and struck along the PRE-juke
+  facing while the body travelled perpendicular. Possession broke within
+  two or three ticks. An active `dodge_timer` is now treated as close
+  control regardless of realized speed, reusing the existing corrective
+  branch, so the ball rides the body through the sidestep. The AI carrier
+  jukes off a committed challenge (gated on the ball being at its feet), so
+  it had the same inverted outcome and is fixed by the same condition.
+
+  **What moved, on the frozen 60-seed control** (base → now):
+
+  | metric | base | now | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.267774 | 0.286302 | +0.018528 |
+  | `goals_total` | 2.633333 | 2.933333 | +0.300000 |
+  | `goals_home` | 1.300000 | 1.350000 | +0.050000 |
+  | `goals_away` | 1.333333 | 1.583333 | +0.250000 |
+  | `shots` | 25.616667 | 28.333333 | +2.716667 |
+  | `shots_per_goal` | 12.126316 | 12.312147 | +0.185831 |
+  | `save_rate` | 0.778390 | 0.717255 | −0.061135 |
+  | `passes` | 25.650000 | 34.750000 | +9.100000 |
+  | `pass_completion` | 0.532042 | 0.620753 | +0.088712 |
+  | `turnovers_per_min` | 8.480897 | 9.656915 | +1.176018 |
+  | `possession_balance` | 0.513253 | 0.511814 | −0.001439 |
+  | `longest_drought_s` | 14.058333 | 13.470278 | −0.588056 |
+  | `decided_late` | 0.682557 | 0.712779 | +0.030222 |
+  | `lead_changes` | 0.133333 | 0.266667 | +0.133333 |
+  | `margin` | 1.366667 | 1.266667 | −0.100000 |
+  | `duration` | 105.746667 | 108.668611 | +2.921944 |
+  | `ai_dribble_carry_s` | 23.413333 | 33.787500 | +10.374167 |
+  | `ai_dribble_close_share` | 0.828519 | 0.810562 | −0.017957 |
+  | `ai_dribble_sprint_share` | 0.329530 | 0.258792 | −0.070739 |
+  | `ai_dribble_juke_share` | 0.037168 | 0.083963 | +0.046795 |
+  | `ai_dribble_touches_per_min` | 76.443611 | 33.877144 | −42.566468 |
+  | `ai_dribble_heavy_losses_per_min` | 0.546803 | 0.171240 | −0.375563 |
+  | `ai_jukes` | 15.850000 | 18.366667 | +2.516667 |
+
+  **The drift is directional, not noise, and the dribble diagnostics say
+  exactly what the defect predicted.** `ai_dribble_juke_share` more than
+  doubles (0.037 → 0.084): 18.37 jukes × 0.16 s over 33.79 s of carry is
+  0.087, so a juke is now spent *in possession* end to end, where before
+  roughly a third of the window was. `ai_dribble_touches_per_min` falls 56%
+  because every juke used to fire a `Touch` — 15.85 juke-strikes over 0.39
+  minutes of carry is ~40 touches/min on its own, essentially the whole
+  −42.6. `ai_dribble_heavy_losses_per_min` falls 69% and `ai_dribble_carry_s`
+  rises 44%: AI carries survive committed tackles, which is the behavioural
+  claim this fix makes. `ai_jukes` itself rises because a carrier that still
+  has the ball at its feet keeps meeting the AI juke's own gate.
+
+  **Band status, checked field by field.** Two metrics moved back INSIDE
+  their bands: `save_rate` 0.778 → 0.717 (band 0.45–0.75, previously above
+  it) and `pass_completion` 0.532 → 0.621 (band 0.55–0.85, previously below
+  it). Four stayed inside: `goals_total` 2.933 [2–5], `possession_balance`
+  0.512 [0.35–0.65], `longest_drought_s` 13.470 s [0–35], `decided_late`
+  0.713 [0.4–1.0]. **No metric left a band it was previously inside**, which
+  is the condition that would have stopped the refresh. `shots_per_goal`
+  12.312 [2.5–6] was already outside and moves +0.186 further out — the
+  long-standing inherited exception.
+
+  **`turnovers_per_min` is the one to watch, and it is a residual risk, not
+  a blocker.** 8.481 → 9.657 against a band of [0.3, 1.0, 5.0, 10.0]: it was
+  already outside before this change, but its desirability falls from ~0.30
+  to ~0.07, i.e. it now sits just under the point where the trapezoid zeroes.
+  The cause is not worse ball retention — retention improved on every
+  diagnostic above — it is more *attacking actions per minute*: passes
+  +35% (25.65 → 34.75, so ~1.2 more incomplete passes per match even at the
+  higher completion rate) and shots +2.7 per match, each of which ends a
+  possession. `fun` rose anyway (0.268 → 0.286). Whether the turnover band
+  itself still describes the futsal-dimensioned game is a balance question
+  this bug fix deliberately does not answer.
+
+  **On the "100-match validation" this section's ritual asks for:** the
+  command it names (`love . --sim 100`) belongs to the deleted Lua tree and
+  the Rust workspace ships no binary target at all, so there is nothing to
+  run. What substitutes, and what the numbers above are, is the frozen
+  baseline's own 60-seed comparison — `outfield_ai_baseline`'s
+  `measure`/`compare` over seeds 20001..20060 with combat disabled, run as
+  an ordinary test. The 30-seed fun tripwire is not wired to any gate in
+  this tree (`gc_sim::tripwire::measure` has no caller) and was therefore
+  neither red nor refreshed.
+
+  **Coupled re-pins landing in the same commit**, per each file's own rule:
+  `gc-sim/tests/keeper_shadow_classifier.rs`'s frozen 60-seed counts
+  (candidates 20654 → 19766, `agree_true` 6539 → 5384, `agree_false`
+  13610 → 14135, `disagree_deferred` 487 → 247, `disagree_height` 18 → 0,
+  `new_only` structurally 0 throughout; per-match footprint 5/37/38 →
+  0/20/20), the recorded `match_step_ai_ai_baseline.txt` and
+  `session_ai_driven_baseline.txt` fixtures, and the AI-driven session
+  digests (final `3291aa8895b160f4` → `ef0d733d30f615f8`, sequence
+  `3688b7ab51128e90` → `2abf5a39a8c0351a`) in `ai_driven_evidence.rs` and
+  its `ai_driven.spec.ts` mirror. The discriminating measurement was run
+  first: freshly built wasm and native produce the same new pair, so this is
+  not #405/#517. `determinism.spec.ts`'s OMP-1 pair did **not** move —
+  re-measured against the same rebuilt module — because that scenario
+  replays frozen input frames that never press juke.
 
 - **2026-08-25 — the grounded first-touch shot lands as a core verb (#623,
-  owner-directed, deliberate).** `baseline_version` **19 → 22**, signature
+  owner-directed, deliberate).** `baseline_version` **19 → 23**, final
+  signature `5f1ea5758de255eb`, re-frozen once more as **v23** when this
+  PR merged main's #629/#632 juke-carry change — main had independently
+  numbered its own re-freeze v20 in parallel (two v20s existed on divergent
+  branches; neither described the combined simulation), so the merged tree
+  was re-recorded rather than either side's fixture surviving the merge.
+  The chain inside this PR: signature
   `b8bf51b45b96ce84` → `e78eba38e07c1356` (v20 `82cb3b3319de78b4` and v21
   `700d652704a1624b` existed only inside #623's own PR: the verb landed as
   v20; the play-test arrival-arbitration follow-up re-froze as v21 — the

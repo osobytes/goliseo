@@ -43,6 +43,11 @@
 //! online_combat_phases::observed("projectile_flight", &snapshot_at_t, &snapshot_at_t_plus_1, &events_at_t);
 //! ```
 //!
+//! A [`SCENARIOS`] row carries a `deliver_period` and a [`GUARD_PROBE`]
+//! geometry does not, because the two assert different kinds of claim. See
+//! the guard-probe section's own note; the caller's delivery models are laid
+//! out in `tests/match_driver.rs`'s module doc.
+//!
 //! `live_sample(id, step, index)` is the live slot's input program for the
 //! scenario; it is `input_frame::neutral_sample()` for every `Policy` scenario.
 //!
@@ -86,8 +91,31 @@ const LINE_X: f64 = 400.0;
 
 /// The bar a driver-level guard-probe geometry must clear before `guard`
 /// should move to the [`OnlineCombatPhaseRoute::Policy`] route: every peer
-/// must see at least this many corrected-tick guard observations — see the
-/// guard-probe section below for the full rationale.
+/// must see at least this many separate guards the policy DECIDED to raise
+/// and a correction then resimulated — see the guard-probe section below for
+/// the full rationale.
+///
+/// **The number has never moved; the unit it counts was wrong until
+/// 2026-08-25.** It used to read "corrected-tick guard observations", and the
+/// probe counted accordingly: one increment per `(correction, tick)` pair
+/// that ran through a live guard. Both halves of that unit are unbounded
+/// independently of how often the policy guards. A guard is a *held* action
+/// ([`guard_live`]), so one decision contributes its whole hold — measured,
+/// 66 ticks; and a rollback storm resimulates the same tick under correction
+/// after correction, each one counting again. Instrumented at
+/// `LOCO_PACE_REF_HI` 300, `vs_ranged_scrum` reported up to **240** on that
+/// unit from exactly **one** guard decision, on every authored profile and
+/// every network seed. No threshold on that unit can separate one guard from
+/// many, which is precisely the distinction this constant exists to draw —
+/// and which this module's own prose has always drawn in decisions ("
+/// `vs_unarmed_scrum` produces exactly one commit in 240 steps ... One commit
+/// is not a scenario"). Counting rising edges makes the number mean what the
+/// prose already said it meant.
+///
+/// That is a stricter unit, so it is worth being explicit that it is not a
+/// bar raised to make something pass: the probe's assertion is unchanged, the
+/// constant is unchanged, and under the old unit the probe could not have
+/// gone green at any pace where the policy guarded even once.
 pub const GUARD_POLICY_ROUTE_MINIMUM: i64 = 4;
 
 /// Canonical order, and the order a caller should report results in.
@@ -138,6 +166,14 @@ pub struct OnlineCombatPhaseScenario {
     /// Driver steps the scenario needs to reach the phase.
     pub steps: i64,
     /// Transport drains every Nth step; the burst that corrects.
+    ///
+    /// Deliberately not a production delivery model — the host fans a batch
+    /// out on every driver tick (`docs/online/network_architecture.md`).
+    /// Withholding pumps leaves more predicted ticks, so each correction
+    /// resimulates more of them, which is exactly the coverage a scenario
+    /// here asserts. That is sound for a POSSIBILITY claim and unsound for a
+    /// rate; [`GUARD_PROBE`], which claims a rate, therefore has no
+    /// equivalent knob.
     pub deliver_period: i64,
     /// The host's live slot holds equipment on the canonical stream.
     pub hold_equipment: bool,
@@ -466,6 +502,25 @@ fn any_phase(snapshot: &MatchSnapshot, phase: CombatPhase) -> bool {
     companion(snapshot).players.iter().any(|r| r.phase == phase)
 }
 
+/// Is any player holding a guard at this boundary?
+///
+/// `guard` is the one entry in [`PHASES`] whose family is *held* rather than
+/// pressed (`gc_data::action_families`: `activation: Held`, `held_active:
+/// true`, `active_ticks: None`), so a single decision to guard spans as many
+/// ticks as the holder keeps holding -- 66 of them, measured, for the bot
+/// policy in [`GUARD_PROBE`]'s geometries. Counting ticks in this phase
+/// therefore cannot count guard DECISIONS the way it can for a pressed
+/// family with an authored window. A caller that needs decisions finds the
+/// rising edge with this; see [`GUARD_PROBE`].
+///
+/// # Panics
+///
+/// Panics if `snapshot` is not combat-bearing.
+#[must_use]
+pub fn guard_live(snapshot: &MatchSnapshot) -> bool {
+    any_phase(snapshot, CombatPhase::Guard)
+}
+
 fn any_event(events: &[CombatEvent], kind: CombatEventKind) -> bool {
     events.iter().any(|e| e.kind == kind)
 }
@@ -492,7 +547,7 @@ pub fn observed(
 ) -> bool {
     match id {
         "windup" => any_phase(before, CombatPhase::Windup),
-        "guard" => any_phase(before, CombatPhase::Guard),
+        "guard" => guard_live(before),
         "contact" => any_event(events, CombatEventKind::Contact),
         // Already in flight when the tick began, so the tick advanced it. A
         // projectile that appears only in `after` was spawned by this tick
@@ -525,8 +580,8 @@ pub fn observed(
 // runnable code rather than as a claim in a pull request. Each geometry arms
 // every home outfielder with `guard` and every away outfielder with a family
 // that produces a *public* hostile path, then lets the policy play with no
-// human input at all. A caller drives them exactly like a phase scenario and
-// counts how often a correction resimulates a genuine `guard` tick.
+// human input at all. A caller drives them and counts how often a correction
+// resimulates a genuine `guard` tick.
 //
 // What it found, and the honest version of the claim: the policy does raise a
 // guard online, but barely. Three of the four geometries produce none at all,
@@ -535,6 +590,36 @@ pub fn observed(
 // authors from the state it currently predicts. One commit is not a scenario.
 // The route decision is therefore about *rate*, not about possibility, and
 // [`GUARD_POLICY_ROUTE_MINIMUM`] is where that judgement is written down.
+//
+// **2026-08-25: re-measured against the production delivery model, and the
+// finding is unchanged.** The probe now pumps every driver tick through a
+// real `gc_data::network_profiles` profile instead of batching over an
+// unimpaired star (see below), and counts decisions rather than ticks. Swept
+// across `LOCO_PACE_REF_HI` 280/292/300, both cadences, all four profiles and
+// three network seeds each: the three quiet geometries produce zero guards in
+// every cell, and `vs_ranged_scrum` produces at most one in every cell. The
+// old numbers that looked like a promotion signal -- tens to hundreds of
+// "corrected guard ticks" -- were that single decision, held for 66 ticks and
+// resimulated again under every correction of a storm. So `guard` stays on
+// [`OnlineCombatPhaseRoute::CanonicalInput`]; what would change that is the
+// policy guarding more often, not a different harness.
+//
+// # A geometry has no `deliver_period`, and that is the point
+//
+// [`OnlineCombatPhaseScenario`] carries one and this does not. The difference
+// is what the two assert. A phase scenario asserts a POSSIBILITY -- "a
+// correction can carry the companion through this phase" -- so batching
+// delivery is a legitimate amplifier: draining the transport every Nth step
+// leaves more predicted ticks, each correction resimulates more of them, and
+// a claim that is easier to demonstrate is not thereby weaker. This probe
+// asserts a RATE, and a rate measured under a delivery cadence the game does
+// not ship is not that rate. It therefore runs the delivery model production
+// actually has -- one relay pump per driver tick, per
+// `docs/online/network_architecture.md` ("At 60 Hz the host fans one batch to
+// seven guests") -- with impairment supplied by a real authored
+// `gc_data::network_profiles` profile rather than invented by withholding
+// pumps. See the caller's own doc in `tests/match_driver.rs` for the measured
+// evidence that the old batched cadence aliased against movement speed.
 
 /// One driver-level geometry the guard probe measures.
 #[derive(Clone, Copy, Debug)]
@@ -546,8 +631,6 @@ pub struct OnlineGuardProbeGeometry {
     pub shape: OnlineCombatFixtureShape,
     /// Driver steps the probe runs.
     pub steps: i64,
-    /// Transport drains every Nth step.
-    pub deliver_period: i64,
 }
 
 /// The four driver-level geometries the guard probe measures.
@@ -563,7 +646,6 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
             row_spacing_px: 120.0,
         },
         steps: 240,
-        deliver_period: 5,
     },
     // The narrowest telegraph, but eight bodies inside one reach, so a
     // wind-up is nearly always in progress somewhere.
@@ -575,8 +657,20 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
             separation_px: 26.0,
             row_spacing_px: 28.0,
         },
-        steps: 240,
-        deliver_period: 5,
+        // 240 -> 480, the same search-bound widening `vs_ranged_scrum` below
+        // already carries, for a reason of the same shape. These eight bodies
+        // are locked in a scrum only until ordinary football AI pulls them
+        // apart to chase the ball, and the futsal re-dimensioning's pace
+        // retune (`LOCO_PACE_REF_LO/HI` 100/240 -> 130/300 px/s,
+        // `gc_data::tunables`) changed how fast that happens: a lower
+        // normalized pace for the same authored move speed means slower
+        // accel and turn, so the scrum survives longer before the policy has
+        // a live target. Instrumented on the driver's own `current_snapshot`
+        // each step, the first away-side Windup/Active landed at step 376 --
+        // outside the original budget, which made the probe assert on a run
+        // that had telegraphed nothing at all. The assertion this feeds is
+        // unchanged; only the number of steps it takes to reach a threat is.
+        steps: 480,
     },
     // The long public window: a latched release plus a 60-tick projectile
     // horizon is the threat most likely to still be readable on a slow
@@ -590,7 +684,6 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
             row_spacing_px: 120.0,
         },
         steps: 240,
-        deliver_period: 5,
     },
     // The same long window aimed down one lane, so a projectile's path
     // crosses several guard bodies rather than one.
@@ -607,7 +700,6 @@ pub const GUARD_PROBE: [OnlineGuardProbeGeometry; 4] = [
         // telegraph a single threat, and a probe that observes nothing proves
         // nothing. The assertion it feeds is unchanged.
         steps: 480,
-        deliver_period: 5,
     },
 ];
 

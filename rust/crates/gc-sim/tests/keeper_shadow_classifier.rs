@@ -361,33 +361,31 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
-    // Re-pinned by #623 (the grounded first-touch shot), in the SAME commit
-    // as `gc_data::outfield_ai_baseline`'s v19 -> v22 re-freeze (v20-v22
-    // all landed inside #623's own PR: v20 was the verb, v21 the
-    // arrival-arbitration follow-up -- no `header_cd` gate on the grounded
-    // swing, no jockey shuffle for a designated receiver -- and v22 the
-    // flight-scaled receive window, whose designation now outlives a long
-    // floor pass instead of expiring mid-flight).
+    // Re-pinned by #623's PR merging main's #629/#632 juke-carry change, in
+    // the SAME commit as `gc_data::outfield_ai_baseline`'s re-freeze to v23
+    // -- the first pin measured on the COMBINED tree. The two parents'
+    // pins were measured on divergent branches (this PR's #623 chain
+    // reached 20327/6323/13488/498/18 at its v22; main's #629/#632 reached
+    // 19766/5384/14135/247/0 at its own, independently numbered v20) and
+    // neither describes the merged simulation, so both are superseded here
+    // rather than one side "winning" the conflict.
     //
-    // candidates 20654 -> 20327: an AI receiver inside `AI_FIRST_TOUCH_RANGE`
-    // now snap-shoots an arriving pass at the collection moment instead of
-    // trapping, winding up and releasing -- a shorter possession sequence,
-    // and a whiffed attempt is an immediate loose ball -- so slightly fewer
-    // sequences run to a shot a keeper has to judge; the longer receive
-    // windows also let more long passes resolve at their receiver instead
-    // of dying loose into scrambles. `agree_true` absorbs most of the fall
-    // (6539 -> 6323) with `agree_false` taking the rest (13610 -> 13488);
-    // `disagree_deferred` rises slightly (487 -> 498) while
-    // `disagree_height` holds (18), the upstream possession-composition
-    // signature (which shots get attempted) rather than the
-    // RNG-stream-shifting same-shot timing signature. `new_only` stays
-    // structurally 0, which is the assertion that would have been a finding
-    // rather than a re-pin.
-    assert_eq!(total.candidates, 20327);
-    assert_eq!(total.agree_true, 6323);
-    assert_eq!(total.agree_false, 13488);
-    assert_eq!(total.disagree_deferred, 498);
-    assert_eq!(total.disagree_height, 18);
+    // candidates 20525 on the merged tree: #623's one-timers shorten some
+    // possession sequences while its longer receive windows resolve more
+    // long passes at their receiver, and #632's juking carriers keep the
+    // ball through committed challenges -- the composition lands between
+    // the parents, not at either. `disagree_height` stays at the 0 main's
+    // pin already reached and argued (the deleted formula and the real
+    // predictor agree on every resolved candidate this fixture produces --
+    // a smaller disagreement surface, not a quiet check; the monotonicity
+    // argument bounds `new_only`, and `new_only` stays structurally 0,
+    // which is the assertion that would have been a finding rather than a
+    // re-pin).
+    assert_eq!(total.candidates, 20525);
+    assert_eq!(total.agree_true, 5523);
+    assert_eq!(total.agree_false, 14747);
+    assert_eq!(total.disagree_deferred, 255);
+    assert_eq!(total.disagree_height, 0);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -535,14 +533,13 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
-    // Re-pinned by #623 alongside the counts above. The reconciliation
-    // still holds in the same direction: `disagree_height` alone touches
-    // 5/60 matches (8%), and folding in `disagree_deferred` reaches 38/60
-    // (63%) -- still on the right side of the 17/60 byte-divergent split
-    // this paragraph exists to explain, so deferred episodes remain the
-    // dominant driver. The shift from 5/37/38 to 5/37/38 (via 6/38/40 at
-    // the verb's first freeze) disturbs nothing about the conclusion.
-    assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 37);
-    assert_eq!(matches_with_either, 38);
+    // Re-pinned on the merged tree alongside the counts above.
+    // `disagree_height` touches 0/60 matches and `disagree_deferred` 18/60
+    // (30%) -- the disagreement surface shrank on both sides' changes (see
+    // the merged paragraph above), and deferred episodes remain the only
+    // driver left, so the reconciliation's conclusion (deferred, not
+    // height, explains byte divergence) holds trivially.
+    assert_eq!(matches_with_disagree, 0);
+    assert_eq!(matches_with_deferred, 18);
+    assert_eq!(matches_with_either, 18);
 }

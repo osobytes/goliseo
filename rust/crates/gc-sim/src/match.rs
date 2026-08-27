@@ -6665,11 +6665,45 @@ fn update_ball(
                 // PLAYER goes to the BALL (the hook in move_players), never
                 // the other way around.
                 s.ball_vel = s.ball_vel.scale((1.0 - FRICTION * dt).max(0.0));
-            } else if speed < owner.move_speed * tune.value("DRIBBLE_CLOSE") {
+            } else if owner.dodge_timer > 0.0
+                || speed < owner.move_speed * tune.value("DRIBBLE_CLOSE")
+            {
                 // CLOSE CONTROL (standing through an ordinary jog): the
                 // ball stays glued to the feet with soft corrective
                 // touches — natural, safe, nothing knocked away. Sprinting
                 // breaks into the kick-and-chase below.
+                //
+                // A juke counts as close control WHATEVER the realized
+                // speed says (#629). The sidestep is bespoke movement at
+                // `DODGE_SPEED_MULT` that lands in the same `vel` channel a
+                // sprint does, so reading it as carrier pace kicks the ball
+                // away at 1.5x it again — along the PRE-juke facing, while
+                // the body travels perpendicular. That is the opposite of
+                // what the move is for: `attempt_steals` and
+                // `advance_tackle_actions` both grant the OWNER tackle
+                // i-frames for `dodge_timer`, which only mean something if
+                // the owner still has the ball. The corrective rest
+                // position follows the body through the sidestep for free.
+                //
+                // The clause sits in the CLOSE-CONTROL arm deliberately,
+                // which means it also claims ticks the run-on arm at the
+                // bottom would otherwise take — a juke fired while the
+                // carrier's OWN last touch is still rolling out ahead of
+                // the feet. Do NOT "fix" that by exempting the run-on
+                // case. Letting the struck ball run on while the body
+                // travels sideways at 2.4x pace puts it outside the
+                // skill-scaled control radius, which is the very
+                // possession loss this clause exists to stop, just
+                // narrowed to "you juked right after touching it". Nor is
+                // it a regression on that window: a juke's realized speed
+                // is `move_speed * DODGE_SPEED_MULT`, big enough that
+                // `ball_vel <= speed + DRIBBLE_CATCH_PACE` flips true, so
+                // BEFORE this clause the juke tick fell past the run-on
+                // arm into the TOUCH arm below and re-struck the rolling
+                // ball at 1.5x the sidestep's pace. Gluing is the
+                // consistent rule: a juke always keeps the ball. Measured
+                // and pinned by `tests/dribble.rs`'s
+                // `a_juke_keeps_the_ball_even_while_the_last_touch_is_still_running_on`.
                 let rest = owner.pos.add(owner.facing.scale(DRIBBLE_LEAD_MIN));
                 let correct = rest
                     .sub(s.ball)
@@ -6726,8 +6760,10 @@ fn update_ball(
                 owner_mut.pass_target = None;
                 owner_mut.pass_intent = pass_intent::reset(&owner_mut.pass_intent);
                 // The fixed-slot contract requires same-tick wind-up
-                // cancellation. Legacy match AI keeps its tripwire-pinned
-                // heavy-touch behavior at the explicit offline boundary.
+                // cancellation. Legacy match AI keeps its fixture-pinned
+                // heavy-touch behavior at the explicit offline boundary
+                // (`match_step_ai_ai_baseline` and the legacy session
+                // differential pin it).
                 if s.slot_mode {
                     owner_mut.windup_timer = 0.0;
                     owner_mut.windup_shot = None;

@@ -762,41 +762,96 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         tier: Tier::Sim,
         label: "Pace window high",
         cat: "Locomotion",
-        // 280, and the ceiling here is netcode rather than feel. The futsal
-        // re-dimensioning wants roughly 289-329 px/s to cross the 1648px pitch
-        // in real futsal's 5.0-5.7 s, so 300 was the natural pick -- but
-        // gc-netcode's
-        // `finds_no_driver_level_geometry_where_the_policy_guards_often_enough`
-        // goes red between 290 and 295: at 295+ the `vs_ranged_scrum` geometry
-        // produces a sustained rollback-correction storm, corrections on nearly
-        // every tick for 60+ consecutive ticks, far past that test's
-        // GUARD_POLICY_ROUTE_MINIMUM of 4. Bisected on the default alone, with
-        // min/max held fixed because they feed the tape identity: 240/260/280
-        // green, 290 and 310 break two combat-phase scenarios whose scripted
-        // bursts stop landing inside their windup/contact windows, 295/300 trip
-        // the guard storm. 280 is the only value in this neighbourhood where
-        // the whole match_driver suite is green.
+        // 280, and as of 2026-08-25 the reason is a baseline re-freeze rather
+        // than netcode. The futsal re-dimensioning wants roughly 289-329 px/s
+        // to cross the 1648px pitch in real futsal's 5.0-5.7 s, so 300 was the
+        // natural pick. It crosses in 5.89 s here -- about 3% slower than the
+        // re-dimensioning aimed at.
         //
-        // It crosses in 5.89 s against futsal's 5.0-5.7 s -- about 3% slower
-        // than this re-dimensioning aimed at, a deliberate concession to the
-        // netcode ceiling rather than a miss. The real fix is the one that
-        // test's own module doc prescribes: move `guard` onto the `Policy`
-        // route. Raise this only after that lands.
+        // # What used to hold it here, and why that is gone
         //
-        // Do NOT read 292 as a clean threshold. A follow-up sweep of speed x
-        // authored network profile found the effect is not monotonic in speed:
-        // under the guard test's own delivery cadence plus the MILDEST authored
-        // profile (Omp0Parity -- 3-tick delay, 1% loss, no jitter), 280 storms
-        // (11 corrected guard ticks, 3/3 seeds) while 292 stays clean. The
-        // likely cause is that the guard probe pumps its transport only every
-        // 5th step, and that artificial batching aliases against movement
-        // speed. Production does not batch: per docs/online/network_architecture.md
-        // it sends every driver tick. Under a per-tick relay 280 stayed clean
-        // against all four authored profiles, and 300+ stormed under every one
-        // of them. So 280 is sound for how the game actually ships -- but the
-        // guard probe is testing a worse-than-production delivery pattern over
-        // a better-than-production wire, and no single number here is a hard
-        // edge.
+        // This was pinned at 280 because gc-netcode's guard probe
+        // (`finds_no_driver_level_geometry_where_the_policy_guards_often_enough*`,
+        // crates/gc-netcode/tests/match_driver.rs) went red between 290 and 295:
+        // `vs_ranged_scrum` produced what read as a sustained rollback-correction
+        // storm, "corrections on nearly every tick for 60+ consecutive ticks",
+        // far past that test's GUARD_POLICY_ROUTE_MINIMUM of 4. A sweep of
+        // speed x authored network profile then found the effect was not even
+        // monotonic in speed -- under the MILDEST profile (Omp0Parity: 3-tick
+        // delay, 1% loss, no jitter) 280 stormed while 292 stayed clean -- so
+        // no number in this neighbourhood was a real edge.
+        //
+        // Both halves of that turned out to be measurement artifacts, and the
+        // probe has been fixed:
+        //
+        //   * It pumped its transport every 5th step over a zero-latency,
+        //     zero-loss FakeStarTransport -- a worse-than-production delivery
+        //     pattern over a better-than-production wire. Production sends
+        //     every driver tick (docs/online/network_architecture.md). The
+        //     fixed-period drain aliased against movement speed, which is
+        //     where the non-monotonicity came from.
+        //   * More decisively, it counted CORRECTED GUARD TICKS: one increment
+        //     per (correction, tick) pair. A guard is a *held* action
+        //     (`gc_data::action_families`: activation Held, active_ticks None),
+        //     so one decision holds 66 ticks; a correction storm then
+        //     resimulates each of those ticks again under every correction.
+        //     Instrumented at 300, `vs_ranged_scrum` reported up to 240 on that
+        //     unit from exactly ONE guard the policy decided to raise -- on
+        //     every authored profile and every network seed, under both
+        //     cadences. The "storm" was never the policy guarding more.
+        //
+        // The probe now pumps every tick through a real
+        // `gc_data::network_profiles` profile and counts guard DECISIONS. Under
+        // it, the whole gc-netcode match_driver suite -- guard probe on all four
+        // profiles, and the seven combat-phase scenarios -- is GREEN at 300.
+        // Verified by setting this default to 300 and running it.
+        //
+        // # What holds it here now
+        //
+        // At 300 the workspace has 38 failures, and NO netcode failure among
+        // them. 36 are re-freezes -- frozen baselines, recorded fixtures and
+        // identity hashes: gc-sim `replay` (12), `combat_load_fixtures` (8),
+        // `determinism_evidence` / `outfield_ai_baseline` / `rollback_validation`
+        // (2 each), `ai_driven_evidence` (plus its
+        // `ts/packages/wasm/src/ai_driven.spec.ts` mirror), `match_differential`,
+        // `session_ai_driven_differential`, `session_legacy_differential`,
+        // `rollback_session_differential`, `input_tape_differential`,
+        // `match_snapshot`, `keeper_shadow_classifier`, `rollback_lab`, and
+        // gc-render `presentation_tunables`.
+        //
+        // The other TWO are real findings, and they are the interesting part:
+        //
+        //   * `gc-sim::passing::a_pass_can_always_roll_as_far_as_it_can_legally_be_aimed`
+        //     -- at 300 a pass can be aimed 1230.0 px away but can only roll
+        //     1216.7 px, so every pass past 1216.7 px dies short by
+        //     construction. Faster players lengthen the lead the aim is
+        //     computed over, and the pass triple stops agreeing. That test
+        //     names the three levers (`PASS_SPEED_MAX`, `PASS_ELIGIBLE_MAX`,
+        //     `PASS_LEAD_TIME_MAX`) and says: do not leave them disagreeing.
+        //     This is a genuine prerequisite, not a re-record.
+        //   * `gc-sim::knob_contract::ignoring_the_aim_sends_the_pass_further_from_where_it_was_pointed`
+        //     -- `PASS_ANGULAR_WEIGHT` drops to DECORATION at 300 (delta
+        //     +0.0187 against a 0.0237 threshold, n 48). Either dilution to
+        //     investigate or a seed count to raise; either way a measurement,
+        //     not a stale literal.
+        //
+        // So the 36 are a re-freeze campaign and it is deliberately NOT a thing
+        // to do quietly: `outfield_ai_baseline`'s own protocol and
+        // docs/design/fun_metrics.md's drift log require a 100-match validation
+        // and a recorded entry BEFORE the baseline is refreshed, because a moved
+        // baseline is cited as the control in #148/#149. That is a decision
+        // about the game's feel signature and belongs to whoever owns it.
+        // fun_metrics.md already records one attempt: baseline_version 16
+        // briefly existed at 300 during the futsal re-dimensioning and was
+        // settled back to 280.
+        //
+        // So: raising this is now a pass-tuning question plus a costed
+        // re-freeze, not a netcode question. The guard probe will not stop you.
+        //
+        // Measured on `ba01a51` (#622 as merged), which is NOT where the
+        // netcode half of this was first measured -- #622 landed a passing/AI
+        // rework and re-recorded baselines after that measurement, and it is
+        // what added the two real failures above (the count was 36/36 before).
         default: 280.0,
         unit: "px/s",
         min: 180.0,

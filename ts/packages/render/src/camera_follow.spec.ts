@@ -166,7 +166,7 @@ describe("cameraFollow", () => {
     cameraFollow.reset();
     cameraFollow.update(fakeState(300, 200), 1 / 60);
     const view = cameraFollow.view(field);
-    const [sx, sy] = camera.project(300, 200, field, { w: 1280, h: 720 }, undefined, view);
+    const [sx, sy] = camera.project(300, 200, field, { w: 1280, h: 720 }, view);
     expect(sx === sx && sy === sy).toBe(true); // finite (not NaN)
   });
 });

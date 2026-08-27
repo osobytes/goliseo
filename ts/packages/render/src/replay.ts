@@ -19,8 +19,8 @@
 // `tuning.values.REPLAY_SECONDS`/`REPLAY_SLOWMO` (also Rust-owned even
 // though the knobs themselves are presentation-only replay timing) are
 // exposed here as a mutable `replay.tuning` property instead of importing
-// the sim tuning module directly -- the same pattern `camera.ts` uses for
-// `perspective_mode`.
+// the sim tuning module directly -- the same pattern `pitch.ts` uses for
+// `stadium_mode`/`follow_camera`.
 
 import { Vec2 } from "@gc/core";
 import type { CombatMatchState } from "@gc/presentation";

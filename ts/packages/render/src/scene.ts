@@ -73,13 +73,13 @@ export interface SceneRootOptions {
 
 /**
  * A world-space 3D layer (the stadium: bowl, crowd, sky, whatever sits
- * behind/around the flat pitch content) that `SceneRoot` can composite
- * UNDER `pitchGroup`/`hudGroup` when `camera.perspective_mode` is on. Kept
- * deliberately minimal and content-agnostic -- `SceneRoot` never constructs
- * or names anything inside `group`, it only adds/removes the group itself
- * and calls `update`/`dispose` -- so this file has no dependency on whatever
- * builds the actual stadium geometry (a `stadium*.ts` module elsewhere in
- * this package, out of this file's scope).
+ * behind/around the flat pitch content) that `SceneRoot` composites UNDER
+ * `pitchGroup`/`hudGroup` once one is attached. Kept deliberately minimal
+ * and content-agnostic -- `SceneRoot` never constructs or names anything
+ * inside `group`, it only adds/removes the group itself and calls
+ * `update`/`dispose` -- so this file has no dependency on whatever builds
+ * the actual stadium geometry (a `stadium*.ts` module elsewhere in this
+ * package, out of this file's scope).
  */
 export interface WorldLayer {
   /** Added to `worldScene` by `setWorldLayer`; never mutated by `SceneRoot` itself. */
@@ -179,9 +179,9 @@ const CAMERA_FAR = 10;
  *
  * WORLD LAYER (the stadium). `worldScene`/`worldCamera` are a SECOND,
  * independent scene graph, always constructed (see the constructor) but
- * only ever rendered through when BOTH a `WorldLayer` is attached (via
- * `setWorldLayer`) AND `camera.perspective_mode` is on -- see `populate`'s
- * and `render`'s own doc comments for exactly what each half does. Kept
+ * only ever rendered through once a `WorldLayer` is attached (via
+ * `setWorldLayer`) -- see `populate`'s and `render`'s own doc comments for
+ * exactly what each half does. Kept
  * entirely separate from `scene`/`camera` (the existing screen-space
  * ortho scene every draw2d.ts command already lives in) rather than added
  * as a third child group of the SAME scene, because it is not
@@ -236,8 +236,8 @@ export class SceneRoot {
     this.camera.lookAt(0, 0, 0);
 
     // Always constructed -- see the class doc comment's WORLD LAYER section
-    // -- but unused (never added as a `draw_layers` layer) until BOTH a
-    // `WorldLayer` is attached and `camera.perspective_mode` is on. The
+    // -- but unused (never added as a `draw_layers` layer) until a
+    // `WorldLayer` is attached. The
     // initial fov/near/far mirror `camera.PERSPECTIVE`/`perspectiveRig`'s
     // own defaults so this camera is never left in a nonsensical state
     // before the first `populate()` call re-syncs it properly.
@@ -287,8 +287,8 @@ export class SceneRoot {
    * Resize the owned renderer and recompute the camera frustum(s). Reuses
    * the existing `camera`/`worldCamera`/`scene`/groups/renderer -- none of
    * them are reconstructed. `worldCamera`'s ASPECT is updated here (a
-   * window resize changes it regardless of whether a world layer or
-   * `perspective_mode` is currently active); its position/fov/near/far stay
+   * window resize changes it regardless of whether a world layer is
+   * currently attached); its position/fov/near/far stay
    * `populate`'s job, since those depend on the FRAME (the follow-camera
    * view, in particular) rather than the viewport.
    */
@@ -333,8 +333,8 @@ export class SceneRoot {
    * defensively, to avoid depending on `SceneRoot` being the only caller that
    * ever sets it, even though nothing in `populate` currently rasterizes.
    *
-   * WORLD LAYER SYNC. When a `WorldLayer` is attached AND
-   * `camera.perspective_mode` is on, this method ALSO (a) calls
+   * WORLD LAYER SYNC. When a `WorldLayer` is attached, this method ALSO
+   * (a) calls
    * `layer.update(now)` -- the same `now` `pitch.draw` gets, so both halves
    * of one frame agree on the clock -- and (b) re-derives `worldCamera`'s
    * position/orientation/lens from `camera.perspectiveRig`, using the EXACT
@@ -376,7 +376,7 @@ export class SceneRoot {
       this.clearGroup(this.hudGroup);
     }
 
-    if (this.worldLayer !== undefined && camera.perspective_mode) {
+    if (this.worldLayer !== undefined) {
       this.worldLayer.update(now);
       this.syncWorldCamera(frame.field);
     }
@@ -407,20 +407,18 @@ export class SceneRoot {
    * scene(s) through bloom. Needs a live GL context to run at all -- see
    * `populate`'s doc comment -- so it is not exercised by scene.spec.ts.
    *
-   * With an active world layer under `camera.perspective_mode`, this uses
-   * `bloom.ts`'s `draw_layers` with the world layer FIRST (so it composites
-   * underneath, per that method's clear semantics -- see bloom.ts) and this
-   * class's own screen-space `scene`/`camera` second: `[{ scene:
-   * worldScene, camera: worldCamera }, { scene, camera }]`. Otherwise --
-   * no layer, or `perspective_mode` off -- this is EXACTLY today's
-   * single-layer path (`Bloom.draw`), bit-identical to before this world-
-   * layer support existed: no behaviour change for the default, flags-off
-   * configuration.
+   * With an active world layer, this uses `bloom.ts`'s `draw_layers` with
+   * the world layer FIRST (so it composites underneath, per that method's
+   * clear semantics -- see bloom.ts) and this class's own screen-space
+   * `scene`/`camera` second: `[{ scene: worldScene, camera: worldCamera },
+   * { scene, camera }]`. With no layer attached this is EXACTLY the
+   * single-layer path (`Bloom.draw`), bit-identical to before world-layer
+   * support existed.
    */
   render(frame: RenderFrame, options: SceneRenderOptions): void {
     this.assertNotDisposed();
     this.populate(frame, options);
-    if (this.worldLayer !== undefined && camera.perspective_mode) {
+    if (this.worldLayer !== undefined) {
       this.bloomPass.draw_layers(
         this.renderer,
         [

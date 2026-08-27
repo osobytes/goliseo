@@ -121,4 +121,4 @@ first-fixture prompt sequence.
 - Full time remains visible for at least 0.9 seconds and completion fires once.
 - Product mode rejects internal rematch; playtest mode preserves it.
 - Headless audio accepts replay ambience and full-time transitions.
-- The seeded gameplay tripwire remains unchanged.
+- The seeded gameplay baselines remain unchanged.
