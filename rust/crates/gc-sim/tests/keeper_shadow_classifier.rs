@@ -381,11 +381,22 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // argument bounds `new_only`, and `new_only` stays structurally 0,
     // which is the assertion that would have been a finding rather than a
     // re-pin).
-    assert_eq!(total.candidates, 20525);
-    assert_eq!(total.agree_true, 5523);
-    assert_eq!(total.agree_false, 14747);
-    assert_eq!(total.disagree_deferred, 255);
-    assert_eq!(total.disagree_height, 0);
+    // Re-pinned by the pass-reception rework in the SAME commit as the
+    // baseline's v23 -> v24 re-freeze, per this file's coupling rule.
+    // Passes resolving at their meeting point removes most loose-runout
+    // ticks a keeper had to judge: `candidates` 20525 -> 16794 (-18%),
+    // both agree buckets shrinking roughly in proportion and
+    // `disagree_deferred` collapsing 255 -> 26 (deferred candidates were
+    // overwhelmingly the ambiguous runout ricochets that no longer
+    // happen). `disagree_height` returns from 0 to a small 11 — #629's own
+    // note said zero was a smaller surface, not a guarantee, and the
+    // rework's faster restarts reintroduce a handful of high-ball edge
+    // candidates. `new_only` stays structurally 0.
+    assert_eq!(total.candidates, 16794);
+    assert_eq!(total.agree_true, 4909);
+    assert_eq!(total.agree_false, 11848);
+    assert_eq!(total.disagree_deferred, 26);
+    assert_eq!(total.disagree_height, 11);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -539,7 +550,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // the merged paragraph above), and deferred episodes remain the only
     // driver left, so the reconciliation's conclusion (deferred, not
     // height, explains byte divergence) holds trivially.
-    assert_eq!(matches_with_disagree, 0);
-    assert_eq!(matches_with_deferred, 18);
-    assert_eq!(matches_with_either, 18);
+    // Pass-reception rework re-pin (same commit as v23 -> v24): the
+    // deferred bucket's collapse (255 -> 26 candidates) concentrates the
+    // near-resolution matches to 2, and the returned disagree_height
+    // candidates surface real disagreement in 3 matches.
+    assert_eq!(matches_with_disagree, 3);
+    assert_eq!(matches_with_deferred, 2);
+    assert_eq!(matches_with_either, 5);
 }

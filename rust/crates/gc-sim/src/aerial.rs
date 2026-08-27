@@ -790,12 +790,14 @@ fn apply_reception(
 
     if resolution.outcome == AerialOutcome::Miss {
         s.players[idx].receive_timer = 0.0;
+        s.players[idx].receive_target = None;
         return;
     }
 
     for i in 0..s.players.len() {
         if i != idx {
             s.players[i].receive_timer = 0.0;
+            s.players[i].receive_target = None;
         }
     }
     s.players[idx].receive_timer = s.players[idx].receive_timer.max(AERIAL_RECEIVE_TIME);
@@ -899,6 +901,7 @@ fn apply_strike(
     });
     for other in &mut s.players {
         other.receive_timer = 0.0;
+        other.receive_target = None;
     }
     if resolution.outcome == AerialOutcome::Miss {
         return;

@@ -75,6 +75,12 @@ pub struct AiDrivenEvidenceResult {
     pub sequence_digest: String,
     /// Final home score.
     pub score_home: i64,
+    /// Shot events observed across the whole run — the canary
+    /// `the_reference_match_is_actually_played` asserts on this rather than
+    /// on goals, because a well-played 0-0 exercises the shooting path just
+    /// as fully (this fixed seed produces exactly that on the
+    /// pass-reception-rework base: 12 shots, 5 claims, 0-0).
+    pub shots: i64,
     /// Final away score.
     pub score_away: i64,
 }
@@ -287,9 +293,15 @@ pub fn run_to(tune: &Tuning, ticks: i64) -> AiDrivenEvidenceResult {
     let mut last = row_of(0, &s);
     last.absorb(&mut sequence);
 
+    let mut shots = 0;
     for tick in 1..=ticks {
         let input = tick_input(&mut b, &s, tick, tune);
         sim_match::step(&mut s, DT, StepInput::Legacy(input), None, tune);
+        shots += s
+            .events
+            .iter()
+            .filter(|e| e.kind == crate::match_snapshot::MatchEventKind::Shot)
+            .count() as i64;
         last = row_of(tick, &s);
         last.absorb(&mut sequence);
     }
@@ -305,5 +317,6 @@ pub fn run_to(tune: &Tuning, ticks: i64) -> AiDrivenEvidenceResult {
         sequence_digest: sequence.hex(),
         score_home: last.score_home,
         score_away: last.score_away,
+        shots,
     }
 }

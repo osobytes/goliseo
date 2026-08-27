@@ -456,8 +456,23 @@ mod tests {
         // settled at 280 (see gc_data::tunables) shortly after the resize
         // landed, moving both values a second time before either shipped;
         // the pair above is the value at 280, not an intermediate 300.
-        assert_eq!(f.expected_final_hash, "02085004777f30a4");
-        assert_eq!(f.expected_sequence_digest, "bcf2dfa7e1ae7221");
+        // The pass-reception rework (`MatchPlayer::receive_target` and
+        // `MatchState::stick_latch` added, `match_snapshot::VERSION` 14 ->
+        // 15, `COMBAT_VERSION` 15 -> 16) moved both again: final hash
+        // 02085004777f30a4 -> 61c50495d826ce10, sequence digest
+        // bcf2dfa7e1ae7221 -> f7d42a56513aa355. This is also the first
+        // re-record where `identity.snapshot_version` itself had to move
+        // (14 -> 15, in the JSON's frozen half): `input_tape::copy_identity`
+        // rejects any `snapshot_version` that is not the current
+        // `match_snapshot::VERSION` or `COMBAT_VERSION`, so the frozen
+        // identity is kept one schema version ahead by hand on every
+        // `VERSION` bump, same as `boundary_hash_lines()[0]` below (a
+        // hand-edit to the checked-in JSON, not something the recorder
+        // derives -- see `rerecorded_json`'s frozen-field check, which only
+        // asserts self-consistency against whatever is currently checked
+        // in).
+        assert_eq!(f.expected_final_hash, "61c50495d826ce10");
+        assert_eq!(f.expected_sequence_digest, "f7d42a56513aa355");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -473,7 +488,7 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "115aedc598345a71");
+        assert_eq!(boundary_hash_lines()[0], "2de23cb0f805ac9f");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
@@ -487,11 +502,17 @@ mod tests {
         // change, but the kickoff positions this boundary hashes are laid
         // out relative to a pitch that is now a different size
         // (2226cce944213655 -> 115aedc598345a71).
+        // The pass-reception rework moved it again by a schema bump:
+        // `match_snapshot::VERSION` 14 -> 15 for the new
+        // `MatchPlayer::receive_target` and `MatchState::stick_latch`
+        // fields, present (as their default/absent encoding) on this
+        // zero-tick kickoff snapshot too (115aedc598345a71 ->
+        // 2de23cb0f805ac9f).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "02085004777f30a4"
+            "61c50495d826ce10"
         );
     }
 

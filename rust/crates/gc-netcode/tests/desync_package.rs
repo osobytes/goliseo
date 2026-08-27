@@ -587,7 +587,11 @@ fn identity_field(identity: &SessionIdentity, field: &str) -> String {
 /// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
 /// when a deliberate, reviewed wire-schema change moves it -- never to clear
 /// a check that surprised you.
-const MANIFEST_ID_BASELINE: &str = "ae00f6aea0825f00";
+///
+/// 2026-08-26: re-recorded again by the pass-reception rework
+/// (`match_snapshot::COMBAT_VERSION` 15 -> 16, `MatchPlayer::receive_target`
+/// / `MatchState::stick_latch`), same mechanism as the #489/#490 note above.
+const MANIFEST_ID_BASELINE: &str = "d7af1d297f5dd7c1";
 
 /// Cross-language identity agreement (`ARCHITECTURE.md` §1.2's shared-vector
 /// contract — see the module doc comment for how this assertion was adapted

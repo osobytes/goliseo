@@ -75,11 +75,22 @@ use gc_sim::tuning::Tuning;
 // captured, which moves boundaries 1..3 again through the stepped-tick
 // locomotion path -- boundary 0 (no ticks stepped) is untouched by a pace
 // tunable and stayed put. Re-derived from this build.
+//
+// 2026-08-26 pass-reception-rework EXCEPTION, same shape as #531 phase 2 /
+// #489 above: `match_snapshot::VERSION` 14 -> 15 (the new
+// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields) moves
+// boundary 0 again for the schema reason alone -- this fixture has no combat
+// companion and nobody receiving a pass, so both new fields serialize as
+// `Nil` on every player and on the state, but that still changes the
+// canonical byte encoding of the CONSTRUCTED zero-tick state. Boundaries
+// 1..3 move for the same schema reason; this fixture's three stepped ticks
+// (a plain move-x input, no pass thrown) do not exercise the reworked
+// reception steering itself. All four re-derived from this build.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "678924b418c3bd81",
-    "2151ea407a33d69c",
-    "1682934e090e28e9",
-    "1a0b4033d72a9aee",
+    "53f8c1509265f2d9",
+    "b7ce557225dce60a",
+    "a57cb769eaa16d95",
+    "73626fb8c7575e82",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

@@ -44,8 +44,14 @@ const SERIALIZATION_VERSION: i64 = 1;
 const DIGEST: &str = "fnv1a64/v1";
 const SAMPLE_SHAPE_NAME: &str = "research_canonical_sample/v1";
 const SAMPLE_HASH: &str = "2c43b30a590f0da8";
-const SNAPSHOT_VERSION: i64 = 14;
-const COMBAT_VERSION: i64 = 15;
+// 2026-08-26: re-pinned by the pass-reception rework (`MatchPlayer::receive_target`,
+// `MatchState::stick_latch`), which bumped `match_snapshot::VERSION` 14 -> 15
+// and `match_snapshot::COMBAT_VERSION` 15 -> 16. Neither `SAMPLE_HASH` nor
+// the session/response/registry hashes below are computed against these two
+// constants (they hash `research_schema`/`research_features` shapes, not a
+// `match_snapshot`), so this is the only pair that moves here.
+const SNAPSHOT_VERSION: i64 = 15;
+const COMBAT_VERSION: i64 = 16;
 const SESSION_ENVELOPE_HASH: &str = "0da43aba0805a72b";
 const RESPONSE_SET_HASH: &str = "04b559ff59cea90e";
 const FEATURE_REGISTRY_HASH: &str = "7a42fe98b1bc784c";

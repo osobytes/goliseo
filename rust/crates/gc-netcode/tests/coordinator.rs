@@ -150,7 +150,11 @@ const TRANSCRIPT_ID_LINE: usize = 13;
 /// as `match_driver.rs`'s `BOUNDARY_ZERO_BASELINE_HASH`). Re-record only
 /// when a deliberate, reviewed wire-schema change moves it — never to clear
 /// a check that surprised you.
-const TRANSCRIPT_ID_BASELINE: &str = "transcript_id=bbc5b6538c656626";
+///
+/// 2026-08-26: re-pinned again by the pass-reception rework
+/// (`match_snapshot::COMBAT_VERSION` 15 -> 16, `MatchPlayer::receive_target`
+/// / `MatchState::stick_latch`), same mechanism as the #489 note above.
+const TRANSCRIPT_ID_BASELINE: &str = "transcript_id=a37abceb14bca15d";
 
 #[test]
 fn coordinator_reducer_reproduces_the_lua_reference_rejection_and_desync_paths() {

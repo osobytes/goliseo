@@ -55,6 +55,16 @@ use gc_sim::input_frame;
 /// `full_trace_digest`, `full_message_count` and every `*_sources`/`*_owned`
 /// golden did not. That asymmetry is the evidence -- a coordinator behaviour
 /// change would have moved the trace and the seating, and neither did.
+///
+/// 2026-08-26: repinned a third time by the pass-reception rework
+/// (`match_snapshot::COMBAT_VERSION` 15 -> 16, the new
+/// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields), same
+/// mechanism and same shape as #268/#489/#490 above: only the four
+/// transcript ids moved; `full_trace_digest`, `full_message_count` and every
+/// `*_sources`/`*_owned` golden reproduced unchanged, confirming no
+/// coordinator behaviour moved. Re-derived by calling `session(...)` (and
+/// `sources`/`owned`) directly for all five cases from this build and
+/// diffing against the values below.
 pub struct Golden {
     /// [`Driver::transcript_id`] of the canonical 4v4 (3 guests) session.
     pub full_transcript_id: &'static str,
@@ -86,22 +96,22 @@ pub struct Golden {
 
 /// The pinned golden values (see [`Golden`]).
 pub const GOLDEN: Golden = Golden {
-    full_transcript_id: "07a00f7567f24028",
+    full_transcript_id: "26675833586fe78d",
     full_trace_digest: "2fa7235df619b00a",
     full_message_count: 51,
-    bot_transcript_id: "a5b0b9fed77291b3",
+    bot_transcript_id: "21f2ea240a71638a",
     bot_sources: "home_1=peer:host:nil|home_2=peer:guest.1:nil|home_3=peer:guest.2:nil|\
 home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|\
 away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
     solo_sources: "home_1=peer:host:nil|home_2=bot:bot.home_2:35839|home_3=bot:bot.home_3:43758|\
 home_4=bot:bot.home_4:51677|away_1=bot:bot.away_1:59596|away_2=bot:bot.away_2:67515|\
 away_3=bot:bot.away_3:75434|away_4=bot:bot.away_4:83353",
-    duo_transcript_id: "29c8f9a7619d4600",
+    duo_transcript_id: "1c30ed5b564c9b72",
     duo_sources: "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:host:nil|\
 home_4=peer:host:nil|away_1=peer:guest.1:nil|away_2=peer:guest.1:nil|\
 away_3=peer:guest.1:nil|away_4=peer:guest.1:nil",
     duo_owned: "host=[home_1,home_2,home_3,home_4]>home_1|guest.1=[away_1,away_2,away_3,away_4]>away_1",
-    pair_transcript_id: "3eedad21500f7745",
+    pair_transcript_id: "c25cc5d317eea685",
     pair_sources: "home_1=peer:host:nil|home_2=peer:host:nil|home_3=peer:guest.1:nil|\
 home_4=peer:guest.1:nil|away_1=peer:guest.2:nil|away_2=peer:guest.2:nil|\
 away_3=peer:guest.3:nil|away_4=peer:guest.3:nil",
