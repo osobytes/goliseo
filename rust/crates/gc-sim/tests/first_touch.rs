@@ -323,3 +323,193 @@ fn a_whiffed_first_touch_leaves_the_ball_loose_and_costs_the_designation() {
     }
     panic!("no seed in 0..60 produced a Miss at volley skill 0.0");
 }
+
+// ---------------------------------------------------------------------
+// The receive window (#623 follow-up): the designation must outlive the
+// pass's own flight, or the verb silently never arms on a long floor pass.
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_receive_window_outlives_the_flight_at_every_legal_range() {
+    // Ground flight under exponential grass friction: t = -ln(1 - F*d/v0)/F.
+    // At every legal aim distance, the window must exceed that flight.
+    let tune = Tuning::new();
+    let friction = gc_sim::ball_flight::FRICTION;
+    for d in [100.0_f64, 300.0, 500.0, 700.0, 890.0] {
+        let v0 = gc_sim::passing::speed_for(d, &tune);
+        let flight = -(1.0 - friction * d / v0).ln() / friction;
+        let window = sim_match::receive_window(v0, d, false);
+        assert!(
+            window > flight,
+            "at {d} px the window ({window:.2}) must outlive the flight ({flight:.2})"
+        );
+    }
+}
+
+#[test]
+fn a_lob_and_a_dying_roll_get_the_capped_window() {
+    // A lob's flight is an arc plus a roll, not one exponential roll, and a
+    // dying roll's nominal flight never completes at all -- both take the
+    // ceiling instead of an estimate.
+    let lob = sim_match::receive_window(900.0, 400.0, true);
+    let dying = sim_match::receive_window(300.0, 400.0, false);
+    assert_eq!(lob, dying, "both unestimable shapes take the same ceiling");
+    assert!(
+        lob > 2.0,
+        "the ceiling must comfortably exceed the old flat window"
+    );
+}
+
+#[test]
+fn a_max_range_floor_pass_still_first_touches_end_to_end() {
+    // The play-test failure (#623 follow-up), as a full real flow rather
+    // than a staged arrival: charge a pass to a teammate 890 px away with
+    // every other body parked far behind the aim, release, then hold the
+    // strike with a neutral stick -- the receive assist walks the receiver
+    // to the meet point and the first touch fires at collection. Under the
+    // old flat 1.3 s window the designation expired mid-flight and this
+    // exact flow ended in a dead ball.
+    let mut s = new_match_seeded(9.0, None);
+    let tune = Tuning::new();
+    let owner = 2_i64;
+    let ridx = 3_i64;
+    s.kickoff_hold = 0.0;
+    for (i, p) in s.players.iter_mut().enumerate() {
+        p.pos = Vec2::new(120.0 + 30.0 * i as f64, 60.0);
+        p.receive_timer = 0.0;
+    }
+    s.players[(owner - 1) as usize].pos = Vec2::new(300.0, 700.0);
+    s.players[(owner - 1) as usize].facing = Vec2::new(1.0, 0.0);
+    s.players[(ridx - 1) as usize].pos = Vec2::new(1190.0, 700.0);
+    sim_match::set_controlled_player(&mut s, owner);
+    s.owner = Some(owner);
+    s.ball = Vec2::new(300.0, 700.0);
+    s.ball_z = 0.0;
+    let aim = Vec2::new(1.0, 0.0);
+    for _ in 0..30 {
+        let input = MatchInput {
+            r#move: aim,
+            pass_held: true,
+            ..MatchInput::default()
+        };
+        sim_match::step(&mut s, DT, StepInput::Legacy(input), None, &tune);
+    }
+    sim_match::step(
+        &mut s,
+        DT,
+        StepInput::Legacy(MatchInput {
+            r#move: aim,
+            pass: true,
+            ..MatchInput::default()
+        }),
+        None,
+        &tune,
+    );
+    assert!(
+        s.players[(ridx - 1) as usize].receive_timer > 0.0,
+        "the far teammate must be the designated receiver"
+    );
+    for _ in 0..400 {
+        sim_match::step(
+            &mut s,
+            DT,
+            StepInput::Legacy(strike_input(Vec2::new(0.0, 0.0))),
+            None,
+            &tune,
+        );
+        if first_touch_event(&s).is_some() {
+            return;
+        }
+        assert_eq!(
+            s.owner, None,
+            "nobody may win the ball before the receiver's first touch"
+        );
+    }
+    panic!("the max-range floor pass never produced a first touch");
+}
+
+#[test]
+fn aiming_the_shot_does_not_steer_the_receiver_off_the_pass() {
+    // The owner's gesture (#623 follow-up 3): hold the strike AND a stick
+    // direction — the direction is where the SHOT should go, not where the
+    // body should run. Under stick-overrides-assist the receiver ran off
+    // the meet line and the pass died; now the assist keeps them on it and
+    // the clean first touch follows the held aim. Same full real flow as
+    // `a_max_range_floor_pass_still_first_touches_end_to_end`, with the aim
+    // held north the entire flight.
+    let shot_aim = Vec2::new(0.0, -1.0);
+    for seed in 0..12 {
+        let mut s = new_match_seeded(seed as f64, None);
+        let tune = Tuning::new();
+        let owner = 2_i64;
+        let ridx = 3_i64;
+        s.kickoff_hold = 0.0;
+        for (i, p) in s.players.iter_mut().enumerate() {
+            p.pos = Vec2::new(120.0 + 30.0 * i as f64, 60.0);
+            p.receive_timer = 0.0;
+        }
+        s.players[(owner - 1) as usize].pos = Vec2::new(300.0, 700.0);
+        s.players[(owner - 1) as usize].facing = Vec2::new(1.0, 0.0);
+        {
+            let rp = &mut s.players[(ridx - 1) as usize];
+            rp.pos = Vec2::new(1000.0, 700.0);
+            rp.volley_skill = 1.0;
+        }
+        sim_match::set_controlled_player(&mut s, owner);
+        s.owner = Some(owner);
+        s.ball = Vec2::new(300.0, 700.0);
+        s.ball_z = 0.0;
+        let pass_aim = Vec2::new(1.0, 0.0);
+        for _ in 0..30 {
+            let input = MatchInput {
+                r#move: pass_aim,
+                pass_held: true,
+                ..MatchInput::default()
+            };
+            sim_match::step(&mut s, DT, StepInput::Legacy(input), None, &tune);
+        }
+        sim_match::step(
+            &mut s,
+            DT,
+            StepInput::Legacy(MatchInput {
+                r#move: pass_aim,
+                pass: true,
+                ..MatchInput::default()
+            }),
+            None,
+            &tune,
+        );
+        assert!(s.players[(ridx - 1) as usize].receive_timer > 0.0);
+        let mut fired = false;
+        for _ in 0..400 {
+            sim_match::step(
+                &mut s,
+                DT,
+                StepInput::Legacy(strike_input(shot_aim)),
+                None,
+                &tune,
+            );
+            if let Some(event) = first_touch_event(&s) {
+                if event.outcome == Some(AerialOutcome::Clean) {
+                    let dir = s.ball_vel.normalized();
+                    assert!(
+                        dir.x * shot_aim.x + dir.y * shot_aim.y > 0.995,
+                        "the clean first touch must follow the held aim (got {dir:?})"
+                    );
+                    return;
+                }
+                fired = true;
+                break; // Heavy/Miss: the attempt happened; try another seed for Clean.
+            }
+            assert_eq!(
+                s.owner, None,
+                "aiming the shot must not cost the receiver the ball"
+            );
+        }
+        assert!(
+            fired,
+            "holding an aim during the flight must still produce the first-touch attempt"
+        );
+    }
+    panic!("no seed in 0..12 produced a Clean aimed first touch at volley skill 1.0");
+}
