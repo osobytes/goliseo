@@ -209,6 +209,33 @@ fn step_until_tackle_settled(s: &mut MatchState, budget: u32, tune: &Tuning) -> 
     false
 }
 
+/// Like [`step_until_tackle_settled`], but holds `chaser` a fixed offset
+/// off `target`'s position before every step -- the same re-pinning idea
+/// [`step_until_event_pinning`] uses for a passing lane, for the same
+/// reason. A standing poke charges and executes over a quarter second
+/// (#489), which a carrier at pace covers ~70px in, so a fixture whose
+/// whole premise is "at CONTACT range" no longer holds at the tick its
+/// reach is finally checked unless the challenger keeps up. Re-pinning is
+/// the chase the fixture's own comment always claimed.
+fn step_until_tackle_settled_chasing(
+    s: &mut MatchState,
+    chaser: i64,
+    target: i64,
+    offset: Vec2,
+    budget: u32,
+    tune: &Tuning,
+) -> bool {
+    for _ in 0..budget {
+        let at = s.players[(target - 1) as usize].pos.add(offset);
+        s.players[(chaser - 1) as usize].pos = at;
+        step(s, 1.0 / 60.0, &no_input(), tune);
+        if has_event(s, MatchEventKind::Tackle) || has_event(s, MatchEventKind::TackleMiss) {
+            return true;
+        }
+    }
+    false
+}
+
 fn step_until_event(s: &mut MatchState, kind: MatchEventKind, budget: u32, tune: &Tuning) -> bool {
     for _ in 0..budget {
         step(s, 1.0 / 60.0, &no_input(), tune);
@@ -472,6 +499,13 @@ fn carrier_setup() -> (MatchState, i64) {
     // Challenges reach for the ball, so put it at the carrier's feet.
     let c = s.players[(away_idx - 1) as usize].clone();
     s.ball = c.pos.add(c.facing.scale(18.0));
+    // Put the juke on cooldown for the same reason the teammates are parked
+    // below: an AI carrier reads a CHARGING poke and sidesteps out of it
+    // (#489 gave the charge a real duration precisely so it could be
+    // answered), and since #629 it keeps the ball while doing so. These
+    // fixtures are about what a CHALLENGE does, so close that escape too --
+    // `tests/dribble.rs` owns the evade.
+    s.players[(away_idx - 1) as usize].dodge_cd = 5.0;
     // Park the carrier's teammates out of passing range so it can't bail
     // out of the challenge with a pressure pass.
     for (i, p) in s.players.iter_mut().enumerate() {
@@ -642,8 +676,27 @@ fn the_human_can_poke_the_ball_loose_from_behind_at_contact_range() {
         }),
         &tune,
     );
-    // #489: the poke charges and executes before it resolves.
-    step_until_tackle_settled(&mut s, TACKLE_FRAMES, &tune);
+    // #489: the poke charges and executes before it resolves -- and the
+    // premise here is CONTACT range, so the chaser has to stay on the
+    // carrier's back until it does.
+    assert!(
+        step_until_tackle_settled_chasing(
+            &mut s,
+            controlled,
+            away_idx,
+            Vec2::new(24.0, 0.0),
+            TACKLE_FRAMES,
+            &tune,
+        ),
+        "the poke resolved inside the budget"
+    );
+    // Assert on the poke's OWN outcome, not just on who ends up without the
+    // ball: until #629 this fixture was green because the carrier's juke
+    // threw the ball away while the poke itself resolved as a `TackleMiss`.
+    assert!(
+        has_event(&s, MatchEventKind::Tackle),
+        "the poke is what won the ball"
+    );
     assert!(
         s.owner != Some(away_idx),
         "a contact-range poke wins even from behind"
