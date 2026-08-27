@@ -228,6 +228,14 @@ const KEEPER_GRAB_POSE: f64 = 0.25;
 const KEEPER_THROW_POSE: f64 = 0.25;
 const KEEPER_GET_UP_POSE: f64 = 0.18;
 const RECEIVE_TIME: f64 = 1.3;
+/// The outfield receive window's ceiling, for lobs and dying rolls whose
+/// ground-flight estimate is unavailable or unbounded (#623 follow-up; see
+/// `receive_window`). Well under the keeper's 4.0 -- an outfielder chasing a
+/// dead pass eventually gives the designation up; a keeper never does.
+const RECEIVE_TIME_MAX: f64 = 2.6;
+/// Margin added to a pass's estimated flight time so the window survives the
+/// receiver's final strides and a slightly-late meet (#623 follow-up).
+const RECEIVE_MARGIN: f64 = 0.4;
 const KEEPER_RECEIVE_TIME: f64 = 4.0;
 const BACKPASS_AIM_COS: f64 = 0.92;
 
@@ -1454,14 +1462,8 @@ fn release_pass(
         }
     }
 
-    // A keeper receiver gets a long window: it must keep coming for the
-    // pass (or its dying roll) until the ball is actually resolved, not for
-    // a beat.
-    s.players[(target_idx - 1) as usize].receive_timer = if target_is_keeper {
-        KEEPER_RECEIVE_TIME
-    } else {
-        RECEIVE_TIME
-    };
+    // The receive window is set AFTER the launch below, from the pass's own
+    // estimated flight time -- see `receive_window` (#623 follow-up).
     s.events.push(MatchEvent {
         kind: MatchEventKind::Pass,
         x: s.ball.x,
@@ -1508,6 +1510,23 @@ fn release_pass(
         s.ball_vz = 0.0;
     }
     s.ball_vel = apply_ai_outfield_execution_error(s, owner_idx, s.ball_vel);
+    // The receive window must OUTLIVE the flight (#623 follow-up). The old
+    // flat 1.3 s was tuned on the 960px pitch; on the futsal re-dimensioning
+    // a long floor pass rolls for longer than that, so the designation was
+    // expiring MID-FLIGHT: the receive assist stopped walking, the lead
+    // solve's deliberately under-hit meet point was never reached and the
+    // pass died in no-man's land, and the first-touch verb silently never
+    // armed. A keeper receiver keeps its own longer flat window: it must
+    // keep coming until the ball is resolved, not for a beat.
+    s.players[(target_idx - 1) as usize].receive_timer = if target_is_keeper {
+        KEEPER_RECEIVE_TIME
+    } else {
+        receive_window(
+            s.ball_vel.length(),
+            s.ball.dist(s.players[(target_idx - 1) as usize].pos),
+            blocker_f.is_some(),
+        )
+    };
     // Control follows a HUMAN pass to its receiver (standard soccer-game
     // behavior): you take over the man the ball is travelling to — attack
     // the cross, time the first touch — while it is still in flight.
@@ -1522,6 +1541,30 @@ fn release_pass(
     {
         set_controlled_player(s, target_idx);
     }
+}
+
+/// The outfield receive window for one just-launched pass: its estimated
+/// flight time plus [`RECEIVE_MARGIN`], floored at the old flat
+/// [`RECEIVE_TIME`] and capped at [`RECEIVE_TIME_MAX`] (#623 follow-up).
+///
+/// Grass friction is exponential (`ball_flight::step` scales velocity by
+/// `1 - FRICTION * dt` each tick), so a roll of length `d` from launch
+/// speed `v0` takes `-ln(1 - FRICTION * d / v0) / FRICTION` seconds. A lob
+/// (its flight is an arc plus a short roll, not one exponential roll) and a
+/// dying roll (the log's argument at or under zero: the nominal roll never
+/// reaches the receiver, only their own approach closes the gap) both take
+/// the cap instead of an estimate.
+#[must_use]
+pub fn receive_window(launch_speed: f64, distance: f64, lofted: bool) -> f64 {
+    if lofted || launch_speed <= 0.0 {
+        return RECEIVE_TIME_MAX;
+    }
+    let arg = 1.0 - ball_flight::FRICTION * distance / launch_speed;
+    if arg <= 0.05 {
+        return RECEIVE_TIME_MAX;
+    }
+    let flight = -arg.ln() / ball_flight::FRICTION;
+    (flight + RECEIVE_MARGIN).clamp(RECEIVE_TIME, RECEIVE_TIME_MAX)
 }
 
 /// Pure receiver selection for an outfield pass: returns the player index
@@ -4172,8 +4215,14 @@ fn move_human_player(
         // Jockey stance (Space held off the ball): shadow the carrier at
         // reduced speed, facing locked toward the ball. Mutually exclusive
         // with sprint (jockey wins). Grants bonus poke reach on release.
-        let jockeying =
-            input.jockey && Some(idx) != s.owner && p.stun_timer <= 0.0 && !aerial_active;
+        // A designated receiver of a live pass is exempt: off-ball ACTION
+        // is also the first-touch wind-up (#623), and the half-speed shadow
+        // shuffle would drag them away from meeting their own pass.
+        let jockeying = input.jockey
+            && Some(idx) != s.owner
+            && p.stun_timer <= 0.0
+            && !aerial_active
+            && !(p.receive_timer > 0.0 && s.owner.is_none());
         if jockeying {
             p.jockey_timer = JOCKEY_HOLD;
         }
@@ -4239,10 +4288,18 @@ fn move_human_player(
             if to_ball.length() > 1.0 {
                 desired = to_ball.normalized().scale(mv);
             }
-        } else if !moving && p.receive_timer > 0.0 && s.owner.is_none() {
+        } else if (!moving || aerial::strike_requested(&input))
+            && p.receive_timer > 0.0
+            && s.owner.is_none()
+        {
             // Receive assist: the designated receiver of a pass works to
             // meet it by default — hold a direction to override and attack
-            // a different spot instead.
+            // a different spot instead. EXCEPT while the strike is held
+            // (#623): winding a first touch turns the stick into the shot's
+            // AIM — the same stick-for-the-next-touch split the dribble
+            // hook above gives the carrier — so the assist keeps the body
+            // on the meet line no matter where the shot is aimed. Release
+            // the strike to regain free movement.
             let to_ball = s.ball.sub(p.pos);
             if to_ball.length() > 1.0 {
                 desired = to_ball.normalized().scale(mv);
@@ -6490,15 +6547,20 @@ fn aerial_resolve_play(
     let aerial_inputs: Vec<Option<MatchInput>> = (0..s.players.len())
         .map(|i| inputs.get(&((i + 1) as i64)).copied())
         .collect();
-    let config = aerial::AerialMatchConfig {
+    aerial::resolve_play(s, &aerial_inputs, &aerial_match_config(), ineligible, tune)
+}
+
+/// The match's tunable constants for `crate::aerial`, shared by the airborne
+/// path ([`aerial_resolve_play`]) and the grounded first-touch shot (#623).
+fn aerial_match_config() -> aerial::AerialMatchConfig {
+    aerial::AerialMatchConfig {
         ground_grab_height: GROUND_GRAB_HEIGHT,
         stick_ahead: STICK_AHEAD,
         gravity: GRAVITY,
         release_cd: RELEASE_CD,
         clear_header_speed: CLEAR_HEADER_SPEED,
         volley_speed: VOLLEY_SPEED,
-    };
-    aerial::resolve_play(s, &aerial_inputs, &config, ineligible, tune)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6996,6 +7058,25 @@ fn update_ball(
         }
 
         if let Some(best) = best {
+            // A designated receiver may strike the arriving pass first time
+            // instead of trapping it (#623). The attempt replaces the grant
+            // entirely this tick — including on a whiff, where the swing
+            // misses and the ball runs on untouched. Combat force-outs were
+            // already filtered by the eligibility checks above.
+            if aerial::resolve_first_touch_shot(
+                s,
+                (best - 1) as usize,
+                inputs.get(&best).copied(),
+                &aerial_match_config(),
+                tune,
+            ) {
+                for player in &mut s.players {
+                    player.keeper_set = 0.0;
+                    player.save_style = None;
+                    player.save_tip_emitted = false;
+                }
+                return;
+            }
             let bp = s.players[(best - 1) as usize].clone();
             for player in &mut s.players {
                 player.keeper_set = 0.0;

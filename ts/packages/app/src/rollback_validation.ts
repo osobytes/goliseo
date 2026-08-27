@@ -288,6 +288,7 @@ const AUDIO_KINDS: ReadonlySet<string> = new Set([
   "shot",
   "volley",
   "bicycle",
+  "first_touch_shot",
 ]);
 
 const AERIAL_KINDS: ReadonlySet<string> = new Set(["header", "volley", "bicycle"]);
@@ -356,7 +357,7 @@ function classifyEvent(
     const kind = eventKind(event);
     if (kind === "tackle") {
       countScenario(counts, "tackle");
-    } else if (kind === "shot") {
+    } else if (kind === "shot" || kind === "first_touch_shot") {
       countScenario(counts, "shot");
     }
     if (kind !== undefined && AERIAL_KINDS.has(kind)) {

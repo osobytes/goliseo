@@ -337,6 +337,12 @@ function spawnEvent(e: MatchEvent, eventId?: string): void {
       ring(e.x, e.y, 0.34, 20, [1, 0.8, 0.45], eventId);
       burst(e.x, e.y, 12, 280, 0.4, 3, [1, 0.8, 0.45], eventId);
       return;
+    case "first_touch_shot":
+      // A grounded one-timer: the volley's snap, kept low -- a tight hot
+      // flash with a short skimming spray instead of the big flare.
+      ring(e.x, e.y, 0.3, 16, [1, 0.8, 0.45], eventId);
+      burst(e.x, e.y, 8, 240, 0.32, 2, [1, 0.8, 0.45], eventId);
+      return;
     case "bicycle":
       // Acrobatic strike: a larger double flash, whether clean or wild.
       ring(e.x, e.y, 0.38, 24, [1, 0.65, 0.35], eventId);

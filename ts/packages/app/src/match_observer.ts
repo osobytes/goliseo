@@ -40,7 +40,8 @@ export type ObservedEventKind =
   | "block"
   | "claim"
   | "juke"
-  | "reception";
+  | "reception"
+  | "first_touch_shot";
 
 export interface ObservedMatchEvent {
   readonly kind: ObservedEventKind;
@@ -154,7 +155,8 @@ function observe(
       (event.kind === "shot" ||
         event.kind === "header" ||
         event.kind === "volley" ||
-        event.kind === "bicycle") &&
+        event.kind === "bicycle" ||
+        event.kind === "first_touch_shot") &&
       team !== undefined &&
       event.player !== undefined &&
       value.keeper.get(event.player) !== true
@@ -212,7 +214,8 @@ function observeConfirmedEvent(value: MatchObserver, event: RollbackWrappedMatch
     (payload.kind === "shot" ||
       payload.kind === "header" ||
       payload.kind === "volley" ||
-      payload.kind === "bicycle") &&
+      payload.kind === "bicycle" ||
+      payload.kind === "first_touch_shot") &&
     team !== undefined &&
     payload.player !== undefined &&
     value.keeper.get(payload.player) !== true

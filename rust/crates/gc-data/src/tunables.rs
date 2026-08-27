@@ -1534,6 +1534,19 @@ pub static SIM_TUNABLES: &[TunableDef] = &[
         desc: "Distance from goal inside which the AI attacks a cross with its head.",
     },
     TunableDef {
+        id: "AI_FIRST_TOUCH_RANGE",
+        tier: Tier::Sim,
+        label: "AI first-touch range",
+        cat: "AI",
+        default: 360.0,
+        unit: "px",
+        min: 0.0,
+        max: 700.0,
+        step: 10.0,
+        desc: "Distance from goal inside which an AI pass receiver shoots first time \
+               instead of trapping (#623). 0 turns the AI verb off entirely.",
+    },
+    TunableDef {
         id: "CROSS_MIN_SPACE",
         tier: Tier::Sim,
         label: "Cross space need",
@@ -1975,5 +1988,34 @@ pub static METRICS: &[MetricDef] = &[
         desc: "Parries that put the ball back on an attacker's foot within a short \
                window, over total saves. Measures whether sustained pressure earns a \
                second chance -- PROPOSED band, no hands-on pilot behind it.",
+    },
+    // #623's first_touch_shots, APPENDED LAST like every entry above: the
+    // fold order is pinned by `gc-sim/tests/metric_registry.rs` and inserting
+    // anywhere but the end moves a hash nobody meant to move. Folds into the
+    // fun score on the same interim terms as the four entries above (#528's
+    // probation mechanism still does not exist).
+    MetricDef {
+        id: "first_touch_shots",
+        // Band measured at shipped defaults (n=192 seeds, full 120 s
+        // matches, 2026-08-25): mean 0.958 attempts per match, sd 0.981 --
+        // so ZERO ATTEMPTS IS THE MODAL HEALTHY MATCH, and the band must not
+        // punish it: `desirability` hard-zeroes at `v <= zero_lo`, and one
+        // zeroed metric nullifies the whole geometric-mean fun score. The
+        // left edge therefore sits BELOW zero -- structurally inert for a
+        // count, deliberately, so v = 0 scores 1. This band exists to punish
+        // spam (past 4 attempts, dying at 10, every arriving pass near goal
+        // is a snap shot and settled build-up dies), not absence; "the verb
+        // is decoration" is the knob contract's job to catch, not this
+        // band's (`gc-sim/tests/knob_contract.rs`).
+        //
+        // Fold inflation, measured like #491's (n=96, 120 s, 2026-08-25):
+        // always-present and mostly scoring 1, this entry lifts the mean fun
+        // score +0.0073 on a 0.4546 base (+1.6%). Same interim condition as
+        // the four entries above, same missing #528 probation mechanism.
+        band: [-1.0, 0.0, 4.0, 10.0],
+        direction: MetricDirection::Banded,
+        desc: "Grounded first-touch shot attempts per match, all outcomes and both \
+               teams (#623). Measures how often the one-timer verb actually fires \
+               in AI-vs-AI play.",
     },
 ];

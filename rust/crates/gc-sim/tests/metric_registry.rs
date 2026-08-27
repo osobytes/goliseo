@@ -26,6 +26,12 @@ const BAND_TURNOVERS_PER_MIN: [f64; 4] = [0.3, 1.0, 5.0, 10.0];
 const BAND_POSSESSION_BALANCE: [f64; 4] = [0.1, 0.35, 0.65, 0.9];
 const BAND_LONGEST_DROUGHT_S: [f64; 4] = [-1.0, 0.0, 35.0, 80.0];
 const BAND_DECIDED_LATE: [f64; 4] = [0.05, 0.4, 1.0, f64::INFINITY];
+// #623's `first_touch_shots` is a COUNT -- extracted as `Some` on every
+// match, like `goals_total`. Unlike the four `Option` additions (#488-#491),
+// it cannot sit out these Default-built samples by being absent, so the
+// verbatim reproduction gains its entry on the same terms the registry did:
+// appended last, same band, same authored order.
+const BAND_FIRST_TOUCH_SHOTS: [f64; 4] = [-1.0, 0.0, 4.0, 10.0];
 
 fn legacy_desirability(v: f64, band: [f64; 4]) -> f64 {
     let [zl, gl, gh, zh] = band;
@@ -42,7 +48,7 @@ fn legacy_desirability(v: f64, band: [f64; 4]) -> f64 {
 }
 
 fn legacy_fun_score(m: &MatchMetrics) -> (f64, IndexMap<&'static str, f64>) {
-    let entries: [(&'static str, [f64; 4], Option<f64>); 8] = [
+    let entries: [(&'static str, [f64; 4], Option<f64>); 9] = [
         ("goals_total", BAND_GOALS_TOTAL, Some(m.goals_total as f64)),
         ("shots_per_goal", BAND_SHOTS_PER_GOAL, m.shots_per_goal),
         ("save_rate", BAND_SAVE_RATE, m.save_rate),
@@ -63,6 +69,11 @@ fn legacy_fun_score(m: &MatchMetrics) -> (f64, IndexMap<&'static str, f64>) {
             Some(m.longest_drought_s),
         ),
         ("decided_late", BAND_DECIDED_LATE, Some(m.decided_late)),
+        (
+            "first_touch_shots",
+            BAND_FIRST_TOUCH_SHOTS,
+            Some(m.first_touch_shots as f64),
+        ),
     ];
 
     let mut product = 1.0_f64;
@@ -168,6 +179,9 @@ fn metric_registry_folds_in_the_authored_order() {
             // same reason: appended, never inserted, because inserting moves
             // the fold order and with it the fun score's last bits.
             "rebound_rate",
+            // #623's first-touch shot count, appended after #490's -- same
+            // rule, same reason.
+            "first_touch_shots",
         ]
     );
 }

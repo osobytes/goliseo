@@ -361,32 +361,30 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
+    // Re-pinned by #623's PR merging main's #629/#632 juke-carry change, in
+    // the SAME commit as `gc_data::outfield_ai_baseline`'s re-freeze to v23
+    // -- the first pin measured on the COMBINED tree. The two parents'
+    // pins were measured on divergent branches (this PR's #623 chain
+    // reached 20327/6323/13488/498/18 at its v22; main's #629/#632 reached
+    // 19766/5384/14135/247/0 at its own, independently numbered v20) and
+    // neither describes the merged simulation, so both are superseded here
+    // rather than one side "winning" the conflict.
     //
-    // Re-pinned by #629 in the SAME commit as
-    // `gc_data::outfield_ai_baseline`'s v19 -> v20 re-freeze, per this
-    // file's own coupling rule. A juking carrier now keeps the ball
-    // instead of striking it away at shot pace, so an AI carrier that
-    // reads a committed challenge survives it: carries run ~44% longer
-    // (`ai_dribble_carry_s` 23.4 -> 33.8 s) and heavy-touch losses fall
-    // ~69% (`ai_dribble_heavy_losses_per_min` 0.55 -> 0.17). That is
-    // upstream of every candidate this file counts. `candidates` falls
-    // 20654 -> 19766 (-888) even though `shots` rose, because possession
-    // now ends in a pass more often than in a loose ball a keeper has to
-    // judge: `agree_false` rises (13610 -> 14135, +525) while `agree_true`
-    // falls harder (6539 -> 5384, -1155), consistent with the frozen
-    // baseline's `save_rate` 0.778 -> 0.717. Both near-resolution buckets
-    // shrink -- `disagree_deferred` 487 -> 247, and `disagree_height`
-    // 18 -> 0. A `disagree_height` of zero is the disagreement surface
-    // getting SMALLER, not a check going quiet: the deleted formula and
-    // the real predictor now agree on every resolved candidate this
-    // fixture produces, which cannot weaken the monotonicity argument
-    // (that argument bounds `new_only`, and `new_only` stays structurally
-    // 0 -- the assertion that would have been a finding rather than a
+    // candidates 20525 on the merged tree: #623's one-timers shorten some
+    // possession sequences while its longer receive windows resolve more
+    // long passes at their receiver, and #632's juking carriers keep the
+    // ball through committed challenges -- the composition lands between
+    // the parents, not at either. `disagree_height` stays at the 0 main's
+    // pin already reached and argued (the deleted formula and the real
+    // predictor agree on every resolved candidate this fixture produces --
+    // a smaller disagreement surface, not a quiet check; the monotonicity
+    // argument bounds `new_only`, and `new_only` stays structurally 0,
+    // which is the assertion that would have been a finding rather than a
     // re-pin).
-    assert_eq!(total.candidates, 19766);
-    assert_eq!(total.agree_true, 5384);
-    assert_eq!(total.agree_false, 14135);
-    assert_eq!(total.disagree_deferred, 247);
+    assert_eq!(total.candidates, 20525);
+    assert_eq!(total.agree_true, 5523);
+    assert_eq!(total.agree_false, 14747);
+    assert_eq!(total.disagree_deferred, 255);
     assert_eq!(total.disagree_height, 0);
     assert_eq!(
         total.new_only, 0,
@@ -535,20 +533,13 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
-    //
-    // Re-pinned by #629 alongside the counts above: `disagree_height`
-    // alone now touches 0/60 matches, down from 5/60 -- it has to, since
-    // the raw count above reached zero -- while folding in
-    // `disagree_deferred` reaches 20/60 (33%), down from 38/60. Deferred
-    // episodes are now the ONLY bucket with any per-match footprint at
-    // all, which is the strongest form this reconciliation has taken: the
-    // byte-identical split, where one exists, can only be a deferred
-    // (one-tick-later resolution) story here. Both moves track the
-    // candidates-side story above -- fewer possession sequences end in a
-    // shot the keeper has to judge, because the carrier keeps the ball
-    // through a challenge and passes out instead. No historical
-    // byte-divergent split to compare against.
+    // Re-pinned on the merged tree alongside the counts above.
+    // `disagree_height` touches 0/60 matches and `disagree_deferred` 18/60
+    // (30%) -- the disagreement surface shrank on both sides' changes (see
+    // the merged paragraph above), and deferred episodes remain the only
+    // driver left, so the reconciliation's conclusion (deferred, not
+    // height, explains byte divergence) holds trivially.
     assert_eq!(matches_with_disagree, 0);
-    assert_eq!(matches_with_deferred, 20);
-    assert_eq!(matches_with_either, 20);
+    assert_eq!(matches_with_deferred, 18);
+    assert_eq!(matches_with_either, 18);
 }

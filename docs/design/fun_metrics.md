@@ -1198,6 +1198,69 @@ as they were recorded, including where they cite the deleted commands.
   re-measured against the same rebuilt module — because that scenario
   replays frozen input frames that never press juke.
 
+- **2026-08-25 — the grounded first-touch shot lands as a core verb (#623,
+  owner-directed, deliberate).** `baseline_version` **19 → 23**, final
+  signature `5f1ea5758de255eb`, re-frozen once more as **v23** when this
+  PR merged main's #629/#632 juke-carry change — main had independently
+  numbered its own re-freeze v20 in parallel (two v20s existed on divergent
+  branches; neither described the combined simulation), so the merged tree
+  was re-recorded rather than either side's fixture surviving the merge.
+  The chain inside this PR: signature
+  `b8bf51b45b96ce84` → `e78eba38e07c1356` (v20 `82cb3b3319de78b4` and v21
+  `700d652704a1624b` existed only inside #623's own PR: the verb landed as
+  v20; the play-test arrival-arbitration follow-up re-froze as v21 — the
+  grounded swing no longer gates on the aerial verb's `header_cd`, and a
+  designated receiver holding the strike no longer jockey-shuffles toward
+  its own pass; and the flight-scaled receive window re-froze as v22 — the
+  old flat 1.3 s window, tuned on the 960px pitch, expired MID-FLIGHT on a
+  futsal-length floor pass, so the receive assist stopped walking, the lead
+  solve's deliberately under-hit meet point was never reached, and the
+  first-touch verb silently never armed; the window is now the pass's own
+  estimated exponential-friction flight time plus 0.4 s, floored at 1.3 and
+  capped at 2.6, with lobs and dying rolls taking the cap); `identity.policy_id`
+  `outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf` →
+  `.../0e9a3e0c722f489e` — moved because the collection seam itself changed
+  (a designated receiver can now resolve an instant strike where possession
+  used to be granted), not because any prior knob default moved;
+  `identity.tuning_hash` `1aa75187553ed1a8` → `edd104c4828fca99` (one new
+  `AI`-category tunable, `AI_FIRST_TOUCH_RANGE` 360, entered the declared
+  surface; every existing default is untouched); `identity.fixture_hash`
+  `dd491c7603454855` → `b7658ececade1fe7`; `identity.config_hash`,
+  `content_hash`, `seed_hash`, `snapshot_version` and `input_version` all
+  unchanged. Re-frozen via `record_outfield_ai_baseline`, per that module's
+  own re-freeze protocol, in the same commit as the
+  `keeper_shadow_classifier` re-pin (20654 → 20562 candidates) and the
+  `session_ai_driven` / `ai_driven_evidence` re-records
+  (final digest `3291aa8895b160f4` → `5a0b5091ec54e5ef`, sequence
+  `3688b7ab51128e90` → `8e4bc4dacafce36b`; the intermediate `bd9b5907…`/
+  `86dcead0…` pair survived the v21/v22 follow-ups untouched and moved only
+  with the stick-is-aim change, whose bot-held strikes steer the fixture's
+  receivers onto the meet line). The OMP-1 determinism
+  digest did NOT move — its pinned scenario never places a designated receiver in the
+  new branch — so the quad-pinned wasm digest stands.
+
+  **The cause.** Where collection would hand a `receive_timer` receiver
+  plain possession, the receiver may now resolve an instant first-time shot
+  instead: humans by holding the strike button (the same held-ACTION signal
+  the aerial path reads), the AI when within `AI_FIRST_TOUCH_RANGE` of the
+  opposing goal-line centre. The resolution is `crate::aerial`'s four-roll
+  Clean/Heavy/Miss against `volley_skill`, with the arriving ball's pace
+  feeding difficulty (a driven pass is harder to one-time) and a fraction of
+  that pace carried into the shot. No charge state, no possession transfer
+  anywhere on the path — #531's owner-only charge invariant is untouched.
+
+  **The signature.** Small movements everywhere, the composition shape of
+  "some trapped-then-shoot sequences became snap shots": `shots` 25.62 →
+  25.50 and `goals_total` 2.63 → 2.62 essentially flat, `shots_per_goal`
+  12.13 → 12.35, `passes` 25.65 → 25.77 with `pass_completion` 0.532 →
+  0.534, `longest_drought_s` 14.06 → 14.24, `ai_dribble_touches_per_min`
+  76.44 → 77.18. `fun` 0.2678 → 0.2633: a small net dip DESPITE the new
+  always-present `first_touch_shots` registry entry inflating the fold
+  (+0.0073 measured at n=96, 120 s — documented on its `MetricDef`), so the
+  behaviour change itself costs slightly more than the fold gains; within
+  the band this fixture's other entries move in, and accepted with the verb
+  rather than tuned away in the same commit.
+
 - **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
   180, and a deflection-aware pass-lane risk model land together (#622 Part
   2 follow-up, owner-approved, deliberate).** `baseline_version` **18 → 19**,

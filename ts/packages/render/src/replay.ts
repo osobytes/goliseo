@@ -109,7 +109,8 @@ export type MatchEventKind =
   | "volley"
   | "bicycle"
   | "reception"
-  | "juke";
+  | "juke"
+  | "first_touch_shot";
 
 export interface MatchEvent {
   readonly kind: MatchEventKind;

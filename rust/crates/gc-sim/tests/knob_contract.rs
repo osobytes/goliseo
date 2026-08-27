@@ -1528,3 +1528,37 @@ fn the_keeper_fatigue_pilot_reports_across_durations_and_seed_counts() {
         );
     }
 }
+
+#[test]
+fn knob_contract_passes_for_the_first_touch_range() {
+    // #623: `AI_FIRST_TOUCH_RANGE` against `first_touch_shots`. Widening the
+    // zone in which an AI receiver one-times an arriving pass must produce
+    // MORE first-touch attempts — the verb's own event count, so the causal
+    // chain is one hop and the direction is not arguable. Measured at 30 s
+    // matches like the `AI_SHOOT_RANGE` case above (2026-08-25, knob
+    // 360 -> 605):
+    //
+    // | n  | delta   | threshold | verdict      |
+    // | -- | ------- | --------- | ------------ |
+    // | 48 | +0.1875 | 0.1536    | WIRED (1.2x) |
+    // | 96 | +0.1771 | 0.1026    | WIRED (1.7x) |
+    //
+    // 96 seeds for the 1.7x margin; 48 passes but sits close enough to the
+    // floor that an unrelated balance change could flip it.
+    let seeds = seeds(96);
+    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
+        knob: "AI_FIRST_TOUCH_RANGE",
+        metric: "first_touch_shots",
+        seeds: &seeds,
+        duration: DURATION,
+        perturbation: None,
+        expect: ExpectedShift::Increases,
+        direction: Some(Perturb::Up),
+    });
+    assert!(outcome.passes && outcome.moved, "{}", outcome.report);
+    assert!(
+        outcome.delta > 0.0,
+        "a wider one-timer zone must RAISE the attempt count: {}",
+        outcome.report
+    );
+}

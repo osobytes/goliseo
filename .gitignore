@@ -91,3 +91,4 @@ v2-frame-profile/
 # PR that cites them. Root-anchored, so a nested `build/` anywhere else stays a
 # deliberate decision rather than being swept up by this line.
 /build/
+ts/.match-debug/

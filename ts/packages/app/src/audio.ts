@@ -124,6 +124,7 @@ const AUDIBLE_MATCH_KINDS: ReadonlySet<string> = new Set([
   "volley",
   "bicycle",
   "reception",
+  "first_touch_shot",
 ]);
 
 // --- pure sample synthesis --------------------------------------------------
@@ -376,6 +377,7 @@ export class Audio {
     this.sfx.set("parry", source(buildParry()));
     this.sfx.set("header", source(buildHeader()));
     this.sfx.set("volley", source(buildVolley()));
+    this.sfx.set("first_touch_shot", source(buildVolley()));
     this.sfx.set("bicycle", source(buildVolley()));
     this.sfx.set("reception", source(buildPass()));
     this.sfx.set("goal", source(buildGoal()));
