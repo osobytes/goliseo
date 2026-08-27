@@ -1407,6 +1407,7 @@ fn release_pass(
     mut blocker_f: Option<f64>,
     clear_h: Option<f64>,
     land_pos: Option<Vec2>,
+    stick_residue: Option<Vec2>,
     tune: &Tuning,
 ) {
     // Every producer's every release passes through here exactly once, so
@@ -1584,16 +1585,29 @@ fn release_pass(
         && !target_is_keeper
     {
         set_controlled_player(s, target_idx);
-        // The stick that AIMED this pass is, at this instant, still held —
-        // and from this tick it steers the receiver instead. Holding that
-        // same direction is aim residue, not a decision to run the
-        // receiver off the reception point, so latch the launch bearing:
-        // while the held input stays inside the latch cone the receive
-        // assist keeps steering (as if the stick were neutral), and a
-        // release or a clear redirect hands control back
-        // (`consume_stick_latch`).
-        let launch = s.ball_vel;
-        s.stick_latch = (launch.length() > 1e-9).then(|| launch.normalized());
+        // The stick that was held while this pass released is, at this
+        // instant, still held — and from this tick it steers the receiver
+        // instead. That hold is residue of the passer's own aim-and-motion
+        // gesture, not a decision to run the receiver off the reception
+        // point, so latch the RESIDUE ITSELF (the raw held stick at
+        // release): while the held input stays inside the latch cone the
+        // receive assist keeps steering (as if the stick were neutral), and
+        // a release or a clear redirect hands control back
+        // (`consume_stick_latch`). Anchoring on the residue rather than the
+        // launch bearing matters because the soft cone can pick a receiver
+        // well off the stick's axis — the launch direction and the held
+        // gesture are then different vectors, and it is the GESTURE whose
+        // continuation must read as stale. A facing-aimed pass (neutral
+        // stick, residue None) falls back to the launch bearing: there is
+        // no held gesture, so the latch only forgives an immediate
+        // hold-through of the ball's own line.
+        s.stick_latch = match stick_residue {
+            Some(held) if held.length() > 1e-9 => Some(held.normalized()),
+            _ => {
+                let launch = s.ball_vel;
+                (launch.length() > 1e-9).then(|| launch.normalized())
+            }
+        };
     }
 }
 
@@ -1919,6 +1933,10 @@ fn select_throw_target(
 
 fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>, tune: &Tuning) {
     let owner = &s.players[(owner_idx - 1) as usize];
+    // The RAW held stick, before the facing fallback: this is the residue
+    // the stale-stick latch must anchor on. A pass aimed by facing (neutral
+    // stick) leaves no residue to forgive.
+    let stick_residue = aim;
     let aim = aim.unwrap_or(owner.facing);
     let owner_team = owner.team;
     let owner_pos = owner.pos;
@@ -1976,7 +1994,16 @@ fn try_pass(s: &mut MatchState, owner_idx: i64, lofted: bool, aim: Option<Vec2>,
             ai::lane_blocker(owner_pos, target_pos, &opp_positions, POSSESS_DIST).unwrap_or(0.5),
         );
     }
-    release_pass(s, owner_idx, target_idx, f, clear_h, None, tune);
+    release_pass(
+        s,
+        owner_idx,
+        target_idx,
+        f,
+        clear_h,
+        None,
+        stick_residue,
+        tune,
+    );
 }
 
 /// Plan a keeper HAND throw to `target_idx`. Hands see the whole pitch: a
@@ -2060,9 +2087,10 @@ fn keeper_throw(s: &mut MatchState, keeper_idx: i64, range: f64, aim: Option<Vec
             Some(f),
             Some(clear_h),
             Some(land),
+            None,
             tune,
         ),
-        None => release_pass(s, keeper_idx, target_idx, None, None, None, tune),
+        None => release_pass(s, keeper_idx, target_idx, None, None, None, None, tune),
     }
     s.players[(keeper_idx - 1) as usize].throw_timer = KEEPER_THROW_POSE;
 }

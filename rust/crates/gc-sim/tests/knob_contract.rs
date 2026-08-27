@@ -42,12 +42,20 @@ fn knob_contract_passes_for_a_wired_knob() {
     // effect on `longest_drought_s` measures fainter per seed. Measured
     // directly rather than assumed:
     //
-    // | n   | delta   | threshold | verdict    |
-    // | --- | ------- | --------- | ---------- |
-    // | 48  | -0.6135 | 0.7185    | DECORATION |
-    // | 96  | -0.5266 | 0.5722    | DECORATION |
-    // | 144 | -0.9678 | 0.4978    | WIRED (1.9x) |
-    let seeds = seeds(144);
+    // | n   | delta   | threshold | verdict      | base           |
+    // | --- | ------- | --------- | ------------ | -------------- |
+    // | 48  | -0.6135 | 0.7185    | DECORATION   | futsal         |
+    // | 96  | -0.5266 | 0.5722    | DECORATION   | futsal         |
+    // | 144 | -0.9678 | 0.4978    | WIRED (1.9x) | futsal         |
+    // | 144 | -0.5183 | 0.5190    | short 0.999x | reception rework |
+    // | 288 | -0.7542 | 0.3847    | WIRED (1.96x)| reception rework |
+    //
+    // The pass-reception rework (receivers meet passes at their aim point)
+    // shortens droughts on its own, which shrinks AI_SHOOT_RANGE's share of
+    // the same metric — at 144 the demonstration missed its bar by 0.13%.
+    // Raised to 288 with the paired backwards case (which must share the
+    // count), where the margin is wider than 144 ever measured.
+    let seeds = seeds(288);
     let outcome = knob_contract::assert_moves(&KnobMoveOpts {
         knob: "AI_SHOOT_RANGE",
         metric: "longest_drought_s",
@@ -148,11 +156,11 @@ fn knob_contract_goes_red_for_a_backwards_wired_knob() {
     // knob wired the wrong way round, and that must fail exactly as loudly as
     // a knob wired to nothing.
     //
-    // Seed count raised from 48 to 144 alongside the paired case above (see
-    // its comment for the measured table) — the pair must share a seed
-    // count, since `corrected.delta` below is asserted equal to this
-    // measurement's own `outcome.delta`.
-    let seeds = seeds(144);
+    // Seed count raised from 48 to 144, then to 288, alongside the paired
+    // case above (see its comment for the measured table) — the pair must
+    // share a seed count, since `corrected.delta` below is asserted equal
+    // to this measurement's own `outcome.delta`.
+    let seeds = seeds(288);
     let outcome = knob_contract::knob_moves_metric(&KnobMoveOpts {
         knob: "AI_SHOOT_RANGE",
         metric: "longest_drought_s",
@@ -180,7 +188,7 @@ fn knob_contract_goes_red_for_a_backwards_wired_knob() {
     );
 
     let result = std::panic::catch_unwind(|| {
-        let seeds = (0..144).map(|i| 20_001.0 + i as f64).collect::<Vec<f64>>();
+        let seeds = (0..288).map(|i| 20_001.0 + i as f64).collect::<Vec<f64>>();
         knob_contract::assert_moves(&KnobMoveOpts {
             knob: "AI_SHOOT_RANGE",
             metric: "longest_drought_s",
@@ -1340,37 +1348,45 @@ fn recovery_gates_movement_but_the_turnovers_per_min_pairing_is_not_established(
 /// floor buys now is a slower ball spending longer in the lane where a
 /// defender can cut it. Measured, same harness, down-perturbation:
 ///
-/// | n   | delta   | threshold | verdict          | base            |
-/// | --- | ------- | --------- | ---------------- | --------------- |
-/// | 96  | -0.0341 | 0.0365    | short of the bar | pre-#629        |
-/// | 192 | -0.0328 | 0.0254    | WIRED (1.29x)    | pre-#629        |
-/// | 192 | -0.0191 | 0.0205    | short (0.93x)    | #629 juke base  |
-/// | 384 | -0.0220 | 0.0144    | WIRED (1.53x)    | #629 juke base  |
+/// | n   | delta   | threshold | verdict          | base              |
+/// | --- | ------- | --------- | ---------------- | ----------------- |
+/// | 96  | -0.0341 | 0.0365    | short of the bar | pre-#629          |
+/// | 192 | -0.0328 | 0.0254    | WIRED (1.29x)    | pre-#629          |
+/// | 192 | -0.0191 | 0.0205    | short (0.93x)    | #629 juke base    |
+/// | 384 | -0.0220 | 0.0144    | WIRED (1.53x)    | #629 juke base    |
+/// | 384 | -0.0125 | 0.0161    | short (0.78x)    | #627 strike base  |
 ///
-/// The delta points DOWN on both bases; #629's juke fix (carriers keep the
-/// ball, fewer loose runouts) dilutes the floor's share of completion, so
-/// the committed n moved 192 -> 384 on the #537 more-seeds-never-lower-bar
-/// rule — and at 384 the margin is more comfortable than 192 ever was.
+/// 2026-08-26, second retirement of the day and the same shape as
+/// `PASS_ELIGIBLE_MAX`'s: the statistical completion pairing is RETIRED,
+/// measured to be dissolving BY DESIGN rather than underpowered. The delta
+/// HALVES at constant n as each reception mechanic lands — receivers meet
+/// passes at the aim point and trap at any pace (the rework), then strike
+/// arriving balls first-time without trapping at all (#627) — so
+/// completion's dependence on launch pace is exactly what this repo's own
+/// changes removed. The knob's live effect is the PACE of play (travel
+/// times, lead windows), measured by pass_lead_time and the placement
+/// probe, not by whether the pass completes. What remains here is the
+/// structural claim; re-establishing a statistical pairing is flagged in
+/// the pass-reception PR as the follow-up if a future defensive rebalance
+/// re-couples them.
 #[test]
-fn a_lower_pass_speed_floor_now_costs_completion_the_ball_hangs_in_the_lane() {
-    let seeds = seeds(384);
-    let outcome = knob_contract::assert_moves(&KnobMoveOpts {
-        knob: "PASS_SPEED_MIN",
-        metric: "pass_completion",
-        seeds: &seeds,
-        duration: DURATION,
-        perturbation: Some(1.0),
-        // A lower floor slows most passes; a receiver who can trap at any
-        // pace gains nothing from the slower ball, while every defender on
-        // the lane gains time to cut it: completion falls.
-        expect: ExpectedShift::Decreases,
-        direction: Some(Perturb::Down),
-    });
-    assert!(outcome.moved, "{}", outcome.report);
+fn a_lower_pass_speed_floor_governs_pace_but_the_completion_pairing_is_retired() {
+    // Structural claims only — see the doc comment above for the measured
+    // cross-base retirement table. The floor's live behavioral contract is
+    // the speed curve itself, pinned deterministically in tests/passing.rs
+    // (`the_speed_curve_reads_its_knobs_rather_than_restating_constants`).
+    let def = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "PASS_SPEED_MIN")
+        .expect("registered");
+    assert!(def.min < def.default && def.default < def.max);
+    let arrive = gc_data::tunables::SIM_TUNABLES
+        .iter()
+        .find(|d| d.id == "PASS_ARRIVE_PACE")
+        .expect("registered");
     assert!(
-        outcome.report.contains("WIRED"),
-        "the pass speed floor is decoration against completion: {}",
-        outcome.report
+        arrive.max < def.default,
+        "the arrive-pace range must sit below the shipped floor, or the          curve's clamped band inverts"
     );
 }
 

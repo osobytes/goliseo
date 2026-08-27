@@ -537,11 +537,13 @@ pub struct MatchState {
     pub controlled: i64,
     /// Whether `controlled` takes human-input branches.
     pub human_controlled: bool,
-    /// The launch direction of a pass whose control switched to the
-    /// receiver at release, while the human is still holding that aim on
-    /// the stick. A held direction inside the latch cone reads as stale
-    /// (receive assist keeps steering); neutral or a clear redirect clears
-    /// it. `None` whenever no such handoff is pending.
+    /// The stick residue of a pass whose control switched to the receiver
+    /// at release: the raw direction the passer was holding when the ball
+    /// left (falling back to the launch bearing for a facing-aimed pass).
+    /// A held direction inside the latch cone reads as stale — the same
+    /// aim-and-motion gesture, continued — and receive assist keeps
+    /// steering; neutral or a clear redirect clears it and input wins
+    /// outright. `None` whenever no such handoff is pending.
     pub stick_latch: Option<Vec2>,
     /// Match score.
     pub score: ByTeam<i64>,
