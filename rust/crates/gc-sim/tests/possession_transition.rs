@@ -101,7 +101,8 @@ fn possession_transition_state_starts_idle_and_copies_defensively() {
 fn possession_transition_state_uses_the_same_settled_possession_threshold_the_metrics_collector_counts()
  {
     // One counted turnover is exactly one transition window. If these ever
-    // diverge the tripwire's turnover metric stops describing the phases.
+    // diverge, `metrics`' `turnovers_per_min` stops describing the phases —
+    // including in the frozen Outfield AI baseline, which records it.
     assert_eq!(transitions::ESTABLISH_SECONDS, metrics::SETTLE_HOLD);
 }
 

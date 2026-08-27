@@ -6698,8 +6698,10 @@ fn update_ball(
                 owner_mut.pass_target = None;
                 owner_mut.pass_intent = pass_intent::reset(&owner_mut.pass_intent);
                 // The fixed-slot contract requires same-tick wind-up
-                // cancellation. Legacy match AI keeps its tripwire-pinned
-                // heavy-touch behavior at the explicit offline boundary.
+                // cancellation. Legacy match AI keeps its fixture-pinned
+                // heavy-touch behavior at the explicit offline boundary
+                // (`match_step_ai_ai_baseline` and the legacy session
+                // differential pin it).
                 if s.slot_mode {
                     owner_mut.windup_timer = 0.0;
                     owner_mut.windup_shot = None;

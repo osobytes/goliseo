@@ -7,11 +7,18 @@
 //! "combat changed X" claim is measured against; without it such a claim is
 //! unfalsifiable.
 //!
-//! What this is NOT: the soccer fun tripwire. [`crate::tripwire`] and
-//! `data::fun_baseline` are a human-proxy 30-seed smoke test with a 5%
-//! tolerance band. This artifact is separate on purpose: different seeds,
-//! different fixture, all-AI sides, and an EXACT comparison — see
-//! [`compare`].
+//! What this is NOT: a tolerance band over human-proxy play. This tree used
+//! to carry one alongside this artifact — the soccer fun tripwire,
+//! `gc_sim::tripwire` plus `gc_data::fun_baseline`, a 30-seed bot-driven
+//! smoke test with a 5% band — and #630 deleted it: nothing ever called it,
+//! and its frozen values described a 960×540 pitch and thirty drift-log
+//! entries of sim change ago. This artifact was separate from it on purpose
+//! and is now the only frozen balance control: declared seeds, a declared
+//! fixture, all-AI sides rather than a bot in one slot, and an EXACT
+//! comparison — see [`compare`]. Relative per-knob claims are
+//! [`crate::knob_contract`]'s job; it measures its own noise floor on the
+//! caller's seed set instead of assuming a band, which is what a human-proxy
+//! instrument can honestly support.
 //!
 //! What blocks. Only a moved tracked metric fails the check
 //! ([`OutfieldAiBaselineComparison::metrics_ok`]). Identity covers more than
@@ -64,8 +71,9 @@ pub const FIXTURE: &str = "combat_disabled_control_a";
 /// accepted evidence contract (`docs/design/combat_fun_evidence_contract.md`
 /// §3.3). Combat-active arms run their own fixture on these same seeds, so
 /// this control is a paired control under common random numbers rather than
-/// an independent sample. The soccer tripwire's seeds 1..30 and the
-/// historical evaluation seeds 1001..1060 stay out of it.
+/// an independent sample. Seeds 1..30 — the retired soccer tripwire's block,
+/// spent whether or not the tripwire still exists — and the historical
+/// evaluation seeds 1001..1060 stay out of it.
 pub const SEED_FIRST: i64 = 20001;
 /// Number of seeds in the declared block.
 pub const SEED_COUNT: i64 = 60;

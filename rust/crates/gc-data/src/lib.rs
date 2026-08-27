@@ -12,7 +12,6 @@ pub mod character_presentations;
 pub mod cosmetic_variants;
 pub mod equipment_presentations;
 pub mod formations;
-pub mod fun_baseline;
 pub mod loadouts;
 pub mod locomotion;
 pub mod network_profiles;

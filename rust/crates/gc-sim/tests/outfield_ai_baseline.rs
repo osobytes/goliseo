@@ -3,7 +3,6 @@
 use gc_data::outfield_ai_baseline as frozen;
 use gc_sim::outfield_ai_baseline as sut;
 use gc_sim::outfield_ai_policy;
-use gc_sim::tripwire;
 
 /// The frozen record is shared module state; never hand a mutable copy of
 /// it to a comparison test. `From` already gives us an owned copy, so this
@@ -34,17 +33,17 @@ fn outfield_ai_baseline_declares_an_explicit_contiguous_seed_set() {
 fn outfield_ai_baseline_keeps_its_seeds_clear_of_every_other_locked_block() {
     // Locked in docs/design/combat_fun_evidence_contract.md §3.3. The
     // holdout blocks matter most: a control that quietly overlapped
-    // 30001..30060 would spend the untouched confirmatory set.
+    // 30001..30060 would spend the untouched confirmatory set. `1..30` is
+    // the retired fun tripwire's block; #630 deleted the tripwire, but the
+    // contract still lists those seeds as spent and a seed does not become
+    // reusable because the artifact that spent it went away.
     let reserved: &[(&str, i64, i64)] = &[
+        ("retired fun tripwire", 1, 30),
         ("adversarial", 21001, 21060),
         ("untouched holdout", 30001, 30060),
         ("replacement holdout", 31001, 31060),
     ];
     for seed in sut::seeds() {
-        assert!(
-            seed > tripwire::DEFAULT_N,
-            "seed {seed} collides with the tripwire"
-        );
         assert!(
             !(1001..=1060).contains(&seed),
             "seed {seed} is a spent evaluation seed"
@@ -636,8 +635,11 @@ fn outfield_ai_baseline_cannot_mistake_a_probe_run_for_the_frozen_freeze() {
 /// a 2-seed *self*-reproducibility (see
 /// `outfield_ai_baseline_reproduces_a_fresh_run_of_the_fixture_exactly`
 /// above) and never asserts the full 60-seed run equals the frozen record;
-/// that comparison is a separate build-time check
-/// (`love . --ai-baseline`/`scripts/check.sh`), not a `busted` spec case.
+/// on that tree the comparison was a separate build-time check
+/// (`love . --ai-baseline`, run from `scripts/check.sh`), not a `busted` spec
+/// case. Today it is this test: gate 3 of `./scripts/check.sh` runs it as
+/// part of `cargo nextest run --workspace`, and `record_outfield_ai_baseline`
+/// below is the only way to re-freeze what it compares against.
 ///
 /// This test used to be `#[ignore]`d: a full 60-seed run of the already-
 /// ported simulation did not reproduce the frozen fixture bit-for-bit, even
