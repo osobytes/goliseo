@@ -1081,6 +1081,123 @@ it is re-frozen, and the re-freeze itself is `record_outfield_ai_baseline`,
 under [Commands](#commands) above. The dated entries below are left exactly
 as they were recorded, including where they cite the deleted commands.
 
+- **2026-08-26 — a juke keeps the ball instead of striking it away (#629,
+  bug fix, deliberate).** `baseline_version` **19 → 20**, signature
+  `b8bf51b45b96ce84` → `a948bb94f8049dce`. **Every identity field is
+  unchanged** — `policy_id`
+  `outfield_ai_policy/v1/combat_disabled/59bf9d7112667dbf`, `config`
+  `field=1648x927;...`, `config_hash` `7b608c384f500257`, `content_hash`
+  `e6c01365e6311f12`, `tuning_hash` `1aa75187553ed1a8`, `fixture_hash`
+  `dd491c7603454855`, `seed_hash`, `snapshot_version` 14 and `input_version`
+  all held. That is the correct shape here: no knob default moved, no
+  authored content moved, and `gc_sim::ai`'s declared surface did not move.
+  The change is one condition inside `gc_sim::r#match::update_ball`'s
+  dribble arm, which the identity surface does not hash — so this is an
+  `AI BASELINE MOVED` (a tracked metric changed), not an
+  `AI BASELINE STALE` (identity moved, play held). Re-frozen via
+  `record_outfield_ai_baseline`, per that module's own re-freeze protocol.
+
+  **The cause.** A juke is bespoke movement: it writes `p.pos` directly at
+  `DODGE_SPEED_MULT` (2.4×) for `DODGE_DURATION` (0.16 s), and realized
+  velocity is derived from that position delta afterwards. `update_ball`
+  read that ~672 px/s as the carrier's *dribble* pace, cleared the
+  close-control threshold, and played a full kick-and-chase touch —
+  ~1008 px/s (~24.5 m/s at the declared metre scale), **1.8× the hardest
+  touch the game can otherwise produce**, and struck along the PRE-juke
+  facing while the body travelled perpendicular. Possession broke within
+  two or three ticks. An active `dodge_timer` is now treated as close
+  control regardless of realized speed, reusing the existing corrective
+  branch, so the ball rides the body through the sidestep. The AI carrier
+  jukes off a committed challenge (gated on the ball being at its feet), so
+  it had the same inverted outcome and is fixed by the same condition.
+
+  **What moved, on the frozen 60-seed control** (base → now):
+
+  | metric | base | now | delta |
+  | --- | --- | --- | --- |
+  | `fun` | 0.267774 | 0.286302 | +0.018528 |
+  | `goals_total` | 2.633333 | 2.933333 | +0.300000 |
+  | `goals_home` | 1.300000 | 1.350000 | +0.050000 |
+  | `goals_away` | 1.333333 | 1.583333 | +0.250000 |
+  | `shots` | 25.616667 | 28.333333 | +2.716667 |
+  | `shots_per_goal` | 12.126316 | 12.312147 | +0.185831 |
+  | `save_rate` | 0.778390 | 0.717255 | −0.061135 |
+  | `passes` | 25.650000 | 34.750000 | +9.100000 |
+  | `pass_completion` | 0.532042 | 0.620753 | +0.088712 |
+  | `turnovers_per_min` | 8.480897 | 9.656915 | +1.176018 |
+  | `possession_balance` | 0.513253 | 0.511814 | −0.001439 |
+  | `longest_drought_s` | 14.058333 | 13.470278 | −0.588056 |
+  | `decided_late` | 0.682557 | 0.712779 | +0.030222 |
+  | `lead_changes` | 0.133333 | 0.266667 | +0.133333 |
+  | `margin` | 1.366667 | 1.266667 | −0.100000 |
+  | `duration` | 105.746667 | 108.668611 | +2.921944 |
+  | `ai_dribble_carry_s` | 23.413333 | 33.787500 | +10.374167 |
+  | `ai_dribble_close_share` | 0.828519 | 0.810562 | −0.017957 |
+  | `ai_dribble_sprint_share` | 0.329530 | 0.258792 | −0.070739 |
+  | `ai_dribble_juke_share` | 0.037168 | 0.083963 | +0.046795 |
+  | `ai_dribble_touches_per_min` | 76.443611 | 33.877144 | −42.566468 |
+  | `ai_dribble_heavy_losses_per_min` | 0.546803 | 0.171240 | −0.375563 |
+  | `ai_jukes` | 15.850000 | 18.366667 | +2.516667 |
+
+  **The drift is directional, not noise, and the dribble diagnostics say
+  exactly what the defect predicted.** `ai_dribble_juke_share` more than
+  doubles (0.037 → 0.084): 18.37 jukes × 0.16 s over 33.79 s of carry is
+  0.087, so a juke is now spent *in possession* end to end, where before
+  roughly a third of the window was. `ai_dribble_touches_per_min` falls 56%
+  because every juke used to fire a `Touch` — 15.85 juke-strikes over 0.39
+  minutes of carry is ~40 touches/min on its own, essentially the whole
+  −42.6. `ai_dribble_heavy_losses_per_min` falls 69% and `ai_dribble_carry_s`
+  rises 44%: AI carries survive committed tackles, which is the behavioural
+  claim this fix makes. `ai_jukes` itself rises because a carrier that still
+  has the ball at its feet keeps meeting the AI juke's own gate.
+
+  **Band status, checked field by field.** Two metrics moved back INSIDE
+  their bands: `save_rate` 0.778 → 0.717 (band 0.45–0.75, previously above
+  it) and `pass_completion` 0.532 → 0.621 (band 0.55–0.85, previously below
+  it). Four stayed inside: `goals_total` 2.933 [2–5], `possession_balance`
+  0.512 [0.35–0.65], `longest_drought_s` 13.470 s [0–35], `decided_late`
+  0.713 [0.4–1.0]. **No metric left a band it was previously inside**, which
+  is the condition that would have stopped the refresh. `shots_per_goal`
+  12.312 [2.5–6] was already outside and moves +0.186 further out — the
+  long-standing inherited exception.
+
+  **`turnovers_per_min` is the one to watch, and it is a residual risk, not
+  a blocker.** 8.481 → 9.657 against a band of [0.3, 1.0, 5.0, 10.0]: it was
+  already outside before this change, but its desirability falls from ~0.30
+  to ~0.07, i.e. it now sits just under the point where the trapezoid zeroes.
+  The cause is not worse ball retention — retention improved on every
+  diagnostic above — it is more *attacking actions per minute*: passes
+  +35% (25.65 → 34.75, so ~1.2 more incomplete passes per match even at the
+  higher completion rate) and shots +2.7 per match, each of which ends a
+  possession. `fun` rose anyway (0.268 → 0.286). Whether the turnover band
+  itself still describes the futsal-dimensioned game is a balance question
+  this bug fix deliberately does not answer.
+
+  **On the "100-match validation" this section's ritual asks for:** the
+  command it names (`love . --sim 100`) belongs to the deleted Lua tree and
+  the Rust workspace ships no binary target at all, so there is nothing to
+  run. What substitutes, and what the numbers above are, is the frozen
+  baseline's own 60-seed comparison — `outfield_ai_baseline`'s
+  `measure`/`compare` over seeds 20001..20060 with combat disabled, run as
+  an ordinary test. The 30-seed fun tripwire is not wired to any gate in
+  this tree (`gc_sim::tripwire::measure` has no caller) and was therefore
+  neither red nor refreshed.
+
+  **Coupled re-pins landing in the same commit**, per each file's own rule:
+  `gc-sim/tests/keeper_shadow_classifier.rs`'s frozen 60-seed counts
+  (candidates 20654 → 19766, `agree_true` 6539 → 5384, `agree_false`
+  13610 → 14135, `disagree_deferred` 487 → 247, `disagree_height` 18 → 0,
+  `new_only` structurally 0 throughout; per-match footprint 5/37/38 →
+  0/20/20), the recorded `match_step_ai_ai_baseline.txt` and
+  `session_ai_driven_baseline.txt` fixtures, and the AI-driven session
+  digests (final `3291aa8895b160f4` → `ef0d733d30f615f8`, sequence
+  `3688b7ab51128e90` → `2abf5a39a8c0351a`) in `ai_driven_evidence.rs` and
+  its `ai_driven.spec.ts` mirror. The discriminating measurement was run
+  first: freshly built wasm and native produce the same new pair, so this is
+  not #405/#517. `determinism.spec.ts`'s OMP-1 pair did **not** move —
+  re-measured against the same rebuilt module — because that scenario
+  replays frozen input frames that never press juke.
+
 - **2026-08-25 — the half-plane aim gate, `PASS_ANGULAR_WEIGHT` retuned to
   180, and a deflection-aware pass-lane risk model land together (#622 Part
   2 follow-up, owner-approved, deliberate).** `baseline_version` **18 → 19**,

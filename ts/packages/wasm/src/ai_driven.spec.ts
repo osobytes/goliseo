@@ -101,8 +101,23 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // same two. They AGREE, so this is not #517. Re-run identically after the
 // #622 follow-up above, against a freshly rebuilt `dist/pkg/gc_wasm.cjs`:
 // same wasm pair, same native pair. They still AGREE.
-const NATIVE_FINAL_HASH = "3291aa8895b160f4";
-const NATIVE_SEQUENCE_DIGEST = "3688b7ab51128e90";
+//
+// RE-RECORDED for #629: an active juke (`dodge_timer > 0`) is now treated as
+// close control in `update_ball`'s dribble arm, so a carrier sidesteps WITH
+// the ball instead of striking it away at ~1008 px/s along the pre-juke
+// facing. Both sides of this scenario are bot-driven carriers and the AI
+// juke fires off a committed challenge, so the whole trajectory moves. The
+// discriminating measurement was run again first, identically: wasm,
+// `node -e` against a freshly rebuilt `dist/pkg/gc_wasm.cjs`
+// (`runAiDrivenEvidence()`), final `ef0d733d30f615f8`, sequence
+// `2abf5a39a8c0351a`; native, via
+// `cargo test -p gc-sim --test ai_driven_evidence`, the same two. They
+// AGREE, so this is not #517. `determinism.spec.ts`'s OMP-1 pair did NOT
+// move this round and is deliberately left untouched -- that scenario
+// replays frozen input frames that never press juke, and its wasm digests
+// were re-measured against the same rebuilt module to confirm it.
+const NATIVE_FINAL_HASH = "ef0d733d30f615f8";
+const NATIVE_SEQUENCE_DIGEST = "2abf5a39a8c0351a";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
