@@ -13,7 +13,7 @@
 
 use gc_core::vec2::Vec2;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, StepInput};
-use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize, Team};
+use gc_sim::match_snapshot::{MatchEventKind, MatchInput, MatchState, PitchSize, Team};
 use gc_sim::tuning::Tuning;
 
 const DT: f64 = 1.0 / 60.0;
@@ -147,9 +147,23 @@ fn keeper_defers_a_through_ball_the_receiver_clearly_wins() {
     let (ki, si) = setup_through_ball_race(&mut s, Vec2::new(1330.0, 463.5));
 
     let mut elapsed = 0.0;
+    let mut receiver_won = false;
     while elapsed < 1.2 && s.owner.is_none() {
         step(&mut s, &tune);
         elapsed += DT;
+        // The receiver is inside `AI_FIRST_TOUCH_RANGE` here, so winning
+        // the race can resolve as a first-time SHOT (#623) rather than a
+        // collection -- owner stays `None`, the race is over, and the
+        // keeper stepping to meet the incoming shot is save positioning,
+        // not a race it was told to sit out. The line-hold contract ends
+        // the moment the receiver wins, whichever verb they win with.
+        if s.events.iter().any(|e| {
+            e.kind == MatchEventKind::FirstTouchShot
+                && e.player.as_deref() == Some(s.players[(si - 1) as usize].id.as_str())
+        }) {
+            receiver_won = true;
+            break;
+        }
         let keeper_x = s.players[(ki - 1) as usize].pos.x;
         assert!(
             keeper_x >= 1600.0,
@@ -159,6 +173,11 @@ fn keeper_defers_a_through_ball_the_receiver_clearly_wins() {
     }
     if let Some(owner) = s.owner {
         assert_eq!(owner, si, "the designated receiver should collect it");
+    } else {
+        assert!(
+            receiver_won,
+            "the race must resolve: the receiver collects or first-touches"
+        );
     }
 }
 

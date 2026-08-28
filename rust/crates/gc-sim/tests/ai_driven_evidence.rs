@@ -61,7 +61,7 @@ const FIELD_COUNT: usize = 11 + 2 * PLAYER_COUNT;
 /// `scripts/check.sh`, which assert the COMPILED WASM module reproduces
 /// them.
 /// FNV-1a-64 over the final row, derived from the recorded baseline (#520).
-pub const EXPECTED_FINAL_HASH: &str = "5f29a507aaac1344";
+pub const EXPECTED_FINAL_HASH: &str = "0291700ae05c7a77";
 /// FNV-1a-64 over every row in sequence, derived from the recorded baseline (#520).
 ///
 /// PR #628 merged the keeper race-to-ball rework onto main's
@@ -71,7 +71,7 @@ pub const EXPECTED_FINAL_HASH: &str = "5f29a507aaac1344";
 /// baseline it is derived from) records fresh here. Update the wasm mirror
 /// in `ts/packages/wasm/src/ai_driven.spec.ts` and `scripts/check.sh` to
 /// match, in the follow-up wasm/TS pass.
-pub const EXPECTED_SEQUENCE_DIGEST: &str = "49d2ce9552bcbbca";
+pub const EXPECTED_SEQUENCE_DIGEST: &str = "a471ab55610efef3";
 
 fn parse_row(line: &str) -> Row {
     let f: Vec<&str> = line.split('\t').collect();

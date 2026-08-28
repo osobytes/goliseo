@@ -6911,6 +6911,7 @@ fn aerial_resolve_play(
 fn aerial_match_config() -> aerial::AerialMatchConfig {
     aerial::AerialMatchConfig {
         ground_grab_height: GROUND_GRAB_HEIGHT,
+        block_grace: BLOCK_GRACE,
         stick_ahead: STICK_AHEAD,
         gravity: GRAVITY,
         release_cd: RELEASE_CD,

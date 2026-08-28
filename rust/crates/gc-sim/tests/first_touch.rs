@@ -513,3 +513,59 @@ fn aiming_the_shot_does_not_steer_the_receiver_off_the_pass() {
     }
     panic!("no seed in 0..12 produced a Clean aimed first touch at volley skill 1.0");
 }
+
+#[test]
+fn the_striker_does_not_block_their_own_first_touch() {
+    // Observed live (2026-08-28 debug log): a Clean first touch followed
+    // one tick later by a Block BY THE STRIKER -- the arriving ball sits on
+    // the near side of the body, the shot fires "through" it, and without
+    // release grace the body block eats the shot. The fix is the same
+    // `block_grace` every ordinary release takes; this pins it.
+    let aim = Vec2::new(0.0, -1.0);
+    for seed in 0..40 {
+        let mut s = new_match_seeded(seed as f64, None);
+        let receiver = home_outfielder(&s);
+        stage_arrival(&mut s, receiver, RECEIVER_POS, 250.0);
+        s.players[(receiver - 1) as usize].volley_skill = 1.0;
+        sim_match::set_controlled_player(&mut s, receiver);
+        let tune = Tuning::new();
+        sim_match::step(
+            &mut s,
+            DT,
+            StepInput::Legacy(strike_input(aim)),
+            None,
+            &tune,
+        );
+        let Some(event) = first_touch_event(&s) else {
+            panic!("the staged arrival must produce the attempt");
+        };
+        if event.outcome != Some(AerialOutcome::Clean) {
+            continue;
+        }
+        let launch_speed = s.ball_vel.length();
+        for _ in 0..8 {
+            sim_match::step(
+                &mut s,
+                DT,
+                StepInput::Legacy(strike_input(aim)),
+                None,
+                &tune,
+            );
+            assert!(
+                !s.events.iter().any(|e| e.kind == MatchEventKind::Block),
+                "the striker's own body must not block the release"
+            );
+        }
+        let dir = s.ball_vel.normalized();
+        assert!(
+            dir.x * aim.x + dir.y * aim.y > 0.9,
+            "the shot must still be travelling where it was aimed"
+        );
+        assert!(
+            s.ball_vel.length() > launch_speed * 0.7,
+            "the shot must still carry its pace after leaving the body"
+        );
+        return;
+    }
+    panic!("no seed in 0..40 produced a Clean first touch at volley skill 1.0");
+}

@@ -19,7 +19,7 @@
 use gc_core::vec2::Vec2;
 use gc_sim::fixed_clock;
 use gc_sim::r#match::{self as sim_match, NewMatchOptions, PassProbeRecord, StepInput};
-use gc_sim::match_snapshot::{MatchInput, MatchState, PitchSize, Team};
+use gc_sim::match_snapshot::{MatchEventKind, MatchInput, MatchState, PitchSize, Team};
 use gc_sim::tuning::Tuning;
 use std::io::Write as _;
 
@@ -234,6 +234,23 @@ fn pass_placement_probe() {
                 let mut close: Option<Outcome> = None;
                 if score_now != f.score_at_release {
                     close = Some(Outcome::Goal(f.ticks));
+                } else if s.events.iter().any(|e| {
+                    e.kind == MatchEventKind::FirstTouchShot
+                        && e.player.as_deref()
+                            == Some(s.players[(f.rec.target_idx - 1) as usize].id.as_str())
+                }) {
+                    // The intended receiver striking the pass first time
+                    // (#623) IS the meeting point working: the ball reached
+                    // its man in collectable position and he chose to shoot
+                    // it rather than settle it. Counting it as anything else
+                    // would punish the reception rework for the one-timer
+                    // verb succeeding -- which is exactly what happened when
+                    // the verb's release stopped being eaten by the
+                    // striker's own body (block grace, 2026-08-28) and this
+                    // guardrail's led<=2s reading fell 75.9% -> 58.9%
+                    // overnight with the verb's own per-match rate (2.2)
+                    // still comfortably inside its authored band.
+                    close = Some(Outcome::Intended(f.ticks));
                 } else if let Some(owner) = s.owner {
                     let pteam = passer_team(&s, f);
                     close = Some(if owner == f.rec.target_idx {

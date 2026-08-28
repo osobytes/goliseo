@@ -478,6 +478,9 @@ fn neutral_input() -> MatchInput {
 pub struct AerialMatchConfig {
     /// Ball height below which it counts as grounded.
     pub ground_grab_height: f64,
+    /// Seconds of body-block immunity granted to a release, so a shot can
+    /// exit past adjacent bodies -- including the striker's own.
+    pub block_grace: f64,
     /// How far ahead of the receiver a settled touch is placed.
     pub stick_ahead: f64,
     /// Downward acceleration used by reception's landing-time solve.
@@ -1154,5 +1157,12 @@ pub fn resolve_first_touch_shot(
     s.ball_vz = vz;
     s.ball_spin = 0.0;
     s.pickup_cd = config.release_cd * 0.6;
+    // The arriving ball sits on the NEAR side of the striker's body, so
+    // without release grace the shot fires "through" them and the body
+    // block eats it one tick later -- observed live as a Clean first touch
+    // followed by a self-block on the very next tick (2026-08-28 debug
+    // log). Every ordinary release (pass, shot, keeper punt) already takes
+    // this same grace for the same reason.
+    s.block_grace = config.block_grace;
     true
 }
