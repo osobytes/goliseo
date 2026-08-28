@@ -1081,6 +1081,28 @@ it is re-frozen, and the re-freeze itself is `record_outfield_ai_baseline`,
 under [Commands](#commands) above. The dated entries below are left exactly
 as they were recorded, including where they cite the deleted commands.
 
+- **2026-08-28 — the first-touch release gains block grace (#623 follow-up,
+  play-test telemetry).** `baseline_version` **25 → 26**, signature
+  `e2fab664fcb4020b` → `ebab2f7d5a618148`. The first instrumented play-test
+  (the dev match debug log, with input capture) caught a Clean first-touch
+  shot followed one tick later by a Block BY THE STRIKER: the arriving ball
+  sits on the near side of the body, the shot fires "through" it, and
+  `resolve_first_touch_shot` never took the `block_grace` every ordinary
+  release takes. With the grace granted, the ~2.2 AI one-timers per match
+  (measured n=96, comfortably inside the metric's [0, 4] good band) now fly
+  instead of ricocheting: `shots` and keeper save volume absorb them, and
+  `pass_placement_probe`'s led-completion guardrail — which had counted an
+  intended-receiver first-touch strike as a reception FAILURE and fell
+  75.9% → 58.9% overnight — now closes such a flight as `Intended`: the
+  pass reached its man in collectable position and he chose to shoot it.
+  Re-frozen with the `keeper_shadow_classifier` re-pin (candidates 15303)
+  and the `session_ai_driven` / `ai_driven_evidence` re-records (final
+  `0291700ae05c7a77`, sequence `a471ab55610efef3`) in the same commit.
+  `keeper_intercept`'s unwinnable-race case learned the same lesson as the
+  placement probe: a receiver in `AI_FIRST_TOUCH_RANGE` can win its race
+  with a first-time shot, and the keeper stepping to meet that shot is
+  save positioning, not a broken line-hold.
+
 - **2026-08-26 — the pass-reception rework, plus the futsal-leftover
   distance rescale it audited on the way (owner-approved, deliberate; one
   re-freeze, rebased over #629's juke fix and #627's first-touch

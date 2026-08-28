@@ -413,11 +413,24 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // stays structurally 0. Re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s re-freeze to v25, per this file's
     // own coupling rule.
-    assert_eq!(total.candidates, 15364);
-    assert_eq!(total.agree_true, 4640);
-    assert_eq!(total.agree_false, 10691);
-    assert_eq!(total.disagree_deferred, 27);
-    assert_eq!(total.disagree_height, 6);
+    // Re-pinned by #623's block-grace fix in the SAME commit as the
+    // baseline's v25 -> v26 re-freeze, per this file's coupling rule. A
+    // first-touch shot no longer ricochets off the striker's own body, so
+    // the AI's one-timers (2.2/match at defaults, inside the metric's
+    // authored band) now fly as live shots: possession sequences that used
+    // to dissolve into self-block scrambles end at a keeper instead
+    // (candidates 15364 -> 15303 with `agree_true` 4640 -> 4433 and
+    // `agree_false` 10691 -> 10754 reshuffling), and their rebound chains
+    // show up as `disagree_deferred` 27 -> 114 -- the one-tick-later,
+    // RNG-stream-shifting resolution signature this file's module doc
+    // describes, on genuinely new shot volume. `disagree_height` falls
+    // 6 -> 2 and `new_only` stays structurally 0, which is the assertion
+    // that would have been a finding rather than a re-pin.
+    assert_eq!(total.candidates, 15303);
+    assert_eq!(total.agree_true, 4433);
+    assert_eq!(total.agree_false, 10754);
+    assert_eq!(total.disagree_deferred, 114);
+    assert_eq!(total.disagree_height, 2);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -585,7 +598,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // rework resolving some possession sequences before they reach a save
     // candidate at all, thinning out which matches produce candidates in the
     // first place. `matches_with_either` 5 -> 8 follows from both rising.
-    assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 3);
+    // Re-pinned with the block-grace counts above: deferred episodes now
+    // touch 6/60 matches and height 2/60 (either: 8/60, unchanged in
+    // total), so the reconciliation's conclusion -- deferred, not height,
+    // explains byte divergence -- is unchanged.
+    assert_eq!(matches_with_disagree, 2);
+    assert_eq!(matches_with_deferred, 6);
     assert_eq!(matches_with_either, 8);
 }
