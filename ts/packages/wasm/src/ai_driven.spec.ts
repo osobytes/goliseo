@@ -95,14 +95,14 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // (wasm and native disagreeing) as with a knob-driven trajectory shift --
 // wasm, `node -e` against the freshly built `dist/pkg/gc_wasm.cjs`
 // (`runAiDrivenEvidence()`, the same export `loadSimHost().runAiDrivenEvidence`
-// wraps): final `36d1f260e2b1c9b4`, sequence `54a0f25ab32d86f8`; native, via
+// wraps): final `f52ad4eeb1c6d661`, sequence `0dfef5c0efe59c8b`; native, via
 // `cargo test -p gc-sim --test ai_driven_evidence`
 // (`ai_driven_evidence::EXPECTED_FINAL_HASH`/`EXPECTED_SEQUENCE_DIGEST`), the
 // same two. They AGREE, so this is not #517. Re-run identically after the
 // #622 follow-up above, against a freshly rebuilt `dist/pkg/gc_wasm.cjs`:
 // same wasm pair, same native pair. They still AGREE.
-const NATIVE_FINAL_HASH = "36d1f260e2b1c9b4";
-const NATIVE_SEQUENCE_DIGEST = "54a0f25ab32d86f8";
+const NATIVE_FINAL_HASH = "f52ad4eeb1c6d661";
+const NATIVE_SEQUENCE_DIGEST = "0dfef5c0efe59c8b";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {

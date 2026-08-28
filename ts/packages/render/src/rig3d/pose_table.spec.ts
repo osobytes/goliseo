@@ -164,11 +164,13 @@ describe("rig3d/pose_table.POSE_ACTIONS", () => {
     }
   });
 
-  it("selects a one-shot loop mode exactly for the two one-shot clips", () => {
+  it("selects a one-shot loop mode exactly for the three one-shot clips", () => {
     const oneShot = new Set(
-      [clips.SWING, clips.KEEPER_SLING].filter((clip) => !clip.loop).map((clip) => clip.name),
+      [clips.SWING, clips.KEEPER_SLING, clips.KICK_STRIKE]
+        .filter((clip) => !clip.loop)
+        .map((clip) => clip.name),
     );
-    expect(oneShot).toEqual(new Set(["swing", "keeper_sling"]));
+    expect(oneShot).toEqual(new Set(["swing", "keeper_sling", "kick_strike"]));
     for (const id of WIRE_POSE_IDS) {
       const entry = POSE_ACTIONS[id];
       if (entry.action !== null) {

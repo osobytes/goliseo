@@ -392,11 +392,21 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // note said zero was a smaller surface, not a guarantee, and the
     // rework's faster restarts reintroduce a handful of high-ball edge
     // candidates. `new_only` stays structurally 0.
-    assert_eq!(total.candidates, 16794);
-    assert_eq!(total.agree_true, 4909);
-    assert_eq!(total.agree_false, 11848);
-    assert_eq!(total.disagree_deferred, 26);
-    assert_eq!(total.disagree_height, 11);
+    // Re-pinned by #623's block-grace fix in the SAME commit as the
+    // baseline's v24 -> v25 re-freeze, per this file's coupling rule. A
+    // first-touch shot no longer ricochets off the striker's own body, so
+    // the ~2.2 AI one-timers per match now FLY -- each one is a live shot
+    // a keeper judges (candidates 16794 -> 16864) and each one's rebound
+    // chain replaces a settled collection: `agree_true` 4909 -> 5019,
+    // `disagree_deferred` 26 -> 57, `disagree_height` 11 -> 14, all
+    // moving with the added shot volume. `new_only` stays structurally 0,
+    // which is the assertion that would have been a finding rather than a
+    // re-pin.
+    assert_eq!(total.candidates, 16864);
+    assert_eq!(total.agree_true, 5019);
+    assert_eq!(total.agree_false, 11774);
+    assert_eq!(total.disagree_deferred, 57);
+    assert_eq!(total.disagree_height, 14);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -554,7 +564,11 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // deferred bucket's collapse (255 -> 26 candidates) concentrates the
     // near-resolution matches to 2, and the returned disagree_height
     // candidates surface real disagreement in 3 matches.
-    assert_eq!(matches_with_disagree, 3);
-    assert_eq!(matches_with_deferred, 2);
-    assert_eq!(matches_with_either, 5);
+    // Re-pinned with the block-grace counts above: the added one-timer
+    // shot volume touches a few more matches (3/2/5 -> 6/4/9); deferred
+    // and height episodes both stay rare, and the reconciliation's
+    // conclusion is unchanged.
+    assert_eq!(matches_with_disagree, 6);
+    assert_eq!(matches_with_deferred, 4);
+    assert_eq!(matches_with_either, 9);
 }

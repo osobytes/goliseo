@@ -53,7 +53,8 @@ import type { PlayerPoseId } from "../frame_buffer.ts";
  * locomotion base layer every pose sits on, blended by speed rather than
  * selected by pose id (see `locomotionBlend`).
  */
-export type StanceActionId = "guard_stance" | "charge" | "swing" | "keeper_gather" | "keeper_sling";
+export type StanceActionId =
+  "guard_stance" | "charge" | "swing" | "keeper_gather" | "keeper_sling" | "kick_strike";
 
 /**
  * Where an action's playback phase comes from. Every one of these is a
@@ -367,11 +368,22 @@ export const POSE_ACTIONS: Readonly<Record<PlayerPoseId, PoseActionEntry>> = {
   // -------------------------------------------------------------------------
   // Soccer actions.
   // -------------------------------------------------------------------------
-  // Winding up a shot or a punt coils the torso and drops the shoulder over
-  // the standing foot; `clips.SWING`'s windup key is that shape. Masked to the
-  // upper body so the plant leg keeps the stride -- the leg half of a shot is
-  // a `masks.KICK_R`/`KICK_L` clip that does not exist yet (#424).
-  soccer_windup: stance("swing", masks.UPPER_BODY, "strike", QUICK, "clamp", "was: plain gait"),
+  // Winding up a shot or a punt: the authored kick clip (#427's first entry,
+  // through the scripts/anim pipeline). FULL_BODY, because a kick PLANTS --
+  // replacing the stride with the plant-coil-strike-follow arc is the point;
+  // the clip's own `move.root` carries the centre-of-mass drop, and the
+  // `strike` phase source holds the coil while the windup timer runs, then
+  // lands the follow-through when the ball is away, exactly as it does for
+  // the combat swing. was: `swing`'s upper-body coil over a plain gait, with
+  // the leg half recorded as missing.
+  soccer_windup: stance(
+    "kick_strike",
+    masks.FULL_BODY,
+    "strike",
+    QUICK,
+    "clamp",
+    "was: swing's upper-body coil; the legs now kick (#427 pilot)",
+  ),
   // A slide is a whole-body ground action: hips down, one leg extended, the
   // trailing leg folded, torso back. There is no clip for any of that and no
   // root transform approximates it (`action_pose.ts` covers reactions, not
@@ -447,6 +459,9 @@ export const PHASE_BY_ACTION: Readonly<Record<StanceActionId, PhaseSource>> = {
   swing: "strike",
   keeper_gather: "clock",
   keeper_sling: "throw_timer",
+  // Same landmark contract as `swing`: the kick clip's coil/strike/follow keys
+  // sit on animator.ts's SWING_*_SECONDS, so the one strike sweep drives both.
+  kick_strike: "strike",
 };
 
 /**

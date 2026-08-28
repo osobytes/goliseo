@@ -900,6 +900,220 @@ const KEEPER_SLING_RAW: RawClip = {
  * Exported for specs, which need to build clips with per-bone schedules
  * without shipping them; production clips are authored in this file.
  */
+// The soccer kick: plant -> coil (heel high) -> strike through the ball ->
+// high follow-through -> settle. Authored from study of real kick phrasing
+// (plant / hip rotation / strike / follow-through weight shift) in Blender on
+// the v2 authoring rig and exported by `scripts/anim/clip_export.py` -- the
+// first clip through that pipeline; no third-party animation data is an
+// ancestor of these values. The coil/strike/follow keys sit EXACTLY on
+// `animator.ts`'s SWING landmarks (0.32 / 0.5 / 0.66 clip-seconds) so the
+// `strike` phase source drives this clip with no animator changes: coil holds
+// while the windup timer runs, follow-through lands when the ball is away.
+// `move.root` is the centre-of-mass drop -- the plant-leg crouch that grounds
+// the strike instead of letting the swung leg lift the silhouette.
+const KICK_STRIKE_RAW: RawClip = {
+  name: "kick_strike",
+  loop: false,
+  root_motion: false,
+  duration: 1.4,
+  fallback: "idle",
+  keys: [
+    {
+      t: 0,
+      rot: {
+        chest: [2, 0, 0],
+        "foot.L": [16.3, 0, -9.3],
+        "foot.R": [14.3, 0, 10],
+        "forearm.L": [-6.5, 95.1, 12.1],
+        "forearm.R": [-15.9, -100, -28.2],
+        "hand.L": [-4.6, -89.8, 8.3],
+        "hand.R": [-28, 101.5, -8.8],
+        head: [-4, 0, 0],
+        "shin.L": [-28, 0, 0.9],
+        "shin.R": [-17.6, 0, 0.3],
+        spine: [4, 0, 0],
+        "thigh.L": [-32.5, 0, 5.5],
+        "thigh.R": [12.7, 0, 4],
+        "toe.L": [-32.7, 0, -0.5],
+        "toe.R": [-31.6, 0, -1.7],
+        "upper_arm.L": [-7.4, 30.4, -11],
+        "upper_arm.R": [-5.2, -23.5, -15.9],
+      },
+    },
+    {
+      t: 0.2,
+      rot: {
+        chest: [3.9, -1, -10],
+        "foot.L": [12.9, 0, -9.2],
+        "foot.R": [20.2, 0, 11.3],
+        "forearm.L": [-56.9, 66.6, 24.1],
+        "forearm.R": [38.5, -119.2, -43.6],
+        "hand.L": [-57.2, -89.6, 8],
+        "hand.R": [26.2, 101.3, 1.7],
+        head: [-6, 0, 0],
+        "shin.L": [-27.3, 0, 0.9],
+        "shin.R": [-29.6, 0, 0.3],
+        spine: [5.9, -1.3, -12.1],
+        "thigh.L": [-37.5, 0, 6.8],
+        "thigh.R": [25.3, 0, 6.8],
+        "toe.L": [-32.7, 0, -0.6],
+        "toe.R": [-31.2, 0, -3.5],
+        "upper_arm.L": [21.8, 18.7, 34.3],
+        "upper_arm.R": [-28.2, -19, 14.4],
+      },
+      move: { root: [0, -0.04, 0] },
+    },
+    {
+      t: 0.32,
+      rot: {
+        chest: [5.8, -1.8, -14.1],
+        "foot.L": [15.8, 0, -9.3],
+        "foot.R": [17.2, 0, 11.9],
+        "forearm.L": [-63.1, 55.7, 33.3],
+        "forearm.R": [54, -130.8, -55],
+        "hand.L": [-65.4, -89.5, 7.8],
+        "hand.R": [42.8, 103.9, 6.2],
+        head: [-7.8, -5.3, 3.6],
+        "shin.L": [-27.1, 0, 0.9],
+        "shin.R": [-47.5, 0, 0.5],
+        spine: [7.5, -2.8, -20.2],
+        "thigh.L": [-34.5, 0, 6],
+        "thigh.R": [30.5, 0, 8],
+        "toe.L": [-32.7, 0, -0.6],
+        "toe.R": [-30.3, 0, -7.2],
+        "upper_arm.L": [40, 16.9, 46.2],
+        "upper_arm.R": [-40.5, -20.9, 22.2],
+      },
+      move: { root: [0, -0.06, 0] },
+      // the delivery: constant-rate uncoil into the contact key
+      ease: { rot: "accel", move: "accel" },
+    },
+    {
+      t: 0.5,
+      rot: {
+        chest: [9.9, 1.2, 6.1],
+        "foot.L": [16.3, 0, -9.3],
+        "foot.R": [-52, 0, 3.6],
+        "forearm.L": [-69, 44, 42.2],
+        "forearm.R": [47.8, -127.1, -51.6],
+        "hand.L": [-67.2, -89.4, 7.8],
+        "hand.R": [37.7, 102.9, 4.6],
+        head: [-8, 0, 0],
+        "shin.L": [-19.5, 0, 0.3],
+        "shin.R": [8.6, 0, 0],
+        spine: [14, 1, 4.1],
+        "thigh.L": [-24.1, 0, 3.5],
+        "thigh.R": [-50.7, 0, -13],
+        "toe.L": [-32.7, 0, -0.5],
+        "toe.R": [-32, 0, -0.1],
+        "upper_arm.L": [-30, 34.3, 29],
+        "upper_arm.R": [-3.3, -30, -3.3],
+      },
+      move: { root: [0, -0.09, 0] },
+      ease: { rot: "decel", move: "decel" },
+    },
+    {
+      t: 0.66,
+      rot: {
+        chest: [-8, -0.5, 4],
+        "foot.L": [22.1, 0, -9.6],
+        "foot.R": [-53.1, 0, 3.8],
+        "forearm.L": [4.2, 98.1, 10.2],
+        "forearm.R": [-57, -84.1, -29.7],
+        "hand.L": [5.2, -89.8, 8.3],
+        "hand.R": [-67.5, 117.5, -29],
+        head: [6, 0, 0],
+        "shin.L": [-14.7, 0, 0],
+        "shin.R": [10.3, 0, -0.2],
+        spine: [-7.8, -1.7, 12.1],
+        "thigh.L": [-13.8, 0, 1.3],
+        "thigh.R": [-69.2, 0, -28.4],
+        "toe.L": [-32.7, 0, -0.5],
+        "toe.R": [-32.1, 0, 0.8],
+        "upper_arm.L": [-14.5, 39.8, -40.6],
+        "upper_arm.R": [17.1, -17.9, -12.4],
+      },
+      move: { root: [0, -0.04, 0] },
+    },
+    {
+      t: 0.85,
+      rot: {
+        chest: [0, 0.1, 2],
+        "foot.L": [20.3, 0, -9.5],
+        "foot.R": [-7.6, 0, 8.3],
+        "forearm.L": [5.9, 93.4, 5.1],
+        "forearm.R": [-13, -98.7, -22.2],
+        "hand.L": [4, -89.8, 8.3],
+        "hand.R": [-27.7, 101.5, -8.8],
+        head: [2, 0, 0],
+        "shin.L": [-10.1, 0, -0.2],
+        "shin.R": [-16.6, 0, -0.4],
+        spine: [2, 0.1, 4],
+        "thigh.L": [-11, 0, 0.7],
+        "thigh.R": [-27.3, 0, -4.8],
+        "toe.L": [-32.7, 0, -0.5],
+        "toe.R": [-31.9, 0, -0.4],
+        "upper_arm.L": [-12.1, 33.4, -13.4],
+        "upper_arm.R": [1.9, -24.5, -19.3],
+      },
+      move: { root: [0, -0.02, 0] },
+    },
+    {
+      t: 1.0,
+      rot: {
+        chest: [1, 0, 0],
+        "forearm.L": [-3.2, 90.8, 3.3],
+        "forearm.R": [22.6, -104.5, -31.6],
+        "hand.L": [-5.9, -89.8, 8.3],
+        "hand.R": [6.4, 100.2, -2.2],
+        "shin.R": [8, 0, -0.2],
+        spine: [3, 0, 0],
+        "thigh.R": [5.9, 0, 0.8],
+        "upper_arm.L": [-5, 20.2, -3],
+        "upper_arm.R": [-4.8, -20, 2.7],
+      },
+    },
+    {
+      t: 1.2,
+      rot: {
+        chest: [1, 0, 0],
+        "foot.L": [-3.9, 0, 0.7],
+        "foot.R": [-3.9, 0, -0.7],
+        "forearm.L": [-3.2, 90.8, 3.3],
+        "forearm.R": [22.6, -104.5, -31.6],
+        "hand.L": [-5.9, -89.8, 8.3],
+        "hand.R": [6.4, 100.2, -2.2],
+        "shin.L": [5, 0, 0.1],
+        "shin.R": [5, 0, -0.1],
+        spine: [2, 0, 0],
+        "thigh.L": [2, 0, -0.2],
+        "thigh.R": [2, 0, 0.3],
+        "upper_arm.L": [-4.9, 20.4, -3.9],
+        "upper_arm.R": [-4.7, -20.3, 3.7],
+      },
+    },
+    {
+      t: 1.4,
+      rot: {
+        chest: [1, 0, 0],
+        "foot.L": [-3.9, 0, 0.7],
+        "foot.R": [-3.9, 0, -0.7],
+        "forearm.L": [-3.2, 90.8, 3.3],
+        "forearm.R": [22.6, -104.5, -31.6],
+        "hand.L": [-5.9, -89.8, 8.3],
+        "hand.R": [6.4, 100.2, -2.2],
+        "shin.L": [5, 0, 0.1],
+        "shin.R": [5, 0, -0.1],
+        spine: [2, 0, 0],
+        "thigh.L": [2, 0, -0.2],
+        "thigh.R": [2, 0, 0.3],
+        "upper_arm.L": [-4.9, 20.4, -3.9],
+        "upper_arm.R": [-4.7, -20.3, 3.7],
+      },
+    },
+  ],
+};
+
 export function prepare(raw: RawClip): Clip {
   const firstKey = raw.keys[0];
   if (!firstKey || firstKey.t !== 0) {
@@ -998,6 +1212,7 @@ export const GUARD_STANCE: Clip = prepare(GUARD_STANCE_RAW);
 export const CHARGE: Clip = prepare(CHARGE_RAW);
 export const KEEPER_GATHER: Clip = prepare(KEEPER_GATHER_RAW);
 export const KEEPER_SLING: Clip = prepare(KEEPER_SLING_RAW);
+export const KICK_STRIKE: Clip = prepare(KICK_STRIKE_RAW);
 
 function lerp3(a: EulerTriple, b: EulerTriple, u: number): EulerTriple {
   return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];

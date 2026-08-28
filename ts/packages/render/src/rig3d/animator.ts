@@ -180,6 +180,7 @@ const STANCE_CLIPS: readonly LayerClip[] = [
   { id: "swing", clip: clips.SWING, loop: "clamp" },
   { id: "keeper_gather", clip: clips.KEEPER_GATHER },
   { id: "keeper_sling", clip: clips.KEEPER_SLING, loop: "clamp" },
+  { id: "kick_strike", clip: clips.KICK_STRIKE, loop: "clamp" },
 ];
 
 const POSSESSION_CLIPS: readonly LayerClip[] = [
@@ -193,6 +194,7 @@ const CLIP_BY_ACTION: Readonly<Record<StanceActionId, clips.Clip>> = {
   swing: clips.SWING,
   keeper_gather: clips.KEEPER_GATHER,
   keeper_sling: clips.KEEPER_SLING,
+  kick_strike: clips.KICK_STRIKE,
 };
 
 interface Layers {

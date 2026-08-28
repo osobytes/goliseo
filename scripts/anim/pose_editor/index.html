@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GOLISEO Pose Editor</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #16191d; color: #dfe5e8;
+    font: 13px/1.45 system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #panel { width: 270px; padding: 12px; box-sizing: border-box; overflow-y: auto;
+    background: #1d2126; border-right: 1px solid #2c3238; flex-shrink: 0; }
+  #view { flex: 1; position: relative; }
+  canvas { display: block; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: #8b969e; font-size: 11px; margin-bottom: 10px; }
+  .sec { margin: 14px 0 4px; font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #8b969e; }
+  button { background: #2a3138; color: #dfe5e8; border: 1px solid #3a424a;
+    border-radius: 4px; padding: 4px 8px; margin: 1px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #343d46; }
+  button.key { min-width: 34px; }
+  button.on { background: #2e6b46; border-color: #3f8f5f; }
+  input[type=range] { width: 100%; }
+  select { width: 100%; background: #2a3138; color: #dfe5e8;
+    border: 1px solid #3a424a; border-radius: 4px; padding: 4px; }
+  #boneinfo { font-family: ui-monospace, monospace; font-size: 11px; color: #9fd3ae;
+    min-height: 30px; white-space: pre; }
+  #status { position: absolute; left: 12px; bottom: 10px; color: #9fd3ae;
+    font-size: 12px; pointer-events: none; }
+  #mode { color: #e8b04a; font-size: 11px; min-height: 16px; }
+  .row { display: flex; gap: 4px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h1>Pose Editor</h1>
+    <div class="sub" id="clipname">loading…</div>
+
+    <div class="sec">Animation</div>
+    <select id="clipsel"></select>
+
+    <div class="sec">Keyframes</div>
+    <div class="row" id="keys"></div>
+
+    <div class="sec">Frame <span id="framelabel"></span></div>
+    <input type="range" id="frame" min="1" max="30" step="0.5" value="1">
+    <div class="row">
+      <button id="prev">◀ frame</button>
+      <button id="next">frame ▶</button>
+      <button id="play">▶ play</button>
+    </div>
+    <div id="mode"></div>
+
+    <div class="sec">Bone</div>
+    <select id="bonesel"><option value="">— click a joint or pick —</option></select>
+    <div id="boneinfo"></div>
+    <div class="row">
+      <button data-n="x-">X−5°</button><button data-n="x+">X+5°</button>
+      <button data-n="y-">Y−5°</button><button data-n="y+">Y+5°</button>
+      <button data-n="z-">Z−5°</button><button data-n="z+">Z+5°</button>
+    </div>
+    <div class="row">
+      <button id="resetbone">reset bone @ key</button>
+      <button id="copyprev">copy from prev key</button>
+    </div>
+    <div class="row">
+      <button id="undo" title="Ctrl+Z">↩ undo</button>
+      <button id="redo" title="Ctrl+Y">↪ redo</button>
+    </div>
+
+    <div class="sec">Camera</div>
+    <div class="row">
+      <button data-cam="front">front</button>
+      <button data-cam="side">side</button>
+      <button data-cam="tq">¾</button>
+      <button data-cam="back">back</button>
+    </div>
+
+    <div class="sec">File</div>
+    <div class="row">
+      <button id="save">💾 save clip</button>
+      <button id="reload">↺ discard + reload</button>
+    </div>
+    <div class="sub" style="margin-top:10px">
+      Drag the gizmo rings to rotate the selected bone. Editing works when the
+      playhead is ON a key (green). Save writes the clip; tell Claude to sync
+      it into the game.
+    </div>
+  </div>
+  <div id="view"><div id="status"></div></div>
+</div>
+
+<script>
+  window.__ERRS = [];
+  window.addEventListener('error', (e) =>
+    __ERRS.push(String(e.message || e.error).slice(0, 300) + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')));
+  window.addEventListener('unhandledrejection', (e) =>
+    __ERRS.push('rejection: ' + String(e.reason).slice(0, 300)));
+</script>
+<script src="dist/editor.js"></script>
+</body>
+</html>
