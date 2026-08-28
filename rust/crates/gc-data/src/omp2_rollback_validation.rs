@@ -291,9 +291,22 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
         // 2026-08-26: re-pinned by the pass-reception rework documented above
         // (match_snapshot::VERSION 14 -> 15 / COMBAT_VERSION 15 -> 16); all
         // three values move, per that note.
-        initial_hash: "9372d5cf5f8b7a44",
-        final_hash: "87f804658e2772ef",
-        tape_digest: "156929e9996ed49c",
+        // PR #628 merged the keeper race-to-ball/engagement rework onto
+        // main's pass-reception, first-touch-shot (#627) and juke-carry
+        // (#632) reworks; neither side's independently re-recorded triple
+        // survives the merge. `match_snapshot`/`COMBAT_VERSION` did not bump
+        // again (still 15/16); `initial_hash` moves for a VALUE, not the
+        // schema: `stats::keeper_aggression` was rescaled 18..58 -> 31..101
+        // px by #628, and that derived stat is a serialized `MatchPlayer`
+        // field stamped at construction, so every constructed zero-tick
+        // snapshot carries the retuned value regardless of what a fixture
+        // later overrides -- the same mechanism gc-netcode's
+        // `BOUNDARY_ZERO_BASELINE_HASH` addendum documents for this merge.
+        // Re-derived the same way: run the failing assertion and read the
+        // values it printed.
+        initial_hash: "3479e7d9df38acb4",
+        final_hash: "fba2c5cae25b572f",
+        tape_digest: "066f56623c72040c",
     },
     // 2026-08-25: the pitch is re-dimensioned to regulation futsal
     // proportions, 960x540 -> 1648x927 (owner-approved, deliberate; no issue
@@ -323,6 +336,21 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
     // above the `combat_fixture` block (match_snapshot::VERSION 14 -> 15 /
     // COMBAT_VERSION 15 -> 16); all twelve values across these four fixtures
     // move, per that note.
+    // PR #628 merged the keeper race-to-ball/engagement rework onto main's
+    // pass-reception, first-touch-shot (#627) and juke-carry (#632) reworks;
+    // neither side's independently re-recorded fixture survives the merge,
+    // and all twelve values across these four fixtures move again -- INCLUDING
+    // every `initial_hash`, even though each of these four fixtures overrides
+    // every player's position by hand after `sim_match::new` runs (see
+    // `combat_load_tape`). The schema did not bump (`match_snapshot`/
+    // `COMBAT_VERSION` still 15/16); the `initial_hash` mover is a VALUE:
+    // #628 rescaled `stats::keeper_aggression` 18..58 -> 31..101 px, a
+    // derived stat serialized on every `MatchPlayer` at construction, which
+    // a position override never touches -- the same mechanism documented in
+    // the `combat_fixture` note above and in gc-netcode's
+    // `BOUNDARY_ZERO_BASELINE_HASH` addendum for this merge. Re-derived the
+    // same way: run the failing assertion inside `combat_load_tape` and
+    // read the initial/final/digest values it prints.
     combat_load_fixtures: &[
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-v1",
@@ -333,9 +361,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: None,
-            initial_hash: "bd6d3e3ef513f8ae",
-            final_hash: "868e827db8e1c071",
-            tape_digest: "093cc635c4a9198b",
+            initial_hash: "f87509ed62da78ee",
+            final_hash: "cad885f336868ee1",
+            tape_digest: "b21910f92ef17304",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-crowded-disabled-v1",
@@ -346,9 +374,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: None,
-            initial_hash: "6f90b18e616dc922",
-            final_hash: "ec7045ee1cb285dc",
-            tape_digest: "b1f465735b83ee40",
+            initial_hash: "aae162d7be489d22",
+            final_hash: "3d871828419b95ac",
+            tape_digest: "6855cf329c97b404",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-v1",
@@ -359,9 +387,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: true,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "dee1e8713ac3d0cd",
-            final_hash: "6b9ec3a44147f968",
-            tape_digest: "9bf7d271b50ba212",
+            initial_hash: "071230b5a2f89925",
+            final_hash: "fbb33d4ffb31ade8",
+            tape_digest: "c8826acdcd120b9d",
         },
         Omp2RollbackCombatLoadFixture {
             id: "omp2-combat-repeated-family-disabled-v1",
@@ -372,9 +400,9 @@ pub const DATA: Omp2RollbackValidationData = Omp2RollbackValidationData {
             duration: 20,
             combat: false,
             repeated_loadout_id: Some("loadout_spring_gloves"),
-            initial_hash: "8da9270dbc2cfe38",
-            final_hash: "0b66917a7c9c7558",
-            tape_digest: "3234fb60fcdf575a",
+            initial_hash: "82bdd779158ec670",
+            final_hash: "ebf7f92b4fedc790",
+            tape_digest: "375a86acbafc1774",
         },
     ],
     budgets: Omp2RollbackBudgets {

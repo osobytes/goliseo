@@ -86,11 +86,20 @@ use gc_sim::tuning::Tuning;
 // 1..3 move for the same schema reason; this fixture's three stepped ticks
 // (a plain move-x input, no pass thrown) do not exercise the reworked
 // reception steering itself. All four re-derived from this build.
+//
+// PR #628 MERGE EXCEPTION: this branch's keeper race-to-ball/engagement
+// rework was merged onto main's pass-reception, first-touch-shot (#627) and
+// juke-carry (#632) reworks. Both sides had independently re-derived these
+// four hashes from their own trajectories, and the merged tree matches
+// neither -- `match_snapshot::VERSION` did not move again (still 15), but
+// the stepped-tick locomotion/possession paths did, so all four moved
+// together. Re-derived from this build via the `short_match_tape` panic
+// diagnostic.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "53f8c1509265f2d9",
-    "b7ce557225dce60a",
-    "a57cb769eaa16d95",
-    "73626fb8c7575e82",
+    "7327f70d1a77ad89",
+    "329c779137d34622",
+    "3a75426644eb9445",
+    "995ff1e80b1045f2",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

@@ -89,8 +89,20 @@ import { loadSimHost } from "./index.ts";
 // final `61c50495d826ce10`, sequence `f7d42a56513aa355`; native, via
 // `cargo test -p gc-sim --test determinism_evidence`, the same two. They
 // AGREE, so this is not #517 either.
-const EXPECTED_FINAL_HASH = "61c50495d826ce10";
-const EXPECTED_SEQUENCE_DIGEST = "f7d42a56513aa355";
+//
+// Re-recorded 2026-08-26 for the merge of #628 (the keeper races winnable
+// loose balls; the engagement geometry catches up with the futsal box) with
+// main's pass-reception/first-touch/juke rework: both landed on this branch
+// together, and either alone is exactly the class of change that moves this
+// scenario's whole trajectory. Discriminating measurement re-run before these
+// lines moved — wasm, via the header's own `node -e` one-liner against the
+// freshly rebuilt `dist/pkg/gc_wasm.cjs`: final `0ea20e91bccfe7c8`, sequence
+// `b78600c5267f548e`; native, via `cargo test -p gc-sim --test
+// determinism_evidence` (and `crates/gc-data/src/omp1_determinism.json`'s
+// re-recorded fixture), the same two. They AGREE, so this is not #517 — the
+// old constants above were simply stale.
+const EXPECTED_FINAL_HASH = "0ea20e91bccfe7c8";
+const EXPECTED_SEQUENCE_DIGEST = "b78600c5267f548e";
 
 describe("determinism evidence, run inside the compiled wasm module", () => {
   // Why the explicit 30_000 timeout on the `it` below: 7,201 ticks (twice —
