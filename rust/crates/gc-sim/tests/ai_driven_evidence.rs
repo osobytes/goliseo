@@ -61,9 +61,17 @@ const FIELD_COUNT: usize = 11 + 2 * PLAYER_COUNT;
 /// `scripts/check.sh`, which assert the COMPILED WASM module reproduces
 /// them.
 /// FNV-1a-64 over the final row, derived from the recorded baseline (#520).
-pub const EXPECTED_FINAL_HASH: &str = "46c857b95a84591a";
+pub const EXPECTED_FINAL_HASH: &str = "5f29a507aaac1344";
 /// FNV-1a-64 over every row in sequence, derived from the recorded baseline (#520).
-pub const EXPECTED_SEQUENCE_DIGEST: &str = "8466fbbd48ed45e3";
+///
+/// PR #628 merged the keeper race-to-ball rework onto main's
+/// pass-reception/first-touch/juke reworks; both branches had independently
+/// re-recorded `fixtures/session_ai_driven_baseline.txt` against their own
+/// trajectories, so the merged tree matched neither and this pair (and the
+/// baseline it is derived from) records fresh here. Update the wasm mirror
+/// in `ts/packages/wasm/src/ai_driven.spec.ts` and `scripts/check.sh` to
+/// match, in the follow-up wasm/TS pass.
+pub const EXPECTED_SEQUENCE_DIGEST: &str = "49d2ce9552bcbbca";
 
 fn parse_row(line: &str) -> Row {
     let f: Vec<&str> = line.split('\t').collect();

@@ -142,16 +142,16 @@ use indexmap::IndexMap;
 // its own fixed-960x540 fixture. The stepped boundaries [1..5] are unaffected
 // here because this file no longer folds a trajectory claim into a format test
 // (#520).
-// `boundary_hash[0]` re-recorded again e56293e838fe3ff1 -> 2ce298f62d7efa29
-// by the 2026-08-26 goalkeeper race-to-ball rework. Also NOT a serialization
-// or digest regression: `keeper_aggression` is a per-player field baked into
-// every `MatchPlayer` snapshot straight from `stats::keeper_aggression` when
-// the match is constructed, including this zero-tick kickoff capture, so
-// rescaling that stat's constants in `stats.rs` (18/2/2 -> 31/3.5/3.5) moves
-// this hash with no tick ever stepped. The stepped boundaries [1..5] stored
-// in the fixture file remain unaffected by either recorder, for the same
-// #520 reason given above -- they are never compared against a live hash by
-// this file's tests, only checked for canonical form.
+//
+// `boundary_hash[0]` re-recorded again 75e70f884f565cf5 -> 3bd5dc69c35bcccd by
+// PR #628's merge of the keeper race-to-ball rework onto main's
+// pass-reception/first-touch/juke reworks: both branches had independently
+// re-recorded this fixture from their own trajectories, so the merged tree
+// matches neither. `match_snapshot::VERSION` did not bump (still 15), so this
+// is a real content/serialization-input change, not a schema-coupled one --
+// re-derived the same way as `STEPPED_BASELINE` below (temporary `eprintln!`
+// of `tape.boundary_hashes` from `the_stepped_boundaries_reproduce_their_recorded_baseline`,
+// reverted after capture).
 const FIXTURE: &str = include_str!("fixtures/input_tape_baseline.txt");
 
 fn reference() -> IndexMap<&'static str, &'static str> {
@@ -568,26 +568,34 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 /// 280 (`gc-data/src/tunables.rs`), moving all five values once more.
 /// Re-derived and confirmed the same way.
 ///
-/// **Re-pinned again, 2026-08-26**, for the goalkeeper race-to-ball rework:
-/// `keeper_engagement`'s v2 band widening, `keeper_aggression`'s rescale in
-/// `stats.rs`, `keeper::behavior`'s advance target switching to
-/// `arc_target`, and the new `keeper_intercept_target`/
-/// `keeper::intercept_race` loose-ball chase in `match.rs` all change
-/// keeper positioning on every stepped tick, moving all five values. Unlike
-/// those, boundary 0 (this fixture's pre-step kickoff hash, checked
-/// elsewhere in this file) moved too, for an unrelated reason —
-/// `keeper_aggression` is baked into every kickoff `MatchPlayer` snapshot
-/// with no tick stepped — see the comment beside `FIXTURE` above. Re-derived
-/// the same way as the prior re-pin: `cargo test -p gc-sim --test
+/// **Re-pinned 2026-08-26** for the pass-reception rework
+/// (`match_snapshot::VERSION` 14 -> 15 / `COMBAT_VERSION` 15 -> 16, plus the
+/// real steering change: the release pickup cooldown no longer blocks the
+/// designated receiver, who now steers onto the pass's stored reception
+/// point). This recording carries no combat companion and slot 4's edges
+/// fire a pass on tick 2, so both the schema change (new `receive_target`/
+/// `stick_latch` fields on every boundary, even where `Nil`) and the real
+/// reception-steering change move all five stepped boundaries. Re-derived
+/// by running this build (`cargo test -p gc-sim --test
 /// input_tape_differential the_stepped_boundaries_reproduce_their_recorded_baseline
 /// -- --nocapture` with a temporary `eprintln!` of `tape.boundary_hashes`,
-/// reverted after capture.
+/// reverted after capture).
+///
+/// **Re-pinned again for PR #628's merge** of the keeper race-to-ball
+/// rework onto main's pass-reception, first-touch-shot (#627) and
+/// juke-carry (#632) reworks: both branches had independently re-recorded
+/// this baseline from their own trajectories, so the merged tree matches
+/// neither and all five move again. `match_snapshot::VERSION` did not bump
+/// (still 15) -- this is a behavior-only re-record. Re-derived the same way
+/// (temporary `eprintln!` of `tape.boundary_hashes`, reverted after
+/// capture); boundary 0 from the same run also moved and is re-pinned in
+/// `fixtures/input_tape_baseline.txt`'s `boundary_hash[0]` alongside these.
 const STEPPED_BASELINE: [&str; 5] = [
-    "2dc4fe83404fefeb",
-    "d44a189896f76237",
-    "041508de644faa18",
-    "e095fd0707e6830c",
-    "0dc23e2d264f5bef",
+    "3aae206d0d3bc62d",
+    "251cf77beeb1e5ed",
+    "e81f1e99d52c3e7a",
+    "ee2b02a2eacb0284",
+    "e65d12f576daa0e7",
 ];
 
 #[test]

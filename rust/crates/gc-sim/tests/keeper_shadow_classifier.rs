@@ -361,35 +361,63 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // measured directly against the live simulation on this fixture's 60
     // seeds, which is what `outfield_ai_baseline`'s own recorder will
     // reproduce once it is re-run.
-    // candidates 20654 -> 14416: the 2026-08-26 goalkeeper race-to-ball
-    // rework lands four changes together -- `keeper_engagement`'s v2 band
-    // widening (206/343, up from 120/200), `keeper_aggression`'s rescale in
-    // `stats.rs` (18/2/2 -> 31/3.5/3.5), `keeper::behavior`'s advance target
-    // switching from an always-full-depth commit to `arc_target` (full
-    // aggression depth only on a genuine unsupported breakaway, an
-    // approach-scaled advance otherwise), and the new
-    // `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase,
-    // which lets an off-ball keeper leave its line to win a time-of-arrival
-    // race for an incoming ball before it ever becomes a shot. The last of
-    // these is the one that removes candidates outright: a through ball the
-    // keeper now collects in the race never reaches `attempt_save` as a
-    // shot to judge, so fewer possession sequences produce a save candidate
-    // at all. `agree_false` absorbs nearly all of the shrunken total in
-    // share (65.9% -> 77.0%) while `agree_true` falls in share
-    // (31.7% -> 22.0%); `disagree_deferred` (487 -> 143) and
-    // `disagree_height` (18 -> 7) both fall sharply and roughly in
-    // proportion to the candidate drop, rather than either one moving
-    // against it -- consistent with fewer marginal, near-resolution shots
-    // reaching the keeper at all, not a change in how the keeper judges the
-    // ones that still do. `new_only` stays structurally 0, which is the
-    // assertion that would have been a finding rather than a re-pin.
-    // Re-pinned in the SAME commit as `gc_data::outfield_ai_baseline`'s
-    // v19 -> v20 re-freeze, per this file's own coupling rule.
-    assert_eq!(total.candidates, 14416);
-    assert_eq!(total.agree_true, 3166);
-    assert_eq!(total.agree_false, 11100);
-    assert_eq!(total.disagree_deferred, 143);
-    assert_eq!(total.disagree_height, 7);
+    // Re-pinned by #623's PR merging main's #629/#632 juke-carry change, in
+    // the SAME commit as `gc_data::outfield_ai_baseline`'s re-freeze to v23
+    // -- the first pin measured on the COMBINED tree. The two parents'
+    // pins were measured on divergent branches (this PR's #623 chain
+    // reached 20327/6323/13488/498/18 at its v22; main's #629/#632 reached
+    // 19766/5384/14135/247/0 at its own, independently numbered v20) and
+    // neither describes the merged simulation, so both are superseded here
+    // rather than one side "winning" the conflict.
+    //
+    // candidates 20525 on the merged tree: #623's one-timers shorten some
+    // possession sequences while its longer receive windows resolve more
+    // long passes at their receiver, and #632's juking carriers keep the
+    // ball through committed challenges -- the composition lands between
+    // the parents, not at either. `disagree_height` stays at the 0 main's
+    // pin already reached and argued (the deleted formula and the real
+    // predictor agree on every resolved candidate this fixture produces --
+    // a smaller disagreement surface, not a quiet check; the monotonicity
+    // argument bounds `new_only`, and `new_only` stays structurally 0,
+    // which is the assertion that would have been a finding rather than a
+    // re-pin).
+    // Re-pinned by the pass-reception rework in the SAME commit as the
+    // baseline's v23 -> v24 re-freeze, per this file's coupling rule.
+    // Passes resolving at their meeting point removes most loose-runout
+    // ticks a keeper had to judge: `candidates` 20525 -> 16794 (-18%),
+    // both agree buckets shrinking roughly in proportion and
+    // `disagree_deferred` collapsing 255 -> 26 (deferred candidates were
+    // overwhelmingly the ambiguous runout ricochets that no longer
+    // happen). `disagree_height` returns from 0 to a small 11 — #629's own
+    // note said zero was a smaller surface, not a guarantee, and the
+    // rework's faster restarts reintroduce a handful of high-ball edge
+    // candidates. `new_only` stays structurally 0.
+    //
+    // Re-pinned by PR #628 merging this branch's keeper race-to-ball/
+    // engagement rework onto main's pass-reception/first-touch-shot (#627)/
+    // juke-carry (#632) reworks -- the second "measured on the COMBINED
+    // tree" pin, same shape as the #623 merge pin above. Neither parent's
+    // independently re-recorded tally survives: this branch's keeper now
+    // races winnable loose balls and leaves the line under a win-margin
+    // model instead of always retreating, which resolves possession
+    // sequences at the point of the race rather than letting them run on to
+    // a later save judgement. candidates 16794 -> 15364 (-8.5%): fewer
+    // sequences reach a keeper save candidate at all, since a chunk of them
+    // now end in the keeper's favor at the race itself, upstream of this
+    // classifier. Both agree buckets shrink roughly in proportion
+    // (agree_true 4909 -> 4640, agree_false 11848 -> 10691);
+    // `disagree_deferred` holds essentially flat (26 -> 27) while
+    // `disagree_height` falls by roughly half (11 -> 6) -- consistent with
+    // fewer marginal, high-ball edge candidates surviving to be judged at
+    // all, not a new disagreement pattern among the ones that do. `new_only`
+    // stays structurally 0. Re-pinned in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s re-freeze to v25, per this file's
+    // own coupling rule.
+    assert_eq!(total.candidates, 15364);
+    assert_eq!(total.agree_true, 4640);
+    assert_eq!(total.agree_false, 10691);
+    assert_eq!(total.disagree_deferred, 27);
+    assert_eq!(total.disagree_height, 6);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -537,18 +565,27 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // split to compare against. To be re-pinned in the SAME commit as
     // `gc_data::outfield_ai_baseline`'s v18 -> v19 re-freeze, per this
     // file's own coupling rule.
-    // Re-pinned by the 2026-08-26 goalkeeper race-to-ball rework alongside
-    // the counts above: `disagree_height` alone still touches 5/60 matches
-    // (8%), unchanged from the previous re-pin, while folding in
-    // `disagree_deferred` reaches only 26/60 (43%), down from 38/60 -- the
-    // same story as the candidate-count fall above, told per match instead
-    // of in raw counts: the keeper's own loose-ball intercept removes save
-    // candidates from many matches outright rather than changing how the
-    // ones that remain get judged, so fewer matches ever reach a deferred
-    // episode even though the ones that do are unaffected in kind.
-    // Deferred episodes remain the larger of the two buckets. No
-    // historical byte-divergent split to compare against.
+    // Re-pinned on the merged tree alongside the counts above.
+    // `disagree_height` touches 0/60 matches and `disagree_deferred` 18/60
+    // (30%) -- the disagreement surface shrank on both sides' changes (see
+    // the merged paragraph above), and deferred episodes remain the only
+    // driver left, so the reconciliation's conclusion (deferred, not
+    // height, explains byte divergence) holds trivially.
+    // Pass-reception rework re-pin (same commit as v23 -> v24): the
+    // deferred bucket's collapse (255 -> 26 candidates) concentrates the
+    // near-resolution matches to 2, and the returned disagree_height
+    // candidates surface real disagreement in 3 matches.
+    //
+    // Re-pinned by PR #628's merge alongside the counts above:
+    // `matches_with_disagree` 3 -> 5 and `matches_with_deferred` 2 -> 3 both
+    // rise even as the raw `disagree_height`/`disagree_deferred` counts stay
+    // roughly flat (6 and 27, barely moved from 11 and 26) -- the same-sized
+    // disagreement volume now spreads across more of the 60 matches instead
+    // of concentrating in as few, consistent with the keeper race-to-ball
+    // rework resolving some possession sequences before they reach a save
+    // candidate at all, thinning out which matches produce candidates in the
+    // first place. `matches_with_either` 5 -> 8 follows from both rising.
     assert_eq!(matches_with_disagree, 5);
-    assert_eq!(matches_with_deferred, 23);
-    assert_eq!(matches_with_either, 26);
+    assert_eq!(matches_with_deferred, 3);
+    assert_eq!(matches_with_either, 8);
 }

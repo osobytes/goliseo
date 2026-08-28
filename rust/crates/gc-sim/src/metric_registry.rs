@@ -216,6 +216,15 @@ pub fn assemble() -> MetricRegistry {
                 def: def("rebound_rate"),
                 extract: |m| m.rebound_rate,
             },
+            // #623, appended last matching `gc_data::tunables::METRICS`'s
+            // authored order — the two lists are compared element by element
+            // by `metric_registry_folds_in_the_authored_order`. A count, so
+            // never `None`: a match with no first-touch attempt is a real
+            // reading of zero, which the band scores rather than skips.
+            Metric {
+                def: def("first_touch_shots"),
+                extract: |m| Some(m.first_touch_shots as f64),
+            },
         ],
     );
     b.build()

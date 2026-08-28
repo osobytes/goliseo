@@ -244,7 +244,8 @@ export type MatchEventKind =
   | "bicycle"
   | "reception"
   | "juke"
-  | "tackle_miss";
+  | "tackle_miss"
+  | "first_touch_shot";
 
 /** Who holds the ball this frame. Not part of `pitch.ts`'s `RenderFrame` slice; see this module's report. */
 export interface RenderFramePossession {
@@ -601,6 +602,8 @@ function eventKindFromCode(code: number): MatchEventKind | undefined {
       return "juke";
     case 26:
       return "tackle_miss";
+    case 27:
+      return "first_touch_shot";
     default:
       return undefined;
   }

@@ -124,7 +124,7 @@ ending and closes the loop.
 
 - Honest public README with a short gameplay clip and screenshots.
 - One-command setup and one-command quality gate.
-- CI for format, types, tests, and gameplay tripwire.
+- CI for format, types, tests, and the frozen gameplay baselines.
 - Architecture and contribution guidance.
 - Explicit source-available license, release notes, and a downloadable Linux
   build.

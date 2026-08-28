@@ -80,10 +80,10 @@ the clock -- so it costs one extra property read per frame and no round
 trips. Any pose can then be queried from that one pass; the scan is batched,
 not per-pose.
 
-A scan run renders at `--scan-width`/`--scan-height` with the stadium and
-bloom off. That is safe because the thing being scanned is SIM state: pose
-selection happens in `gc-render`'s `player_pose.rs` from the match state, and
-nothing in it reads the viewport.
+A scan run renders at `--scan-width`/`--scan-height`, with bloom off under
+`--scan-no-bloom`. That is safe because the thing being scanned is SIM
+state: pose selection happens in `gc-render`'s `player_pose.rs` from the
+match state, and nothing in it reads the viewport.
 
 That argument is checked, not trusted. `pose_hold_verdict` compares the pose
 the scan asked for against the poses BOTH full-fidelity capturing sessions
@@ -1439,8 +1439,8 @@ def fidelity_verdict(small: list[dict[str, Any]], full: list[dict[str, Any]], ti
     `frame::build`'s output, and `frame::build` takes a `MatchState` and no
     viewport. That is the same argument `scan_run` makes -- and, like it, the
     argument is checked instead of trusted. A third session runs the first
-    `ticks` ticks at the harness's full size with bloom and the stadium on,
-    and its counted stream must be exactly the small session's prefix.
+    `ticks` ticks at the harness's full size with bloom on, and its counted
+    stream must be exactly the small session's prefix.
 
     Skipped, not assumed, when `--fidelity-ticks 0` asks for it: the verdict
     then says so rather than reporting an unrun check as passed.
@@ -1916,8 +1916,8 @@ def scan_run(
 ) -> dict[str, Any]:
     """One low-cost scanning session: step `scan_ticks` and read the index.
 
-    Renders small, with the stadium and bloom off. Pose selection is SIM
-    state (`gc-render`'s `player_pose.rs` reads the match, never the
+    Renders small, with bloom off under `--scan-no-bloom`. Pose selection
+    is SIM state (`gc-render`'s `player_pose.rs` reads the match, never the
     viewport), so what this finds is exactly what a full-fidelity run would
     find at the same seed. `pose_hold_verdict` checks that rather than
     assuming it -- see its docstring.
@@ -1976,21 +1976,26 @@ def count_run(
     """One counting session: arm the frame reader, step, read the rows back.
 
     Nothing is captured and nothing is drawn that anyone looks at. The session
-    still renders -- the page has one loop and it draws -- but small, with
-    bloom and the stadium off, because what is counted comes out of
-    `gc_render::frame::build`, which takes a `MatchState` and none of those.
-    `fidelity_verdict` is the check on that argument, not this docstring.
+    still renders -- the page has one loop and it draws -- but small and with
+    bloom off, because what is counted comes out of
+    `gc_render::frame::build`, which takes a `MatchState` and neither of
+    those. `fidelity_verdict` is the check on that argument, not this
+    docstring.
     """
     log = Path(args.log_dir) / f"{label}-webdriver.log"
     codes = [POSE_IDS.index(pose) + 1 for pose in LEAN_POSES]
     with BrowserSlot(args, log, label) as driver:
-        # A counting session draws a small, bloom-less, stadium-less frame
-        # nobody looks at, because 24,000 frames of full-fidelity SwiftShader
-        # buys nothing a count can use: `frame::build` takes a `MatchState`
-        # and no viewport, no bloom flag and no stadium. That argument is what
-        # `fidelity_verdict` checks -- the full-fidelity session below turns
-        # every one of these levers back on.
-        extra: dict[str, Any] = {} if full_fidelity else {"bloom": 0, "stadium": 0}
+        # A counting session draws a small, bloom-less frame nobody looks at,
+        # because 24,000 frames of full-fidelity SwiftShader buys nothing a
+        # count can use: `frame::build` takes a `MatchState` and no viewport
+        # and no bloom flag. That argument is what `fidelity_verdict` checks
+        # -- the full-fidelity session below turns both levers back on.
+        #
+        # The stadium is no longer one of the levers. It used to be switched
+        # off here alongside bloom, but `?stadium=0` also selected a
+        # fixed-trapezoid projection that has since been retired, so the page
+        # renders the product's one camera unconditionally now.
+        extra: dict[str, Any] = {} if full_fidelity else {"bloom": 0}
         _open_page(
             driver,
             base_url,
@@ -2060,7 +2065,7 @@ def count_run(
         "records": lean_records(raw.get("rows") or []),
         "effects": effects_state,
         "gpu": gpu,
-        "viewport": {"width": width, "height": height, "bloom": full_fidelity, "stadium": full_fidelity},
+        "viewport": {"width": width, "height": height, "bloom": full_fidelity},
         "elapsed_seconds": elapsed,
         # What `session_completeness_verdict` reads. The tick budget is carried
         # next to what was actually reached, in the same dict, so a reader of

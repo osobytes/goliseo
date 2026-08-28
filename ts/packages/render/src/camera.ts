@@ -1,21 +1,21 @@
 // Pure 2.5D projection. Maps a point on the flat pitch (world space) to a
-// screen point plus a depth scale, producing a perspective trapezoid: the far
-// edge (world y = 0) is higher and narrower, the near edge (world y = field.h)
-// is lower and wider. No three.js/DOM calls, so the projection is
-// unit-testable headless.
+// screen point plus a depth scale, through a REAL pinhole camera sitting
+// above and behind the focus and looking down at the pitch: the far edge
+// (world y = 0) comes out higher and narrower, the near edge (world y =
+// field.h) lower and wider, because that is what a camera in that pose does
+// to a ground plane -- not because any screen shape was authored. No
+// three.js/DOM calls, so the projection is unit-testable headless.
+//
+// There is ONE projection. An earlier fixed-trapezoid mode interpolated
+// scale linearly with depth (which is not what a camera does) and mapped
+// whatever region it was handed onto the same authored screen shape (so
+// magnifying it just flattened the fake perspective). It was retired once
+// the product entry point stopped ever selecting it -- see `camera.PERSPECTIVE`
+// for the rig this projection is tuned by, and `PerspectiveRig` for why
+// `scene.ts`'s world-layer camera is built from that same derivation rather
+// than a second, independently-tuned copy of "the same shot".
 
 import { mat4 } from "@gc/core";
-
-export interface CameraConfig {
-  /** sprite/spread scale at the far edge */
-  readonly far_scale: number;
-  /** sprite/spread scale at the near edge */
-  readonly near_scale: number;
-  /** screen-height fraction where the far edge sits */
-  readonly horizon_frac: number;
-  /** screen-height fraction where the near edge sits */
-  readonly bottom_frac: number;
-}
 
 export interface CameraView {
   /** focus world x */
@@ -54,20 +54,16 @@ export interface CameraPerspectiveConfig {
 export type CameraProjection = readonly [number, number, number];
 
 // ---------------------------------------------------------------------------
-// Perspective mode
+// The projection
 // ---------------------------------------------------------------------------
 //
-// A real pinhole camera above and behind the focus, looking down at the pitch.
+// Convergence is a consequence of where the camera IS, not of a screen shape
+// anyone authored, so moving in close strengthens the perspective instead of
+// flattening it (`perspectiveRig` pulls the eye toward the focus rather than
+// magnifying the image -- see its `zoom` note).
 //
-// The fixed trapezoid interpolates scale LINEARLY with depth, which is not what
-// a camera does, and it maps whatever region it is given onto the same screen
-// shape. Neither survives moving in close: magnifying a fake perspective just
-// flattens it. This mode projects the ground plane properly, so convergence is
-// a consequence of where the camera is rather than a fixed screen shape, and
-// moving closer increases perspective the way it should.
-//
-// Everything on the pitch draws through camera.project, so switching modes
-// moves lines, goals, players and effects together.
+// Everything on the pitch draws through camera.project, so the lines, goals,
+// players and effects all move together with the rig below.
 
 /**
  * The camera rig `projectPerspective` derives internally: where the eye
@@ -164,9 +160,10 @@ function projectPerspective(
   // canvas (viewport.ts's `baseW`/`baseH`) is 960x540 PIXELS, so one world
   // unit is one virtual pixel by construction and the ratio is absolute.
   //
-  // This replaces a `scale_k / w` constant (scale_k = 582), which was
-  // calibrated to match the fixed trapezoid's ~0.675 mid-pitch scale and
-  // carried NEITHER of the two terms above. Both omissions were live bugs:
+  // This replaces a `scale_k / w` constant (scale_k = 582), hand-calibrated
+  // against the mid-pitch scale of the fixed trapezoid this projection
+  // replaced, which carried NEITHER of the two terms above. Both omissions
+  // were live bugs:
   //
   //   1. NO `vp.h`. Character pixel size was independent of resolution while
   //      the stadium -- drawn by a REAL `THREE.PerspectiveCamera` off this
@@ -192,93 +189,8 @@ function projectPerspective(
   return [(x / w + 1) * 0.5 * vp.w, (1 - y / w) * 0.5 * vp.h, vp.h / (2 * w * halfFovTan)];
 }
 
-/**
- * The single world-to-pixel factor the whole fixed projection is built on:
- * how many screen pixels one world unit is worth once the tuned reference
- * frame has been fitted into `vp`.
- *
- * `min` rather than a separate width and height fit, because those two are
- * what made the pitch STRETCH. The reference frame is exactly the size of the
- * field, so `min` is the largest uniform factor that still keeps the whole
- * frame inside the viewport; the leftover space on the long axis is filled by
- * the starfield backdrop, which is what "the arena floats in space, like a
- * broadcast frame" (see `camera.DEFAULTS`) already asks for. No letterbox
- * bars are drawn or needed.
- */
-function fitFactor(field: CameraField, vp: CameraViewport): number {
-  return Math.min(vp.w / field.w, vp.h / field.h);
-}
-
-// The fixed whole-pitch projection: world point -> screen point + depth scale.
-//
-// #414. An earlier version put the world-to-pixel factor in the screen
-// POSITION and nowhere else:
-//
-//     sx    = vp.w/2 + (wx - field.w/2) * scale * (vp.w / field.w)
-//     sy    = vp.h*horizon_frac + (vp.h*bottom_frac - vp.h*horizon_frac) * t
-//     scale = far_scale + (near_scale - far_scale) * t     <- a pure ratio
-//
-// `scale` is the ONLY thing entity sizes are derived from (`r = radius *
-// scale` in pitch.ts, and from there every character, billboard, shadow,
-// reticle, goal frame and ball). So positions carried a viewport factor and
-// sizes did not: grow the viewport and the pitch grows while the players stay
-// the same number of pixels. That is invisible at `vp.w == field.w`, which
-// was the ONLY case the original fixed-window game could ever be in (a
-// non-resizable 960x540 window, over a 960x540 field) -- and the only case
-// its tests covered, which is why the defect went unnoticed until it met a
-// resizable browser canvas, which is never 960x540, on every real window.
-//
-// The second half of the same defect: `sx` fitted the field to viewport WIDTH
-// while `sy` spanned a fraction of viewport HEIGHT. At 960x540 those two
-// agree; at any other aspect ratio they differ, so the trapezoid was stretched
-// rather than scaled, and correcting entity size alone would have left
-// correctly-sized players standing on a distorted pitch.
-//
-// Both halves go away by construction if the projection is expressed as: build
-// the tuned frame in a REFERENCE viewport exactly the size of the field (where
-// the original formula is exactly right, because there the missing factor is
-// 1), then scale that whole frame uniformly about the viewport centre.
-// Positions and sizes then share one factor because there is only one, and
-// `scale` is literally the pixels-per-world-unit at that depth -- so `radius
-// * scale` is a real pixel size instead of a pixel size that happens to be
-// right at one window size.
-function projectFixed(
-  wx: number,
-  wy: number,
-  field: CameraField,
-  vp: CameraViewport,
-  cfg: CameraConfig,
-): CameraProjection {
-  const t = wy / field.h; // 0 = far, 1 = near
-  const fit = fitFactor(field, vp);
-  // The trapezoid's own near/far convergence ratio, independent of any
-  // viewport. Folding `fit` into it is what gives sizes their viewport term.
-  const scale = (cfg.far_scale + (cfg.near_scale - cfg.far_scale) * t) * fit;
-  // Vertical: the reference frame puts the far edge at `horizon_frac` and the
-  // near edge at `bottom_frac` of the FIELD's height, then that frame is
-  // scaled about the viewport centre like everything else.
-  const frac = cfg.horizon_frac + (cfg.bottom_frac - cfg.horizon_frac) * t;
-  const sy = vp.h / 2 + (frac - 0.5) * field.h * fit;
-  const sx = vp.w / 2 + (wx - field.w / 2) * scale;
-  return [sx, sy, scale];
-}
-
 /** Pure 2.5D projection module. See file header. */
 export const camera = {
-  // Tuned so the pitch is inset within the viewport (margins on all sides)
-  // rather than filling the screen -- the arena floats in space, like a
-  // broadcast frame. Keep near_scale < 1 so even the widest (near) edge stays
-  // off the screen edges.
-  /** Opt-in: use the real perspective camera instead of the fixed trapezoid. */
-  perspective_mode: false,
-
-  DEFAULTS: {
-    far_scale: 0.51, // wide far edge (less of a sharp wedge), but inset
-    near_scale: 0.84, // < 1: near edge sits ~8% in from each side
-    horizon_frac: 0.24, // space/HUD band above the pitch
-    bottom_frac: 0.88, // margin below the pitch
-  } satisfies CameraConfig as CameraConfig,
-
   PERSPECTIVE: {
     // BROADCAST REFRAME. A true-perspective rig for the coliseum, now
     // matched to a REFERENCE CAMERA TABLE rather than to stills, on the
@@ -288,9 +200,9 @@ export const camera = {
     // roughly a TENTH of frame height, and the camera FOLLOWS play at a
     // moderate downward tilt instead of holding a fixed establishing shot of
     // the whole stadium. The second half is not this table's job -- see
-    // `pitch.follow_camera` / camera_follow.ts, which the product entry now
-    // switches on alongside `perspective_mode` (browser_main.ts). This table
-    // only sets the shot's geometry.
+    // `pitch.follow_camera` / camera_follow.ts, which the product entry
+    // switches on (browser_main.ts). This table only sets the shot's
+    // geometry.
     //
     // Derivation, kept here rather than left as bare numbers because every
     // input matters if this ever needs retuning again:
@@ -376,47 +288,33 @@ export const camera = {
     };
   },
 
+  /**
+   * The whole renderer's world-to-screen entry point. `view` is optional:
+   * without one the camera frames the pitch centre at zoom 1, which is what
+   * every non-following caller (and `SceneRoot`'s own `syncWorldCamera` when
+   * `pitch.follow_camera` is off) gets.
+   */
   project(
     wx: number,
     wy: number,
     field: CameraField,
     vp: CameraViewport,
-    cfg?: CameraConfig,
     view?: CameraView,
   ): CameraProjection {
-    const c = cfg ?? camera.DEFAULTS;
-    if (camera.perspective_mode) {
-      return projectPerspective(wx, wy, field, vp, view);
-    }
-    const [sx, sy, scale] = projectFixed(wx, wy, field, vp, c);
-    if (view === undefined || view.zoom <= 1) {
-      return [sx, sy, scale];
-    }
-
-    // Magnify in SCREEN space about the focus, which is what a longer lens
-    // does. The earlier attempt re-mapped a sub-rectangle of the pitch onto
-    // the same fixed trapezoid, which forced full convergence onto a region
-    // that should look almost rectangular -- the pitch came out as a funnel.
-    //
-    // Scaling the already-projected offsets keeps the perspective structure
-    // the fixed view establishes: parallel lines stay as straight as they
-    // were, the hex grid stays even, and only the framing changes.
-    const z = view.zoom;
-    const [fx, fy] = projectFixed(view.x, view.y, field, vp, c);
-    return [vp.w * 0.5 + (sx - fx) * z, vp.h * 0.5 + (sy - fy) * z, scale * z];
+    return projectPerspective(wx, wy, field, vp, view);
   },
 
   /**
    * The perspective rig's downward tilt: the angle below horizontal the
    * camera looks at its focus, `atan(height-above-focus / horizontal
    * distance-to-focus)`. Used by pitch.ts to keep a rigged character's
-   * elevation tilt COHERENT with whatever camera is actually looking at it
-   * -- see that file's "CHARACTER TILT COHERENCE" section: under the fixed
-   * trapezoid there is no real camera angle to match (the old constant,
-   * `player_renderer_3d.ts`'s `ELEVATION`, approximates one), but under
-   * `perspective_mode` there is a genuine camera pose, and a character
-   * tilted to a DIFFERENT angle than the camera that is actually looking at
-   * it would read as visibly wrong the moment it turns.
+   * elevation tilt COHERENT with the camera actually looking at it -- see
+   * that file's "CHARACTER TILT COHERENCE" section. There is a genuine
+   * camera pose to match here, and a character tilted to a DIFFERENT angle
+   * than the camera actually looking at it reads as visibly wrong the moment
+   * it turns. (The retired fixed trapezoid had no real camera angle to
+   * match, which is why `player_renderer_3d.ts`'s `ELEVATION` constant used
+   * to stand in for one.)
    *
    * Note this is invariant to `view.zoom`: `perspectiveRig` scales `height`
    * and `distance` by the SAME `1 / zoom` factor (see that function), so

@@ -30,10 +30,43 @@
 //!
 //! `mod online_match_driver` and the cases after it cover the driver with
 //! this file's own `harness`/`advance`/`run`/`assert_agreement`/
-//! `assert_confirmed_state` helpers. Known coverage gaps: impaired-delivery/
-//! fault-injection scenarios (`wrap_host_transport`/`wrap_guest_transport`),
-//! the settle phase, and the combat-phase loop; see this crate's report for
-//! what is and is not covered here yet.
+//! `assert_confirmed_state` helpers. Known coverage gaps: the settle phase
+//! and the combat-phase loop; see this crate's report for what is and is not
+//! covered here yet.
+//!
+//! ## Every case declares its delivery model
+//!
+//! A driver-level result is only as meaningful as the wire it was produced
+//! over, and three different wires are in use here on purpose. Stating which
+//! one a case runs is not bookkeeping: the guard probe below used to apply an
+//! undeclared cadence of its own while this very paragraph listed
+//! impaired delivery as a coverage gap, and that mismatch is what let an
+//! unrealistic delivery pattern hold a shipped tunable down (see that case's
+//! doc, and `gc_data::tunables`' `LOCO_PACE_REF_HI`).
+//!
+//!   * **Per-tick, unimpaired** — `advance`/`run`, and therefore most cases
+//!     in this file. The star is pumped every step with no delay, loss or
+//!     jitter. Right for a case about the driver's own arithmetic, where the
+//!     wire is meant to be out of the picture.
+//!   * **Batched, unimpaired** — the seven `converges_during` combat-phase
+//!     scenarios, which pump every Nth step (`deliver_period` in
+//!     `tests/support/online_combat_phases.rs`). Deliberately not a
+//!     production model: withholding pumps leaves more predicted ticks, so
+//!     each correction resimulates more of them. Legitimate because those
+//!     cases assert a POSSIBILITY ("a correction can carry the companion
+//!     through this phase"), and an amplifier does not weaken a possibility
+//!     claim.
+//!   * **Per-tick, impaired by an authored profile** — the guard probe,
+//!     via `fault_transport::FaultTransport` over each of
+//!     `gc_data::network_profiles`' four profiles, wired in the order
+//!     `fault_harness::FaultHarness::advance` uses. This is what production
+//!     looks like (`docs/online/network_architecture.md`: the host fans a
+//!     batch out on every driver tick), and it is required there because
+//!     that case asserts a RATE, which an unshipped cadence cannot measure.
+//!
+//! `wrap_host_transport`/`wrap_guest_transport` on `DriverHarnessOptions` are
+//! the seam all three use; the guard probe is the worked example of layering
+//! a real profile through it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,11 +75,13 @@ use std::sync::OnceLock;
 mod support;
 use support::online_combat_phases;
 
+use gc_data::network_profiles::NetworkProfileName;
 use gc_netcode::coordinator;
 use gc_netcode::fake_star;
 use gc_netcode::fault_transport::{
-    StarTransportAdapter, TransportChannel, TransportMessage, TransportMessageType,
-    TransportPeerEvent, TransportPeerMessage, TransportPeerState, TransportResult, TransportRole,
+    FaultTransport, FaultTransportOptions, SharedFaultTransport, StarTransportAdapter,
+    TransportChannel, TransportMessage, TransportMessageType, TransportPeerEvent,
+    TransportPeerMessage, TransportPeerState, TransportResult, TransportRole,
     TransportStarDiagnostics, TransportState,
 };
 use gc_netcode::input_protocol;
@@ -1204,7 +1239,21 @@ fn canonical_digest(digest: &str) -> bool {
 /// #490's `keeper_fatigue` addendum above, no simulation output moved to
 /// produce this hash — tick zero carries the derivation's initial value,
 /// which is the thing that was deliberately retuned.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "c58d4d413b3e541a";
+///
+/// Re-recorded again by the pass-reception rework, the same mechanism as
+/// #489/#490 above: `match_snapshot::VERSION` bumps 14 -> 15 for the two new
+/// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields, both
+/// on the boundary-zero kickoff checkpoint like any other tick and both
+/// idle (`Nil`) there — no pass has been thrown at tick zero, so this is a
+/// SCHEMA move, not a behavioural one. `2bfc8e9018cecab2` -> `0de5d3e5ef9d7a8a`.
+///
+/// Re-recorded once more when the two re-records above merged: they had
+/// diverged from the same parent (`2bfc8e9018cecab2`) on separate branches
+/// — the keeper rework moving a serialized value, the pass-reception rework
+/// moving the schema — so on the merged tree both apply and neither
+/// branch's hash can be right. Measured from this assertion's own failure
+/// output on the merged tree, per this constant's documented procedure.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "df1452ffa2d0b3ba";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and
@@ -2081,132 +2130,392 @@ mod converges_a_correction_taken_during_each_combat_phase {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The guard probe
+// ---------------------------------------------------------------------------
+//
 // The evidence behind the `guard` scenario's `CanonicalInput` route, and the
 // tripwire that will tell us when it can be promoted to `Policy`.
 //
 // Every geometry arms the whole home side with `guard` and the whole away
 // side with a family that publishes a readable threat, then lets
 // `gameplay_ai/combat/v1` play with no human input at all -- and counts the
-// same thing a phase scenario counts: corrected ticks a peer resimulated in
-// the `guard` phase.
+// separate guards the policy DECIDED to raise that a correction then
+// resimulated.
 //
 // The claim under test is about *rate*, not possibility. When a geometry does
 // clear the bar this fails, and the fix is to move `guard` onto the `Policy`
 // route in `tests/support/online_combat_phases.rs` -- not to raise the bar.
 //
-// **2026-08-25, futsal pitch rework: this case is red on `vs_ranged_scrum`,
-// and it is red for real.** `vs_unarmed_scrum` needed its own `steps` search
-// bound widened at the call site below (see that comment) -- an ordinary
-// consequence of the rework's `LOCO_PACE_REF_LO/HI` retune changing how fast
-// the scrum disperses. `vs_ranged_scrum` is a different shape of finding:
-// its `steps: 480` is untouched (that budget predates this rework, for an
-// unrelated `stagger`-momentum reason -- see the support module's own
-// comment on it) and it now reaches 19+ corrected guard ticks well before
-// the loop even finishes walking its step budget, 4-5x the discriminator's
-// own threshold with every peer agreeing. Instrumented directly: from
-// roughly step 125 on, correction hits land on nearly *every* tick for tens
-// of ticks straight (63 by step 191, peer-for-peer) -- a sustained
-// correction storm, not a handful of extra guards. Widening or narrowing
-// this case's step budget cannot be the fix without gaming the rate this
-// case exists to measure -- exactly the "not to raise the bar" the module
-// doc above already rules out for the sibling situation. Left red on
-// purpose: what this now says is that `guard`'s `CanonicalInput` classification
-// no longer holds for at least one driver-level geometry, which per this
-// module's own doc is a route-promotion call for `tests/support/online_combat_phases.rs`
-// to make -- outside a search-bound fix, and outside this file.
-#[test]
-fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough() {
-    for geometry in &online_combat_phases::GUARD_PROBE {
-        // The support module's geometries are authored against its own
-        // self-contained 960x540 combat fixture pitch (`FIELD` in
-        // `tests/support/online_combat_phases.rs`), which the futsal
-        // re-dimensioning left untouched on purpose -- combat reach is
-        // player-scale, not pitch-scale, and player scale did not move. But
-        // `vs_unarmed_scrum`'s eight bodies are locked in a scrum only until
-        // ordinary football AI pulls them apart to chase the ball, and the
-        // pace curve backing that chase *did* move with the rework
-        // (`LOCO_PACE_REF_LO/HI` 100/240 -> 130/300 px/s, `gc_data::tunables`).
-        // A lower normalized pace for the same authored move speed means
-        // slower accel/turn, which changes how fast the scrum disperses
-        // before the policy ever gets a live target -- confirmed empirically
-        // (a driver-level probe run instrumented on `current_snapshot` each
-        // step): the first Windup/Active on the away side now lands at step
-        // 376, not inside the original 240-step budget. `vs_ranged_scrum`
-        // already carries the identical fix for the identical reason (see
-        // its own `steps: 480` comment in the support module) -- this is the
-        // same search-bound adjustment, made at the call site instead of the
-        // shared fixture so every other consumer of `GUARD_PROBE` (there are
-        // none today, but the array is `pub`) keeps the authored budget.
-        let mut geometry = *geometry;
-        if geometry.id == "vs_unarmed_scrum" {
-            geometry.steps = 480;
+// # 2026-08-25: the promotion was measured, and it is not warranted
+//
+// This case's own doc used to say a promotion "would likely lift the speed
+// ceiling entirely" -- `LOCO_PACE_REF_HI` was pinned at 280 because of the
+// number this probe reported. That reading was checked directly and it does
+// not hold. Across `LOCO_PACE_REF_HI` 280 / 292 / 300, both delivery
+// cadences, all four authored profiles and three network seeds each:
+//
+//   * `vs_light_melee_duels`, `vs_unarmed_scrum` and `vs_ranged_lines`
+//     produce ZERO guards. Not few -- none, in every cell of that sweep.
+//   * `vs_ranged_scrum` produces AT MOST ONE, and never more, in any cell.
+//
+// One decision, on one of four geometries, is not a scenario the `Policy`
+// route could carry -- which is exactly the judgement the support module's
+// prose already recorded ("One commit is not a scenario"). What moved the
+// ceiling was not the route but the counting unit: the old one reported that
+// single decision as anything from 0 to 240, because a guard is held and a
+// storm resimulates each held tick again under every correction. Fixing the
+// unit is what freed `LOCO_PACE_REF_HI`; see its comment in `gc_data::tunables`
+// for what now stands between 280 and 300 (a baseline re-freeze, not netcode).
+//
+// So the tripwire stays armed and `guard` stays on `CanonicalInput`. What
+// would actually change that answer is the policy learning to guard more
+// often, which this case would then report honestly.
+//
+// # The delivery model, and why it is not the rest of this file's
+//
+// Every other case here drives `advance`/`run`, which pump an unimpaired
+// `fake_star` every step, and the seven `converges_during` phase scenarios
+// pump it every Nth step instead. This probe does neither. It pumps every
+// step AND runs each endpoint through a real `gc_data::network_profiles`
+// profile, via `fault_transport::FaultTransport` -- the same wiring, in the
+// same order, that `fault_harness::FaultHarness::advance` uses for the OMP-3
+// fault campaign: tick every endpoint's impairment clock, advance every
+// driver, pump the star once.
+//
+// It used to pump only every 5th step over a zero-latency, zero-loss,
+// zero-jitter `FakeStarTransport`: a worse-than-production delivery pattern
+// over a better-than-production wire. Production does the opposite -- per
+// `docs/online/network_architecture.md` the host fans a batch out on every
+// driver tick, 420 sends per second at seven guests -- so neither half of
+// that pairing modelled anything the game ships, and the speed ceiling the
+// probe reported was partly an artifact of the combination.
+//
+// Measured, `vs_ranged_scrum` over the batched cadence plus the MILDEST
+// authored profile (`Omp0Parity` -- 3-tick delay, 1% loss, no jitter), old
+// counting unit, `LOCO_PACE_REF_HI` swept:
+//
+//     280 px/s -> 68 / 11 / 11   (3 network seeds)
+//     292 px/s ->  0 /  0 /  0
+//     300 px/s -> 56 / 56 / 56
+//
+// Not monotonic in movement speed: a fixed-period drain aliases against the
+// sim's own periodicities, so 292 sat in a trough that says nothing about
+// 292. Pumping every tick removes the aliasing, and running the wire through
+// a real `gc_data::network_profiles` profile puts the impairment where
+// production has it -- in the link, not in a withheld pump.
+//
+// # ... and a fixed unit, which is the half that actually moved the ceiling
+//
+// Per-tick delivery alone does NOT stabilise the old number: the same sweep
+// under the per-tick relay swings just as hard (`Stress`, old unit:
+// 166 at 280, 42 at 292, 162 at 300). What stabilises it is counting the
+// right thing. Both cadences agree, at every speed and on every profile,
+// that `vs_ranged_scrum` contains AT MOST ONE guard the policy decided to
+// raise; the old unit reported anywhere from 0 to 240 for that one decision,
+// because a guard is held (66 ticks, measured) and a correction storm
+// resimulates each of those ticks again under every correction. The unit,
+// not the cadence, is why this case used to hold `LOCO_PACE_REF_HI` down --
+// see `online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM`'s own doc, and
+// `gc_data::tunables`' `LOCO_PACE_REF_HI` comment, which records this sweep.
+//
+// Both changes are still right. The cadence one is right because a rate
+// measured under a delivery pattern the game does not ship is not that rate,
+// which stands on the architecture document alone.
+//
+// Batching remains the right tool for the seven `converges_during` phase
+// scenarios, and that is not a contradiction: they assert a POSSIBILITY --
+// that a correction CAN carry the companion through a named phase -- and an
+// amplifier that makes a possibility easier to demonstrate does not weaken
+// it. See the support module's own note.
+//
+// # Profiles, not one profile
+//
+// Every authored profile gets its own case, so a failure names the connection
+// it failed on, and the three impaired ones each run several network seeds --
+// a rate that holds on one RNG stream is not a rate.
+//
+// `Clean` is the control rather than a discriminator, and it is worth being
+// honest about the difference. With no delay, loss or jitter the host
+// corrects exactly ONCE over a whole run -- measured, on all four geometries,
+// at both 280 and 300, while the one guest corrects between 97 and 371 times.
+// Since the bar is "every peer reaches it" and therefore reads the weakest
+// peer, the `Clean` case is effectively a statement about a host that barely
+// rolls back. It is kept because it isolates the relay's own one-step fan-out
+// latency from anything a profile adds, and because a probe whose control
+// stopped correcting altogether would be worth knowing about -- not because
+// it could ever fire the tripwire.
+
+/// One guard-probe run's counts.
+struct GuardProbeOutcome {
+    /// Per peer, host first: separate guards the policy decided to raise that
+    /// a correction then resimulated. Rising edges, deduplicated by input
+    /// tick — see [`observe_guard_commit`] for why neither is optional.
+    guards: Vec<i64>,
+    /// Per peer, host first: rollback corrections the driver reported.
+    rollbacks: Vec<i64>,
+    /// Steps on which some away outfielder telegraphed a readable threat.
+    threat_ticks: i64,
+}
+
+impl GuardProbeOutcome {
+    /// The count on the peer that saw the fewest guards. The bar is "every
+    /// peer reaches it", so the weakest peer decides.
+    fn weakest(&self) -> i64 {
+        self.guards
+            .iter()
+            .copied()
+            .min()
+            .expect("a probe run seats at least one peer")
+    }
+}
+
+/// Is input tick `tick`, which a correction on `driver` just resimulated and
+/// [`online_combat_phases::observed`] recognised as a live guard, a guard the
+/// policy newly DECIDED to raise — and not one already credited?
+///
+/// Two independent things would otherwise inflate this away from the rate the
+/// probe claims to measure:
+///
+/// 1. A guard is a *held* action, so one decision holds for as long as the
+///    bot keeps holding — 66 consecutive ticks, measured. A snapshot at a
+///    tick is the state that tick was simulated *from*, so a guard already
+///    live at `tick - 1` is that same decision continuing, not another one.
+/// 2. A correction storm resimulates the same tick under correction after
+///    correction, and each pass would count again. `counted` carries the
+///    ticks already credited on this peer, and grows by `tick` on a `true`.
+///
+/// Together they are the difference between 1 and 240 on the same run — see
+/// [`online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM`]'s own doc.
+fn observe_guard_commit(
+    driver: &match_driver::MatchDriver,
+    tick: i64,
+    counted: &mut Vec<i64>,
+) -> bool {
+    if counted.contains(&tick) {
+        return false;
+    }
+    // No boundary at `tick - 1` at all means nothing was holding a guard
+    // into this tick, so this is the edge.
+    let held_already = match_driver::snapshot(driver, tick - 1)
+        .snapshot
+        .is_some_and(|previous| online_combat_phases::guard_live(&previous));
+    if held_already {
+        return false;
+    }
+    counted.push(tick);
+    true
+}
+
+/// Wraps one endpoint in a [`FaultTransport`] running `profile`, keeping a
+/// handle on it in `collected` so the probe loop can drive its impairment
+/// clock. `index` is the peer's 1-based seat, which seeds the endpoint the
+/// same way [`gc_netcode::fault_harness`] seeds its own clients: one private
+/// stream per endpoint, never the match seed.
+fn impaired_endpoint(
+    inner: Box<dyn StarTransportAdapter>,
+    profile: NetworkProfileName,
+    network_seed: f64,
+    index: i64,
+    legs: Vec<String>,
+    collected: &Rc<RefCell<Vec<Rc<RefCell<FaultTransport>>>>>,
+) -> Box<dyn StarTransportAdapter> {
+    let fault = FaultTransport::new(FaultTransportOptions {
+        transport: inner,
+        profile,
+        seed: network_seed + index as f64 * 101.0,
+        legs,
+        poll_order: None,
+        duplicate_control_every: None,
+    });
+    let shared = Rc::new(RefCell::new(fault));
+    collected.borrow_mut().push(shared.clone());
+    Box::new(SharedFaultTransport::new(shared))
+}
+
+/// Drives one guard-probe geometry over `profile` at `network_seed` and
+/// returns what it counted.
+fn run_guard_probe(
+    geometry: &online_combat_phases::OnlineGuardProbeGeometry,
+    profile: NetworkProfileName,
+    network_seed: f64,
+) -> GuardProbeOutcome {
+    let peer_ids = match_driver_fixture::peer_ids(MatchMode::OneVOne, None);
+    let host_peer_id = peer_ids[0].clone();
+    let guest_peer_ids: Vec<String> = peer_ids[1..].to_vec();
+    // Host first, then guests in seating order -- `harness` wraps in that
+    // order, so push order is seat order and no sort is needed.
+    let endpoints: Rc<RefCell<Vec<Rc<RefCell<FaultTransport>>>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
+    let host_collected = endpoints.clone();
+    let wrap_host: WrapHostTransport = Box::new(move |inner| {
+        impaired_endpoint(
+            inner,
+            profile,
+            network_seed,
+            1,
+            guest_peer_ids.clone(),
+            &host_collected,
+        )
+    });
+    let guest_collected = endpoints.clone();
+    let wrap_guest: WrapGuestTransport = Box::new(move |index, inner| {
+        impaired_endpoint(
+            inner,
+            profile,
+            network_seed,
+            index,
+            vec![host_peer_id.clone()],
+            &guest_collected,
+        )
+    });
+
+    let mut state = harness(
+        MatchMode::OneVOne,
+        DriverHarnessOptions {
+            initial_snapshot: Some(online_combat_phases::guard_probe_boundary_zero(
+                geometry, None,
+            )),
+            wrap_host_transport: Some(wrap_host),
+            wrap_guest_transport: Some(wrap_guest),
+            ..Default::default()
+        },
+    );
+    let first = state.session.freeze.first_input_tick;
+    let mut guards = vec![0i64; state.drivers.len()];
+    let mut counted: Vec<Vec<i64>> = vec![Vec::new(); state.drivers.len()];
+    let mut threat_ticks = 0i64;
+    for step in 1..=geometry.steps {
+        // The impairment clock moves before the drivers poll, and the star
+        // fans out after they send: `fault_harness::FaultHarness::advance`'s
+        // order, which is the production one.
+        for endpoint in endpoints.borrow().iter() {
+            endpoint.borrow_mut().tick(step);
         }
-        let geometry = &geometry;
-        let mut state = harness(
-            MatchMode::OneVOne,
-            DriverHarnessOptions {
-                initial_snapshot: Some(online_combat_phases::guard_probe_boundary_zero(
-                    geometry, None,
-                )),
-                ..Default::default()
-            },
-        );
-        let first = state.session.freeze.first_input_tick;
-        let mut observed = vec![0i64; state.drivers.len()];
-        let mut threat_ticks = 0i64;
-        for step in 1..=geometry.steps {
-            for (index, driver) in state.drivers.iter_mut().enumerate() {
-                let present_before = match_driver::diagnostics(driver).present_input_tick;
-                let batch = match_driver::advance(driver, Some(input_frame::neutral_sample()));
-                if batch.rollbacks > 0 {
-                    for output in &batch.outputs {
-                        let tick = output.tick + first;
-                        if tick < present_before {
-                            let before = match_driver::snapshot(driver, tick).snapshot;
-                            let after = match_driver::snapshot(driver, tick + 1).snapshot;
-                            if let (Some(before), Some(after)) = (&before, &after) {
-                                let events = output.combat_events.as_deref().unwrap_or(&[]);
-                                if online_combat_phases::observed("guard", before, after, events) {
-                                    observed[index] += 1;
-                                }
+        for (index, driver) in state.drivers.iter_mut().enumerate() {
+            let present_before = match_driver::diagnostics(driver).present_input_tick;
+            let batch = match_driver::advance(driver, Some(input_frame::neutral_sample()));
+            if batch.rollbacks > 0 {
+                for output in &batch.outputs {
+                    let tick = output.tick + first;
+                    if tick < present_before {
+                        let before = match_driver::snapshot(driver, tick).snapshot;
+                        let after = match_driver::snapshot(driver, tick + 1).snapshot;
+                        if let (Some(before), Some(after)) = (&before, &after) {
+                            let events = output.combat_events.as_deref().unwrap_or(&[]);
+                            if online_combat_phases::observed("guard", before, after, events)
+                                && observe_guard_commit(driver, tick, &mut counted[index])
+                            {
+                                guards[index] += 1;
                             }
                         }
                     }
                 }
             }
-            if step % geometry.deliver_period == 0 {
-                state.session.host_transport.pump();
-            }
-            // Away runtimes are indexes 7..10 (1-based); 6 is the protected
-            // keeper, so this is `companion.players[6..]` zero-based.
-            let snapshot = match_driver::current_snapshot(&state.drivers[0]);
-            let companion = snapshot.combat.as_ref().expect("geometry needs combat");
-            for runtime in &companion.players[6..] {
-                if matches!(
-                    runtime.phase,
-                    gc_sim::combat_feasibility::CombatActionPhase::Windup
-                        | gc_sim::combat_feasibility::CombatActionPhase::Active
-                ) {
-                    threat_ticks += 1;
-                }
-            }
-            threat_ticks += companion.projectiles.len() as i64;
         }
-        // Without a readable threat the policy could not guard even in
-        // principle, and a low count here would mean nothing at all.
-        assert!(
-            threat_ticks > 0,
-            "{} never telegraphed a threat, so it probes nothing",
-            geometry.id
-        );
-        let weakest = observed.iter().copied().min().expect("at least one peer");
-        assert!(
-            weakest < online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM,
-            "{} now reaches {weakest} corrected guard ticks on every peer -- promote the guard \
-             scenario to the policy route",
-            geometry.id
-        );
+        state.session.host_transport.pump();
+        // Away runtimes are indexes 7..10 (1-based); 6 is the protected
+        // keeper, so this is `companion.players[6..]` zero-based.
+        let snapshot = match_driver::current_snapshot(&state.drivers[0]);
+        let companion = snapshot.combat.as_ref().expect("geometry needs combat");
+        for runtime in &companion.players[6..] {
+            if matches!(
+                runtime.phase,
+                gc_sim::combat_feasibility::CombatActionPhase::Windup
+                    | gc_sim::combat_feasibility::CombatActionPhase::Active
+            ) {
+                threat_ticks += 1;
+            }
+        }
+        threat_ticks += companion.projectiles.len() as i64;
     }
+    let rollbacks = state
+        .drivers
+        .iter()
+        .map(|driver| match_driver::diagnostics(driver).rollback_count)
+        .collect();
+    GuardProbeOutcome {
+        guards,
+        rollbacks,
+        threat_ticks,
+    }
+}
+
+/// Runs every geometry over `profile` at every seed in `network_seeds` and
+/// asserts none of them reaches [`online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM`].
+fn finds_no_geometry_that_guards_often_enough(profile: NetworkProfileName, network_seeds: &[f64]) {
+    for geometry in &online_combat_phases::GUARD_PROBE {
+        for &network_seed in network_seeds {
+            let outcome = run_guard_probe(geometry, profile, network_seed);
+            // Without a readable threat the policy could not guard even in
+            // principle, and a low count here would mean nothing at all.
+            assert!(
+                outcome.threat_ticks > 0,
+                "{} never telegraphed a threat under {profile:?}/{network_seed}, so it probes \
+                 nothing",
+                geometry.id
+            );
+            // And without a correction there is nothing for a corrected
+            // guard tick to be counted inside, so a zero would say nothing
+            // about the policy either. This is the assertion the batched
+            // cadence never needed and a per-tick relay does: a delivery
+            // model close enough to production could in principle stop
+            // correcting at all, and a probe that passes by not running is
+            // worse than one that fails.
+            for (index, count) in outcome.rollbacks.iter().enumerate() {
+                assert!(
+                    *count > 0,
+                    "{} never corrected peer {} under {profile:?}/{network_seed}, so its guard \
+                     count measures nothing",
+                    geometry.id,
+                    index + 1
+                );
+            }
+            let weakest = outcome.weakest();
+            assert!(
+                weakest < online_combat_phases::GUARD_POLICY_ROUTE_MINIMUM,
+                "{} now reaches {weakest} policy-raised guards on every peer under \
+                 {profile:?}/{network_seed} -- promote the guard scenario to the policy route",
+                geometry.id
+            );
+        }
+    }
+}
+
+/// The three impaired profiles are stochastic; one RNG stream is an anecdote.
+/// Arbitrary but fixed, and never the match seed.
+const GUARD_PROBE_NETWORK_SEEDS: [f64; 3] = [11.0, 23.0, 37.0];
+
+// `Clean` is the control: zero delay, jitter and loss, so what remains is the
+// relay's own one-step fan-out. Deterministic, so one seed is every seed.
+#[test]
+fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough_on_a_clean_link() {
+    finds_no_geometry_that_guards_often_enough(NetworkProfileName::Clean, &[7.0]);
+}
+
+#[test]
+fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough_at_omp0_parity() {
+    finds_no_geometry_that_guards_often_enough(
+        NetworkProfileName::Omp0Parity,
+        &GUARD_PROBE_NETWORK_SEEDS,
+    );
+}
+
+#[test]
+fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough_on_a_playable_link() {
+    finds_no_geometry_that_guards_often_enough(
+        NetworkProfileName::Playable,
+        &GUARD_PROBE_NETWORK_SEEDS,
+    );
+}
+
+#[test]
+fn finds_no_driver_level_geometry_where_the_policy_guards_often_enough_under_stress() {
+    finds_no_geometry_that_guards_often_enough(
+        NetworkProfileName::Stress,
+        &GUARD_PROBE_NETWORK_SEEDS,
+    );
 }
 
 // Retired driver-level case: `still_reconciles_if_a_local_insert_ever_reports_a_divergence`.

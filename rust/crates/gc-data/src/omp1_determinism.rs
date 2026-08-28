@@ -456,16 +456,31 @@ mod tests {
         // settled at 280 (see gc_data::tunables) shortly after the resize
         // landed, moving both values a second time before either shipped;
         // the pair above is the value at 280, not an intermediate 300.
-        // The 2026-08-26 goalkeeper race-to-ball rework (keeper_engagement
-        // v2 band widening, rescaled keeper_aggression in stats.rs, the new
-        // keeper_intercept band set, and arc_target wiring in keeper::behavior)
-        // moved both again: the replay's frozen input frames drive the
-        // outfielders only, but the keeper's own AI reacts to the same ball
-        // state differently from tick 0, so every boundary diverges again.
-        // final hash 02085004777f30a4 -> 51d1e26eb1dc66dc, sequence digest
-        // bcf2dfa7e1ae7221 -> 831e70be42afdbc1.
-        assert_eq!(f.expected_final_hash, "51d1e26eb1dc66dc");
-        assert_eq!(f.expected_sequence_digest, "831e70be42afdbc1");
+        // The pass-reception rework (`MatchPlayer::receive_target` and
+        // `MatchState::stick_latch` added, `match_snapshot::VERSION` 14 ->
+        // 15, `COMBAT_VERSION` 15 -> 16) moved both again: final hash
+        // 02085004777f30a4 -> 61c50495d826ce10, sequence digest
+        // bcf2dfa7e1ae7221 -> f7d42a56513aa355. This is also the first
+        // re-record where `identity.snapshot_version` itself had to move
+        // (14 -> 15, in the JSON's frozen half): `input_tape::copy_identity`
+        // rejects any `snapshot_version` that is not the current
+        // `match_snapshot::VERSION` or `COMBAT_VERSION`, so the frozen
+        // identity is kept one schema version ahead by hand on every
+        // `VERSION` bump, same as `boundary_hash_lines()[0]` below (a
+        // hand-edit to the checked-in JSON, not something the recorder
+        // derives -- see `rerecorded_json`'s frozen-field check, which only
+        // asserts self-consistency against whatever is currently checked
+        // in).
+        // PR #628 merged the keeper race-to-ball rework onto main's
+        // pass-reception/first-touch/juke reworks (first-touch shot #627,
+        // juke carry #632); both branches had independently re-recorded
+        // this fixture against their own trajectories, so the merged tree
+        // matches neither and records fresh here: final hash
+        // 61c50495d826ce10 -> 0ea20e91bccfe7c8, sequence digest
+        // f7d42a56513aa355 -> b78600c5267f548e. `match_snapshot::VERSION`
+        // did not move (still 15) -- this is a behavior-only re-record.
+        assert_eq!(f.expected_final_hash, "0ea20e91bccfe7c8");
+        assert_eq!(f.expected_sequence_digest, "b78600c5267f548e");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -481,7 +496,7 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "e0919bfa6379a2a9");
+        assert_eq!(boundary_hash_lines()[0], "70f36f73654a0807");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
@@ -495,18 +510,26 @@ mod tests {
         // change, but the kickoff positions this boundary hashes are laid
         // out relative to a pitch that is now a different size
         // (2226cce944213655 -> 115aedc598345a71).
-        // The 2026-08-26 goalkeeper race-to-ball rework moved it again, and
-        // for a third reason: `keeper_aggression` is a per-player field
-        // baked into every `MatchPlayer` snapshot -- including the zero-tick
-        // kickoff one -- straight from `stats::keeper_aggression`, so
-        // rescaling that stat's constants (stats.rs, 18/2/2 -> 31/3.5/3.5)
-        // moves boundary 0 with no simulation ticks run at all
-        // (115aedc598345a71 -> e0919bfa6379a2a9).
+        // The pass-reception rework moved it again by a schema bump:
+        // `match_snapshot::VERSION` 14 -> 15 for the new
+        // `MatchPlayer::receive_target` and `MatchState::stick_latch`
+        // fields, present (as their default/absent encoding) on this
+        // zero-tick kickoff snapshot too (115aedc598345a71 ->
+        // 2de23cb0f805ac9f).
+        //
+        // PR #628 merged the keeper race-to-ball rework onto main's
+        // pass-reception/first-touch/juke reworks; both sides had
+        // independently re-recorded this fixture from their own
+        // trajectories, so neither baseline matches the merged tree and it
+        // records fresh here. `match_snapshot::VERSION` did not move (still
+        // 15), but both per-tick locomotion and possession resolution did,
+        // so every boundary moved again, including this first one
+        // (2de23cb0f805ac9f -> 70f36f73654a0807).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "51d1e26eb1dc66dc"
+            "0ea20e91bccfe7c8"
         );
     }
 

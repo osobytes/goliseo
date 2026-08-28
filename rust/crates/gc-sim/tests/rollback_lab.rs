@@ -555,15 +555,26 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // those boundaries, so it moves whenever any of them do, same as the
     // #572/#578 entries above.
     //
-    // And again for the 2026-08-26 goalkeeper race-to-ball rework
-    // (`keeper_engagement` v2, `keeper_aggression`'s rescale in `stats.rs`,
-    // `keeper::behavior`'s `arc_target` wiring, and the new
-    // `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase),
-    // in the SAME commit as `gc_data::omp1_determinism`'s own re-record of
-    // every one of those fields -- same shape as every prior re-record
-    // above: this digest folds in the OMP-1 fixture's derived boundaries,
-    // so it moves whenever they do.
-    assert_eq!(rollback_lab::tape_digest(&tape), "b006219320f07f5e");
+    // And again for the pass-reception rework (`MatchPlayer::receive_target`
+    // and `MatchState::stick_latch` added, `match_snapshot::VERSION` 14 ->
+    // 15, `COMBAT_VERSION` 15 -> 16): every derived boundary hash moved,
+    // including the first (a schema bump, same reasoning as #531/#489/#490
+    // above), same commit as `gc_data::omp1_determinism`'s own re-record of
+    // `expected_final_hash`, `expected_sequence_digest`,
+    // `boundary_hash_lines()[0]` and `boundary_hash_lines()[last]`, and
+    // `identity.snapshot_version` 14 -> 15 (f2ab89ab575b4d1a ->
+    // 728456d9392e8bee).
+    //
+    // And again for PR #628's merge of the keeper race-to-ball/engagement
+    // rework onto main's pass-reception/first-touch-shot (#627)/juke-carry
+    // (#632) reworks: neither parent's independently re-recorded OMP-1
+    // derived half survives the merge (see
+    // `gc-data/src/omp1_determinism.json`'s and `omp1_determinism.rs`'s own
+    // re-record in the same commit), and every derived boundary hash this
+    // digest folds in moved again -- `identity.snapshot_version` did NOT
+    // bump this time (still 15), so this is a behavior-only re-record, the
+    // same shape as #572/#578 above (728456d9392e8bee -> 06c5e527755e470f).
+    assert_eq!(rollback_lab::tape_digest(&tape), "06c5e527755e470f");
 }
 
 #[test]

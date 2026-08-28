@@ -39,9 +39,17 @@ pub struct Golden {
 }
 
 /// The pinned golden vectors.
+///
+/// 2026-08-26: `snapshot_version`/`combat_version` bumped 14 -> 15 / 15 -> 16
+/// for the pass-reception rework (`MatchPlayer::receive_target`,
+/// `MatchState::stick_latch`). These two fields are documentation-only (see
+/// the module doc comment) and do not affect `guest_wire`/`host_wire` --
+/// those embed `input_protocol_fixture::MANIFEST_ID`, which is deliberately
+/// frozen (see that constant's own doc comment) and untouched by this
+/// bump -- so only the two version integers here move.
 pub const GOLDEN: Golden = Golden {
-    snapshot_version: 14,
-    combat_version: 15,
+    snapshot_version: 15,
+    combat_version: 16,
     // The embedded manifest id moved with #268's `max_goals` 5 -> 99 (no goal
     // limit). The packet payloads either side of it are byte-identical, and
     // `maximal_wire_bytes` does not move: `fixture::maximal` carries a

@@ -348,27 +348,49 @@ fn an_inverted_speed_range_clamps_instead_of_panicking() {
 // between four independently-authored knobs, and any one of them drifting is
 // what reintroduces it.
 
-/// The furthest a pass can legally be aimed: the selection filter's ceiling,
-/// plus the lead solve's own projection of a receiver running flat out.
-fn furthest_aimable(tune: &Tuning) -> f64 {
+// HISTORY: this used to assert `reach >= PASS_ELIGIBLE_MAX +
+// PASS_LEAD_TIME_MAX * LOCO_PACE_REF_HI` — the furthest LED aim. That bound
+// was computed with the wrong receiver speed: the lead solver reads
+// `run_vel`, whose sprinting maximum is `LOCO_PACE_REF_HI * SPRINT_MULT`
+// (280 × 1.35 = 378 px/s), not the bare 280. At the true speed the old
+// assertion is violated by ~83 px with the shipped knobs — it only passed
+// by under-measuring. The led case is now enforced STRUCTURALLY instead:
+// `pass_lead::solve` refuses any candidate consuming more than
+// `pass_lead::REACH_MARGIN` of its own launch's roll-out (see
+// tests/pass_lead.rs), so no knob relationship can reintroduce a led pass
+// that dies short. What remains a knob relationship is the UNLED case
+// below.
+
+#[test]
+fn an_unled_pass_can_always_roll_as_far_as_it_can_legally_be_aimed() {
+    // An unled pass aims at the receiver's current feet, and selection caps
+    // that distance at PASS_ELIGIBLE_MAX. Nothing structural clamps it, so
+    // the knobs must keep agreeing.
+    let tune = Tuning::new();
+    let reach = passing::reach(&tune);
     let eligible = tune.value(passing::ELIGIBLE_MAX_KNOB);
-    let lead_time = tune.value(pass_lead::TIME_MAX_KNOB);
-    let top_speed = tune.value("LOCO_PACE_REF_HI");
-    eligible + lead_time * top_speed
+    assert!(
+        reach >= eligible,
+        "an unled pass can be aimed {eligible:.1} px away but can only roll \
+         {reach:.1} px: every pass past {reach:.1} px dies short by \
+         construction. Raise PASS_SPEED_MAX (reach = PASS_SPEED_MAX / \
+         FRICTION) or lower PASS_ELIGIBLE_MAX."
+    );
 }
 
 #[test]
-fn a_pass_can_always_roll_as_far_as_it_can_legally_be_aimed() {
+fn a_clamped_lead_still_stretches_past_the_eligibility_ceiling() {
+    // The solver's REACH_MARGIN clamp must not be so tight that a led pass
+    // cannot even reach where an unled one legally aims — leading must
+    // never be the SHORTER option.
     let tune = Tuning::new();
     let reach = passing::reach(&tune);
-    let aimable = furthest_aimable(&tune);
+    let eligible = tune.value(passing::ELIGIBLE_MAX_KNOB);
     assert!(
-        reach >= aimable,
-        "a pass can be aimed {aimable:.1} px away but can only roll {reach:.1} px: \
-         every pass past {reach:.1} px dies short by construction. Raise \
-         PASS_SPEED_MAX (reach = PASS_SPEED_MAX / FRICTION), lower \
-         PASS_ELIGIBLE_MAX, or shorten PASS_LEAD_TIME_MAX -- but do not leave \
-         them disagreeing."
+        reach * pass_lead::REACH_MARGIN >= eligible,
+        "the furthest admissible led aim ({:.1} px) is inside the \
+         eligibility ceiling ({eligible:.1} px)",
+        reach * pass_lead::REACH_MARGIN
     );
 }
 

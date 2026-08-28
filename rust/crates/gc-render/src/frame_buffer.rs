@@ -379,15 +379,16 @@ pub fn pose_id_from_code(code: f64) -> Option<PlayerPoseId> {
     }
 }
 
-/// This event kind's wire code: `shot` through `tackle_miss`, 1..26.
+/// This event kind's wire code: `shot` through `first_touch_shot`, 1..27.
 #[must_use]
 pub fn event_kind_code(kind: MatchEventKind) -> f64 {
     use MatchEventKind::{
         Bicycle, Block, Catch, Claim, CombatCommitCarrierContest, CombatCommitCarrierProtection,
         CombatCommitLooseBallContest, CombatCommitPassingLaneOrShotDenial,
-        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, Header, Juke, Parry, Pass,
-        PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall, PressCommitHeavyTouch,
-        PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip, Touch, Volley,
+        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, FirstTouchShot, Header, Juke,
+        Parry, Pass, PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall,
+        PressCommitHeavyTouch, PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip,
+        Touch, Volley,
     };
     (match kind {
         Shot => 1,
@@ -416,6 +417,7 @@ pub fn event_kind_code(kind: MatchEventKind) -> f64 {
         Reception => 24,
         Juke => 25,
         TackleMiss => 26,
+        FirstTouchShot => 27,
     }) as f64
 }
 
@@ -428,9 +430,10 @@ pub fn event_kind_from_code(code: f64) -> Option<MatchEventKind> {
     use MatchEventKind::{
         Bicycle, Block, Catch, Claim, CombatCommitCarrierContest, CombatCommitCarrierProtection,
         CombatCommitLooseBallContest, CombatCommitPassingLaneOrShotDenial,
-        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, Header, Juke, Parry, Pass,
-        PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall, PressCommitHeavyTouch,
-        PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip, Touch, Volley,
+        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, FirstTouchShot, Header, Juke,
+        Parry, Pass, PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall,
+        PressCommitHeavyTouch, PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip,
+        Touch, Volley,
     };
     match code as i64 {
         1 => Some(Shot),
@@ -459,6 +462,7 @@ pub fn event_kind_from_code(code: f64) -> Option<MatchEventKind> {
         24 => Some(Reception),
         25 => Some(Juke),
         26 => Some(TackleMiss),
+        27 => Some(FirstTouchShot),
         _ => None,
     }
 }
@@ -1198,7 +1202,7 @@ mod enum_coverage {
 
     #[test]
     fn event_kind_round_trips_every_member() {
-        for code in 1..=26 {
+        for code in 1..=27 {
             let kind = event_kind_from_code(code as f64)
                 .unwrap_or_else(|| panic!("no event kind for code {code}"));
             assert_eq!(event_kind_code(kind), code as f64);

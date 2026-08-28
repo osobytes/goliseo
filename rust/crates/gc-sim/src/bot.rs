@@ -45,7 +45,12 @@ const PASS_CHARGE_HOLD: f64 = 0.22; // short hold reaches a deliberate mid/long 
 const SHOOT_EAGERNESS: f64 = 1.15; // shoots a bit outside the AI's own range
 const PRESSURE_PANIC: f64 = 1.3; // passes when pressed at this x the AI's radius
 const JUKE_REACT_DIST: f64 = 64.0; // sidestep a defender who has committed inside this range
-const LONG_OUTLET_DIST: f64 = 240.0; // charge and sometimes loft passes beyond this distance
+// 2026-08-26: 240 -> 412 (k = 1.7167), missed by the futsal rescale: a
+// "long outlet" threshold is an on-pitch distance, and 240 px on the new
+// pitch is a 5.8 m tap no bot should charge for. 412 px (10 m) restores the
+// old proportion and sits where the charged range curve (190 + charge x
+// 700) actually starts buying distance (charge ~ 0.32).
+const LONG_OUTLET_DIST: f64 = 412.0; // charge and sometimes loft passes beyond this distance
 const AERIAL_STRIKE_Z: f64 = 18.0; // first-time intent begins above the ground-control band
 const AERIAL_STRIKE_DIST: f64 = 84.0; // mirrors the match's readable aerial anticipation window
 const DEFEND_JOCKEY_DIST: f64 = 70.0; // shadow instead of chase inside this range

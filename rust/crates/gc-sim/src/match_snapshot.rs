@@ -50,6 +50,15 @@ use gc_data::tactics::MarkingConfig;
 
 /// Soccer-only snapshot format version.
 ///
+/// 14 -> 15 (pass-reception rework): added `MatchPlayer::receive_target`,
+/// the reception point a released pass was aimed at (the lead solver's
+/// point, a lob's landing spot, or the receiver's feet), which the
+/// designated receiver's steering runs onto; and `MatchState::stick_latch`,
+/// the launch direction held over from a pass whose control switched to the
+/// receiver, used to tell a stale aim-hold from deliberate receiver
+/// steering. Both are ordinary simulation state read by movement every tick
+/// and must survive rollback resimulation like any other field here.
+///
 /// 13 -> 14 (#490): added `MatchPlayer::keeper_fatigue`, the keeper's save
 /// fatigue pool. Ordinary simulation state: drained at each resolved save,
 /// integrated back at a per-second rate on every fixed tick, and read by the
@@ -67,8 +76,13 @@ use gc_data::tactics::MarkingConfig;
 /// protocol -- nothing about it crosses the network -- but it is ordinary
 /// simulation state and must survive rollback resimulation like any other
 /// field here.
-pub const VERSION: i64 = 14;
+pub const VERSION: i64 = 15;
 /// Combat-companion snapshot format version.
+///
+/// 15 -> 16 (pass-reception rework): kept one ahead of [`VERSION`] — the
+/// combat companion shares the same structs, so
+/// `MatchPlayer::receive_target` and `MatchState::stick_latch` move this
+/// one too.
 ///
 /// 14 -> 15 (#490): kept one ahead of [`VERSION`], for the same reason the
 /// previous bump was -- the combat companion's `MatchPlayer` shape is the same
@@ -81,7 +95,7 @@ pub const VERSION: i64 = 14;
 /// equal (`snapshot.version == VERSION || snapshot.version == COMBAT_VERSION`
 /// is how a restore tells the two wire shapes apart), which is exactly the
 /// collision leaving this at 13 would have produced.
-pub const COMBAT_VERSION: i64 = 15;
+pub const COMBAT_VERSION: i64 = 16;
 
 /// Fixed fixture size: five players per side, ten total.
 pub const PLAYER_COUNT: usize = 10;
@@ -297,6 +311,11 @@ pub struct MatchPlayer {
     pub throw_timer: f64,
     /// Seconds this player is running onto an incoming pass.
     pub receive_timer: f64,
+    /// Where the pass this player is receiving was aimed — the reception
+    /// point their steering runs onto while the ball is inbound. Only
+    /// meaningful while `receive_timer > 0`; cleared with it wherever the
+    /// pass resolves.
+    pub receive_target: Option<Vec2>,
     /// 0..1 stamina tank for sprinting.
     pub sprint_meter: f64,
     /// Seconds a full tank lasts (stamina-derived).
@@ -417,6 +436,9 @@ pub enum MatchEventKind {
     Reception,
     /// A dodge/juke.
     Juke,
+    /// A grounded first-touch shot: a designated receiver strikes an
+    /// arriving pass first time instead of trapping it (#623).
+    FirstTouchShot,
 }
 
 impl MatchEventKind {
@@ -451,6 +473,7 @@ impl MatchEventKind {
             Bicycle => "bicycle",
             Reception => "reception",
             Juke => "juke",
+            FirstTouchShot => "first_touch_shot",
         }
     }
 }
@@ -514,6 +537,14 @@ pub struct MatchState {
     pub controlled: i64,
     /// Whether `controlled` takes human-input branches.
     pub human_controlled: bool,
+    /// The stick residue of a pass whose control switched to the receiver
+    /// at release: the raw direction the passer was holding when the ball
+    /// left (falling back to the launch bearing for a facing-aimed pass).
+    /// A held direction inside the latch cone reads as stale — the same
+    /// aim-and-motion gesture, continued — and receive assist keeps
+    /// steering; neutral or a clear redirect clears it and input wins
+    /// outright. `None` whenever no such handoff is pending.
+    pub stick_latch: Option<Vec2>,
     /// Match score.
     pub score: ByTeam<i64>,
     /// Seconds remaining.
@@ -1209,6 +1240,13 @@ fn append_player(w: &mut Encoder, player: &MatchPlayer) {
     field!("grab_timer", scalar_num(player.grab_timer));
     field!("throw_timer", scalar_num(player.throw_timer));
     field!("receive_timer", scalar_num(player.receive_timer));
+    w.name("receive_target");
+    if let Some(target) = player.receive_target {
+        w.literal("v;");
+        w.vec(target);
+    } else {
+        w.scalar(CanonicalScalar::Nil);
+    }
     field!("sprint_meter", scalar_num(player.sprint_meter));
     field!("sprint_dur", scalar_num(player.sprint_dur));
     field!("sprinting", scalar_bool(player.sprinting));
@@ -1351,6 +1389,13 @@ fn append_state(
     field!("owner", scalar_opt_i(state.owner));
     field!("controlled", scalar_i(state.controlled));
     field!("human_controlled", scalar_bool(state.human_controlled));
+    encoder.name("stick_latch");
+    if let Some(latch) = state.stick_latch {
+        encoder.literal("v;");
+        encoder.vec(latch);
+    } else {
+        encoder.scalar(CanonicalScalar::Nil);
+    }
     encoder.name("score");
     encoder.scalar(scalar_i(state.score.home));
     encoder.scalar(scalar_i(state.score.away));
@@ -2143,6 +2188,21 @@ fn diff_player(path: &str, a: &MatchPlayer, b: &MatchPlayer) -> Option<MatchSnap
         a.receive_timer,
         b.receive_timer
     );
+    match (a.receive_target, b.receive_target) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => {
+            return Some(diff(
+                format!("{path}.receive_target"),
+                a.receive_target.is_some(),
+                b.receive_target.is_some(),
+            ));
+        }
+        (Some(at), Some(bt)) => {
+            if let Some(d) = diff_vec2(format!("{path}.receive_target"), at, bt) {
+                return Some(d);
+            }
+        }
+    }
     diff_num!(
         format!("{path}.sprint_meter"),
         a.sprint_meter,
@@ -2323,6 +2383,21 @@ fn first_difference_canonical_inner(
         sa.human_controlled,
         sb.human_controlled
     );
+    match (sa.stick_latch, sb.stick_latch) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => {
+            return Some(diff(
+                "state.stick_latch".to_string(),
+                sa.stick_latch.is_some(),
+                sb.stick_latch.is_some(),
+            ));
+        }
+        (Some(al), Some(bl)) => {
+            if let Some(d) = diff_vec2("state.stick_latch".to_string(), al, bl) {
+                return Some(d);
+            }
+        }
+    }
     diff_eq!("state.score.home", sa.score.home, sb.score.home);
     diff_eq!("state.score.away", sa.score.away, sb.score.away);
     diff_num!("state.time_left", sa.time_left, sb.time_left);

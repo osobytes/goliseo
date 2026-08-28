@@ -53,6 +53,10 @@ pub struct AiDrivenEvidence {
     pub score_home: f64,
     /// Final away score.
     pub score_away: f64,
+    /// Shot events across the whole run — the played-scenario canary
+    /// asserts on this rather than goals (a well-played 0-0 exercises the
+    /// shooting path just as fully; see gc-sim's ai_driven_evidence).
+    pub shots: f64,
 }
 
 /// Replay the AI-driven reference match inside this wasm module and return its
@@ -85,5 +89,6 @@ pub fn run_ai_driven_evidence_to(ticks: f64) -> AiDrivenEvidence {
         sequence_digest: result.sequence_digest,
         score_home: result.score_home as f64,
         score_away: result.score_away as f64,
+        shots: result.shots as f64,
     }
 }

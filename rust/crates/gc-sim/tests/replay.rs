@@ -76,26 +76,30 @@ use gc_sim::tuning::Tuning;
 // locomotion path -- boundary 0 (no ticks stepped) is untouched by a pace
 // tunable and stayed put. Re-derived from this build.
 //
-// 2026-08-26 goalkeeper race-to-ball EXCEPTION: unlike every gameplay-only
-// entry above, this one moves boundary 0 too, and for a reason that has
-// nothing to do with a stepped tick: `keeper_aggression` is a per-player
-// field baked straight into every `MatchPlayer` snapshot from
-// `stats::keeper_aggression` when the match is constructed
-// (`r#match::new`), including the zero-tick kickoff capture this boundary
-// hashes. Rescaling that stat's constants in `stats.rs` (18/2/2 -> 31/3.5/
-// 3.5) therefore moves boundary 0 with no ticks run at all. Boundaries 1..3
-// move again on top of that, through the stepped-tick keeper positioning
-// path (`keeper_engagement`'s v2 band widening, `keeper::behavior`'s
-// advance target switching to `arc_target`, and the new
-// `keeper_intercept_target`/`keeper::intercept_race` loose-ball chase in
-// `match.rs`). All four re-derived from this build (`cargo test -p gc-sim
-// --test replay input_tape_replay_deep_copies_snapshot_frames_identity_and_ownership_at_construction`,
-// reading the `observed sequence=` list its own failure message prints).
+// 2026-08-26 pass-reception-rework EXCEPTION, same shape as #531 phase 2 /
+// #489 above: `match_snapshot::VERSION` 14 -> 15 (the new
+// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields) moves
+// boundary 0 again for the schema reason alone -- this fixture has no combat
+// companion and nobody receiving a pass, so both new fields serialize as
+// `Nil` on every player and on the state, but that still changes the
+// canonical byte encoding of the CONSTRUCTED zero-tick state. Boundaries
+// 1..3 move for the same schema reason; this fixture's three stepped ticks
+// (a plain move-x input, no pass thrown) do not exercise the reworked
+// reception steering itself. All four re-derived from this build.
+//
+// PR #628 MERGE EXCEPTION: this branch's keeper race-to-ball/engagement
+// rework was merged onto main's pass-reception, first-touch-shot (#627) and
+// juke-carry (#632) reworks. Both sides had independently re-derived these
+// four hashes from their own trajectories, and the merged tree matches
+// neither -- `match_snapshot::VERSION` did not move again (still 15), but
+// the stepped-tick locomotion/possession paths did, so all four moved
+// together. Re-derived from this build via the `short_match_tape` panic
+// diagnostic.
 const EXPECTED_BOUNDARY_HASHES: [&str; 4] = [
-    "f4120d2fc9bd6e21",
-    "5fe24dd94ccbe9a4",
-    "943c26a8f187b901",
-    "9db041896e16e526",
+    "7327f70d1a77ad89",
+    "329c779137d34622",
+    "3a75426644eb9445",
+    "995ff1e80b1045f2",
 ];
 
 /// Compensating normalization for the `sim::match`/`match_snapshot` marks

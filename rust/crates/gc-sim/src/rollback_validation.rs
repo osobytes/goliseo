@@ -417,6 +417,18 @@ fn repeated_family_roster(loadout_id: &str) -> Vec<PlayerData> {
         .collect()
 }
 
+// NOTE (2026-08-26, checked during the futsal-leftover audit): these
+// coordinates are old-pitch-era (x 95..865, y 200..470 — the 960x540 frame)
+// while the fixtures themselves declare `field=1648x927`. Verified rather
+// than rescaled: what the layout names promise is the RELATIVE scrum
+// geometry — players 38..50 px apart in a dense block, ball adjacent — and
+// that is pitch-scale-independent; every position is in-bounds and
+// wall-clear on the new pitch, so the combat-load/rollback behavior the
+// fixtures exist to pin is exercised unchanged. Rescaling them would churn
+// every pinned hash in `gc_data::omp2_rollback_validation` for zero
+// coverage gain. If a future fixture WANTS pitch-proportional placement
+// (e.g. a scrum against a wall), author it as a new layout instead of
+// moving these.
 fn layout_positions(layout: Omp2RollbackLayout) -> [(f64, f64); 10] {
     match layout {
         Omp2RollbackLayout::Crowded => [

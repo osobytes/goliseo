@@ -288,7 +288,12 @@ pub fn time_to_reach(
             )
         })
         .collect();
-    let steps = (max_time / dt).ceil() as i64;
+    // Floor, not ceil: a ceiled count lets the final step land at
+    // `(i + 1) * dt > max_time`, reporting an arrival up to one tick PAST
+    // the budget as if it were inside it. Callers compare this against a
+    // ball travel time, so that tick admitted leads the receiver misses by
+    // exactly one tick — measured at 12.8% of led releases before the fix.
+    let steps = (max_time / dt).floor() as i64;
     let mut k = body.k;
     let mut pos = body.pos;
     for i in 0..steps {

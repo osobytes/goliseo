@@ -68,7 +68,7 @@
 //! rather than a per-tick one, so no other consumer's query count can change
 //! a release's answer between an original tick and its resimulation.
 
-use crate::ball_flight::BallFlight;
+use crate::ball_flight::{self, BallFlight};
 use crate::ball_prediction::{BallPredictionConfig, BallPredictor};
 use crate::locomotion::{self, ReachBody};
 use crate::match_snapshot::{MatchPlayer, MatchState};
@@ -95,6 +95,34 @@ pub const STEPS_KNOB: &str = "PASS_LEAD_STEPS";
 /// sweep that pushed `PASS_LEAD_STEPS` to its fence must not be able to
 /// multiply the burst past what the rollback matrix was measured against.
 pub const MAX_CANDIDATES: usize = 6;
+
+/// Fraction of a launch's total roll-out (`speed / FRICTION`) a candidate
+/// aim distance may consume before [`solve`] refuses it outright.
+///
+/// A friction ball approaches its roll-out ceiling asymptotically, so the
+/// last few percent of reach cost unbounded time: aims past this margin
+/// either die inside the predictor's horizon as a silent `None`, or arrive
+/// so late the lead was a fantasy. Before this clamp existed the worst
+/// legal aim — `PASS_ELIGIBLE_MAX` plus a *sprinting* receiver's
+/// `PASS_LEAD_TIME_MAX` of run (280 × `SPRINT_MULT` 1.35 = 378 px/s, not
+/// the 280 the old tunables note assumed) — exceeded the physical ceiling
+/// itself, and the failure surfaced as "the solver chose not to lead".
+///
+/// 0.95 is chosen against [`RELEASE_HORIZON`]: a 3.0 s horizon covers
+/// 97.4% of any launch's roll-out (`1 − 0.98¹⁸⁰`), so every candidate this
+/// margin admits is answerable inside the horizon — the two constants are
+/// a pair, and whoever moves one must re-derive the other.
+pub const REACH_MARGIN: f64 = 0.95;
+
+/// The release path's own prediction horizon, seconds.
+///
+/// The shared default (`MAX_HORIZON_DEFAULT`, 2.0 s) is sized for the live
+/// ball's per-tick rebuild. A release burst asks about hypothetical
+/// launches out toward the roll-out ceiling, and a friction ball covers
+/// only 91.1% of that ceiling inside 2.0 s — which silently cut legal long
+/// leads at ~91% of reach. 3.0 s covers 97.4%, clearing everything
+/// [`REACH_MARGIN`] admits (see its doc for the pairing).
+pub const RELEASE_HORIZON: f64 = 3.0;
 
 /// A predictor sized for exactly one release burst.
 ///
@@ -134,13 +162,15 @@ pub const MAX_CANDIDATES: usize = 6;
 ///   adequate for proving the assertion can fail, and it is deliberately not
 ///   presented as proof that the release path can starve itself.
 ///
-/// Everything else stays at [`BallPredictionConfig::default`], including the
-/// horizon and the fixed tick.
+/// Everything else stays at [`BallPredictionConfig::default`] except the
+/// horizon, which is [`RELEASE_HORIZON`] rather than the shared per-tick
+/// default (see that constant for why), and the fixed tick.
 #[must_use]
 pub fn release_predictor() -> BallPredictor {
     let default = BallPredictionConfig::default();
-    let full_horizon_ticks = (default.max_horizon / default.dt).ceil() as i64;
+    let full_horizon_ticks = (RELEASE_HORIZON / default.dt).ceil() as i64;
     BallPredictor::new(BallPredictionConfig {
+        max_horizon: RELEASE_HORIZON,
         step_budget: MAX_CANDIDATES as i64 * full_horizon_ticks,
         ..default
     })
@@ -286,6 +316,16 @@ pub fn solve(
         }
         let speed = passing::speed_for(distance, tune) * speed_scale;
         if speed <= 0.0 {
+            continue;
+        }
+        // Physical-reach clamp: the launch's total roll-out is
+        // `speed / FRICTION`, and a candidate consuming more than
+        // `REACH_MARGIN` of it is refused here rather than left to die
+        // inside the predictor — same answer, but stated as the structural
+        // invariant it is (no admissible aim beyond what the ball can
+        // actually roll to), and without spending horizon budget to learn
+        // it.
+        if distance * ball_flight::FRICTION >= speed * REACH_MARGIN {
             continue;
         }
         let launch = BallFlight {

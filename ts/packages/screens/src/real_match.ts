@@ -112,7 +112,8 @@ export type RealMatchEventKind =
   | "block"
   | "claim"
   | "juke"
-  | "reception";
+  | "reception"
+  | "first_touch_shot";
 
 /**
  * One frame event entry -- see {@link RealMatchEventKind}'s doc.

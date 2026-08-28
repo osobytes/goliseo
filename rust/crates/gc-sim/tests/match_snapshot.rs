@@ -2007,8 +2007,32 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
     // byte-count change from this knob.
     //
     // Total +1: 22304 -> 22305, 21786 -> 21787.
+    //
+    // 2026-08-26 pass-reception rework: two new fields, a fixed per-player
+    // cost and a fixed single state-level cost, both idle (`Nil`) here --
+    // see below for why.
+    //
+    // `MatchPlayer::receive_target`: key `k14:receive_target;` is
+    // 1 + 2 + 1 + 14 + 1 = 19 bytes ("receive_target" is 14 characters, so
+    // its length prefix is the two digits "14"); the idle value is `z;`
+    // (`CanonicalScalar::Nil`), 2 bytes. 19 + 2 = 21 bytes per player,
+    // 10 players, +210.
+    //
+    // `MatchState::stick_latch`: key `k11:stick_latch;` is
+    // 1 + 2 + 1 + 11 + 1 = 16 bytes ("stick_latch" is 11 characters); the
+    // idle value is likewise `z;`, 2 bytes. 16 + 2 = 18 bytes, once.
+    //
+    // Both are genuinely idle rather than merely assumed so: this fixture
+    // steps 120 ticks of neutral input (no pass is ever thrown), so no
+    // player is ever a designated receiver and the ball is never
+    // stick-latched, at tick 120 or any tick before it. That makes this a
+    // pure schema addition with no accompanying mantissa-boundary drift --
+    // unlike the `KICKOFF_CLEAR`/`LOCO_PACE_REF_HI` entries above, every
+    // other already-pinned byte here is untouched.
+    //
+    // Total +228 (210 + 18): 22305 -> 22533, 21787 -> 22015.
     let encoded = match_snapshot::encode(&match_snapshot::capture(&state, None));
-    let expected = 22305 - 10 * legacy_key_bytes
+    let expected = 22533 - 10 * legacy_key_bytes
         + 10 * "z;".len()
         + "k9:formation;".len()
         + "s5:2-1-1;".len()
@@ -2016,7 +2040,7 @@ fn canonical_match_snapshots_encodes_decision_children_positionally_with_exact_n
         + 10 * "k19:keeper_get_up_timer;nz;".len()
         + transition_bytes;
     assert_eq!(encoded.len(), expected);
-    assert_eq!(encoded.len(), 21787);
+    assert_eq!(encoded.len(), 22015);
 
     let decision_marker = "k17:outfield_decision;d;";
     let next_field_marker = "k9:is_keeper;";
@@ -2196,16 +2220,25 @@ fn canonical_match_snapshots_prices_four_hypothetical_runs_on_the_valid_high_ove
     // soccer_window 682775 -> 682713, combat_window 796731 -> 796669,
     // budget - soccer_window 234729 -> 234791, budget - combat_window
     // 120773 -> 120835.
+    // Pass-reception rework (match_snapshot::VERSION 14 -> 15,
+    // COMBAT_VERSION 15 -> 16): `MatchPlayer::receive_target` adds a fixed
+    // 21 bytes per player when None (`k14:receive_target;` 19 + `z;` 2,
+    // x10 = +210) and `MatchState::stick_latch` a fixed 18 (`k11:stick_latch;`
+    // 16 + `z;` 2) -- +228 on both bases, zero mantissa drift (this fixture
+    // never throws a pass, so both fields stay Nil; same derivation as the
+    // sibling `_encodes_decision_children_...` test). Windows shift by
+    // 228 * boundaries (31) = +7068.
     assert_eq!(boundaries, 31);
-    assert_eq!(soccer_bytes, 21651);
-    assert_eq!(combat_bytes, 25327);
+    assert_eq!(soccer_bytes, 21879);
+    assert_eq!(combat_bytes, 25555);
     assert_eq!(four_run_delta, 346);
     assert_eq!(press_delta, 26);
     assert_eq!(combined_delta, 372);
-    assert_eq!(soccer_window, 682713);
-    assert_eq!(combat_window, 796669);
-    assert_eq!(budget - soccer_window, 234791);
-    assert_eq!(budget - combat_window, 120835);
+    assert_eq!(soccer_window, 689781);
+    assert_eq!(combat_window, 803737);
+    // Both headrooms shrink by the rework's 7068 window growth.
+    assert_eq!(budget - soccer_window, 227723);
+    assert_eq!(budget - combat_window, 113767);
     assert!(soccer_window < budget);
     assert!(combat_window < budget);
 }
@@ -2246,13 +2279,17 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
     // forwards a further 3px out from the kickoff spot, and 3 of their 4
     // `pos` coordinates cross a `number_bytes` mantissa rounding boundary
     // (see the schema-pin test's comment for the full derivation).
-    assert_eq!(combat_bytes, 25327);
+    // Pass-reception rework: same +228 as the sibling pricing test above
+    // and for the same schema-only reason (receive_target Nil x10 = +210,
+    // stick_latch Nil = +18; no pass is ever thrown in this fixture).
+    assert_eq!(combat_bytes, 25555);
     // The active-AI delta priced by the measurement above.
     let combined_delta: i64 = 372;
     let combat_window = (combat_bytes + combined_delta) * boundaries;
     // -2 on combat_bytes carries straight through: (25327 + 372) * 31 =
     // 796669, down 62 (= 2 * boundaries) from 796731.
-    assert_eq!(combat_window, 796669);
+    // (25555 + 372) * 31, up 7068 (= 228 * boundaries) for the rework.
+    assert_eq!(combat_window, 803737);
 
     let worst_kind = pick_longest(
         &[
@@ -2421,12 +2458,13 @@ fn canonical_match_snapshots_prices_the_worst_case_combat_event_row_against_the_
 
     let sustained_window = (combat_bytes + combined_delta + 8 * row_bytes) * boundaries;
     assert!(sustained_window < budget);
-    // -62 straight through, same as `combat_window` above: 909819 -> 909757.
-    assert_eq!(sustained_window, 909757);
+    // +7068 straight through, same as `combat_window` above (the
+    // pass-reception rework's +228 x 31 boundaries): 909757 -> 916825.
+    assert_eq!(sustained_window, 916825);
 
     assert!(worst_tick_window > budget);
-    // -62 straight through: 1517667 -> 1517605.
-    assert_eq!(worst_tick_window, 1517605);
+    // +7068 straight through: 1517605 -> 1524673.
+    assert_eq!(worst_tick_window, 1524673);
 }
 
 #[test]

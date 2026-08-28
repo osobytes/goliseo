@@ -896,6 +896,7 @@ fn cancel_soccer_commitments(player: &mut MatchPlayer) {
     player.aerial_outcome = None;
     player.aerial_jump = 0.0;
     player.receive_timer = 0.0;
+    player.receive_target = None;
     player.windup_timer = 0.0;
     player.windup_shot = None;
     player.charge = 0.0;

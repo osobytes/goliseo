@@ -95,31 +95,29 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // (wasm and native disagreeing) as with a knob-driven trajectory shift --
 // wasm, `node -e` against the freshly built `dist/pkg/gc_wasm.cjs`
 // (`runAiDrivenEvidence()`, the same export `loadSimHost().runAiDrivenEvidence`
-// wraps): final `3291aa8895b160f4`, sequence `3688b7ab51128e90`; native, via
+// wraps): final `36d1f260e2b1c9b4`, sequence `54a0f25ab32d86f8`; native, via
 // `cargo test -p gc-sim --test ai_driven_evidence`
 // (`ai_driven_evidence::EXPECTED_FINAL_HASH`/`EXPECTED_SEQUENCE_DIGEST`), the
 // same two. They AGREE, so this is not #517. Re-run identically after the
 // #622 follow-up above, against a freshly rebuilt `dist/pkg/gc_wasm.cjs`:
 // same wasm pair, same native pair. They still AGREE.
 //
-// RE-RECORDED, 2026-08-26, #622 follow-up (owner-approved): the keeper's
-// race-to-ball interception (`gc_sim::keeper::intercept_race`, a
-// time-of-arrival race against the ball's own claim time with a teammate
-// veto, gated by the new `keeper_intercept` band) and the `keeper_engagement`
-// band's x1.7167 rescale to the futsal box geometry (see
-// `gc_data::tunables`'s own dated note on that `BandSet`) change when and how
-// far every keeper in this bot-vs-bot match comes off its line, which is
-// exactly the class of change #405's note above warns moves this scenario's
-// whole trajectory from the first affected decision on. THE DISCRIMINATING
-// MEASUREMENT WAS RUN AGAIN before these lines moved -- wasm, via the
-// header's own `node -e` one-liner against the freshly built
-// `dist/pkg/gc_wasm.cjs`: final `46c857b95a84591a`, sequence
-// `8466fbbd48ed45e3`; native, via `cargo test -p gc-sim --test
+// Re-recorded 2026-08-26 for the merge of #628 (the keeper races winnable
+// loose balls; the engagement geometry catches up with the futsal box) with
+// main's pass-reception/first-touch/juke rework: a bot-driven match passes,
+// dribbles, receives and jukes constantly, so either change alone -- let
+// alone both landing on this branch together -- is exactly the class of
+// change #405's note above warns moves this scenario's whole trajectory.
+// Discriminating measurement re-run before these two lines moved -- wasm,
+// `node -e` against the freshly rebuilt `dist/pkg/gc_wasm.cjs`
+// (`runAiDrivenEvidence()`): final `5f29a507aaac1344`, sequence
+// `49d2ce9552bcbbca`; native, via `cargo test -p gc-sim --test
 // ai_driven_evidence` (`ai_driven_evidence::EXPECTED_FINAL_HASH`/
-// `EXPECTED_SEQUENCE_DIGEST`, re-recorded in the same commit), the same two.
-// They AGREE, so this is not #517.
-const NATIVE_FINAL_HASH = "46c857b95a84591a";
-const NATIVE_SEQUENCE_DIGEST = "8466fbbd48ed45e3";
+// `EXPECTED_SEQUENCE_DIGEST`), the same two. They AGREE, so this is not
+// #517 -- the constants above were simply stale (they still carried main's
+// pre-merge values).
+const NATIVE_FINAL_HASH = "5f29a507aaac1344";
+const NATIVE_SEQUENCE_DIGEST = "49d2ce9552bcbbca";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {

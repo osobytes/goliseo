@@ -445,9 +445,10 @@ fn match_event_kind_from_wire(text: &str) -> Result<MatchEventKind, String> {
     use MatchEventKind::{
         Bicycle, Block, Catch, Claim, CombatCommitCarrierContest, CombatCommitCarrierProtection,
         CombatCommitLooseBallContest, CombatCommitPassingLaneOrShotDenial,
-        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, Header, Juke, Parry, Pass,
-        PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall, PressCommitHeavyTouch,
-        PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip, Touch, Volley,
+        CombatCommitRecoveryPunish, CombatCommitUnattributedOffBall, FirstTouchShot, Header, Juke,
+        Parry, Pass, PressCommitBoxDesperation, PressCommitCover, PressCommitExposedBall,
+        PressCommitHeavyTouch, PressCommitLowDiscipline, Reception, Shot, Tackle, TackleMiss, Tip,
+        Touch, Volley,
     };
     Ok(match text {
         "shot" => Shot,
@@ -476,6 +477,7 @@ fn match_event_kind_from_wire(text: &str) -> Result<MatchEventKind, String> {
         "bicycle" => Bicycle,
         "reception" => Reception,
         "juke" => Juke,
+        "first_touch_shot" => FirstTouchShot,
         other => return Err(format!("'{other}' is not a canonical match event kind")),
     })
 }
