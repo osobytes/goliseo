@@ -217,15 +217,18 @@
 #      (via vitest's own `toBe`) the exact digests step 9 checks again.
 #   9. an explicit, redundant assertion that the freshly built wasm module's
 #      runDeterminismEvidence() returns exactly
-#      final_hash=61c50495d826ce10 and sequence_digest=f7d42a56513aa355.
+#      final_hash=0ea20e91bccfe7c8 and sequence_digest=b78600c5267f548e.
 #      (Moved by #488, then #489, then #490, then the digest alone by #572,
 #      then the digest alone again by #578, then both by the 2026-08-25 pitch
 #      re-dimensioning (960x540 -> 1648x927, docs/design/fun_metrics.md's
 #      drift log), then both again when LOCO_PACE_REF_HI's default settled at
 #      280 (was 300 during that resize; see the tunable's own comment in
-#      gc_data::tunables) --
+#      gc_data::tunables), then both again on 2026-08-26 for the merge of
+#      #628 (the keeper races winnable loose balls; the engagement geometry
+#      catches up with the futsal box) with main's pass-reception/
+#      first-touch/juke rework --
 #      full time is reached in the same state, the chain arriving there is
-#      not. This is the SIXTH copy of the OMP-1 derived digests and
+#      not. This is the SEVENTH copy of the OMP-1 derived digests and
 #      the deliberate one -- the drift check below is why it exists.)
 #      It deliberately does NOT assert the scoreline, the event counts or the
 #      coverage set -- #505 demoted the first two to a report and #512 demoted
@@ -364,8 +367,8 @@ determinism_spec="$wasm_pkg_dir/src/determinism.spec.ts"
 # Pinned here, independently of ts/packages/wasm/src/determinism.spec.ts's
 # own copy of the same two constants -- self_test()'s digest_drift_scenario
 # requires the two copies to still agree.
-EXPECTED_FINAL_HASH="61c50495d826ce10"
-EXPECTED_SEQUENCE_DIGEST="f7d42a56513aa355"
+EXPECTED_FINAL_HASH="0ea20e91bccfe7c8"
+EXPECTED_SEQUENCE_DIGEST="b78600c5267f548e"
 EXPECTED_TICKS="7201"
 EXPECTED_BOUNDARIES="7202"
 # There is deliberately no EXPECTED_COVERAGE here any more, and no

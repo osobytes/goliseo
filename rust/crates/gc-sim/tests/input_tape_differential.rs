@@ -142,6 +142,16 @@ use indexmap::IndexMap;
 // its own fixed-960x540 fixture. The stepped boundaries [1..5] are unaffected
 // here because this file no longer folds a trajectory claim into a format test
 // (#520).
+//
+// `boundary_hash[0]` re-recorded again 75e70f884f565cf5 -> 3bd5dc69c35bcccd by
+// PR #628's merge of the keeper race-to-ball rework onto main's
+// pass-reception/first-touch/juke reworks: both branches had independently
+// re-recorded this fixture from their own trajectories, so the merged tree
+// matches neither. `match_snapshot::VERSION` did not bump (still 15), so this
+// is a real content/serialization-input change, not a schema-coupled one --
+// re-derived the same way as `STEPPED_BASELINE` below (temporary `eprintln!`
+// of `tape.boundary_hashes` from `the_stepped_boundaries_reproduce_their_recorded_baseline`,
+// reverted after capture).
 const FIXTURE: &str = include_str!("fixtures/input_tape_baseline.txt");
 
 fn reference() -> IndexMap<&'static str, &'static str> {
@@ -570,12 +580,22 @@ fn a_constructed_tape_has_the_boundary_shape_the_format_promises() {
 /// input_tape_differential the_stepped_boundaries_reproduce_their_recorded_baseline
 /// -- --nocapture` with a temporary `eprintln!` of `tape.boundary_hashes`,
 /// reverted after capture).
+///
+/// **Re-pinned again for PR #628's merge** of the keeper race-to-ball
+/// rework onto main's pass-reception, first-touch-shot (#627) and
+/// juke-carry (#632) reworks: both branches had independently re-recorded
+/// this baseline from their own trajectories, so the merged tree matches
+/// neither and all five move again. `match_snapshot::VERSION` did not bump
+/// (still 15) -- this is a behavior-only re-record. Re-derived the same way
+/// (temporary `eprintln!` of `tape.boundary_hashes`, reverted after
+/// capture); boundary 0 from the same run also moved and is re-pinned in
+/// `fixtures/input_tape_baseline.txt`'s `boundary_hash[0]` alongside these.
 const STEPPED_BASELINE: [&str; 5] = [
-    "da338fca0ad6ef8d",
-    "45e5bc85cc36f33d",
-    "5641028953c50e52",
-    "61a3ecf28fdfc28c",
-    "4f51ca66fd8c9b3f",
+    "3aae206d0d3bc62d",
+    "251cf77beeb1e5ed",
+    "e81f1e99d52c3e7a",
+    "ee2b02a2eacb0284",
+    "e65d12f576daa0e7",
 ];
 
 #[test]

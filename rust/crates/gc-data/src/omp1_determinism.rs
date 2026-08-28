@@ -471,8 +471,16 @@ mod tests {
         // derives -- see `rerecorded_json`'s frozen-field check, which only
         // asserts self-consistency against whatever is currently checked
         // in).
-        assert_eq!(f.expected_final_hash, "61c50495d826ce10");
-        assert_eq!(f.expected_sequence_digest, "f7d42a56513aa355");
+        // PR #628 merged the keeper race-to-ball rework onto main's
+        // pass-reception/first-touch/juke reworks (first-touch shot #627,
+        // juke carry #632); both branches had independently re-recorded
+        // this fixture against their own trajectories, so the merged tree
+        // matches neither and records fresh here: final hash
+        // 61c50495d826ce10 -> 0ea20e91bccfe7c8, sequence digest
+        // f7d42a56513aa355 -> b78600c5267f548e. `match_snapshot::VERSION`
+        // did not move (still 15) -- this is a behavior-only re-record.
+        assert_eq!(f.expected_final_hash, "0ea20e91bccfe7c8");
+        assert_eq!(f.expected_sequence_digest, "b78600c5267f548e");
         assert_eq!(f.identity.tape_version, 1);
         assert_eq!(f.identity.seed, 19);
         assert_eq!(
@@ -488,7 +496,7 @@ mod tests {
             frame_wire_lines()[0],
             "2|0|0,0,0,0|0,0,0,0|127,0,4,0|127,0,0,0|-127,0,4,0|-127,0,4,0|-46,118,4,0|-46,-118,4,0"
         );
-        assert_eq!(boundary_hash_lines()[0], "2de23cb0f805ac9f");
+        assert_eq!(boundary_hash_lines()[0], "70f36f73654a0807");
         // Boundary 0 above is the initial state hashed by the CURRENT
         // canonical snapshot encoding -- part of the re-recordable derived
         // half, not the frozen recorded input, so it moves whenever
@@ -508,11 +516,20 @@ mod tests {
         // fields, present (as their default/absent encoding) on this
         // zero-tick kickoff snapshot too (115aedc598345a71 ->
         // 2de23cb0f805ac9f).
+        //
+        // PR #628 merged the keeper race-to-ball rework onto main's
+        // pass-reception/first-touch/juke reworks; both sides had
+        // independently re-recorded this fixture from their own
+        // trajectories, so neither baseline matches the merged tree and it
+        // records fresh here. `match_snapshot::VERSION` did not move (still
+        // 15), but both per-tick locomotion and possession resolution did,
+        // so every boundary moved again, including this first one
+        // (2de23cb0f805ac9f -> 70f36f73654a0807).
         // This last boundary is likewise derived. Same re-record, same
         // commit -- see the note beside `expected_final_hash`.
         assert_eq!(
             boundary_hash_lines()[boundary_hash_lines().len() - 1],
-            "61c50495d826ce10"
+            "0ea20e91bccfe7c8"
         );
     }
 

@@ -242,25 +242,25 @@ fn stats_uses_only_mental_to_derive_keeper_anticipation() {
 }
 
 #[test]
-fn stats_maps_keeper_aggression_to_a_conservative_positive_pixel_distance() {
-    assert_eq!(stats::keeper_aggression(block3(0, 5, 0)), 18.0);
-    assert_eq!(stats::keeper_aggression(block3(5, 5, 5)), 38.0);
-    assert_eq!(stats::keeper_aggression(block3(10, 5, 10)), 58.0);
+fn stats_maps_keeper_aggression_to_a_futsal_scaled_positive_pixel_distance() {
+    assert_eq!(stats::keeper_aggression(block3(0, 5, 0)), 31.0);
+    assert_eq!(stats::keeper_aggression(block3(5, 5, 5)), 66.0);
+    assert_eq!(stats::keeper_aggression(block3(10, 5, 10)), 101.0);
 }
 
 #[test]
 fn stats_adds_exact_independent_pace_and_mental_contributions_to_keeper_aggression() {
     let pace_four = stats::keeper_aggression(block3(4, 5, 7));
     let pace_five = stats::keeper_aggression(block3(5, 5, 7));
-    assert_eq!(pace_four, 40.0);
-    assert_eq!(pace_five, 42.0);
-    assert_eq!(pace_five - pace_four, 2.0);
+    assert_eq!(pace_four, 69.5);
+    assert_eq!(pace_five, 73.0);
+    assert_eq!(pace_five - pace_four, 3.5);
 
     let mental_four = stats::keeper_aggression(block3(7, 5, 4));
     let mental_five = stats::keeper_aggression(block3(7, 5, 5));
-    assert_eq!(mental_four, 40.0);
-    assert_eq!(mental_five, 42.0);
-    assert_eq!(mental_five - mental_four, 2.0);
+    assert_eq!(mental_four, 69.5);
+    assert_eq!(mental_five, 73.0);
+    assert_eq!(mental_five - mental_four, 3.5);
 }
 
 #[test]
@@ -285,12 +285,12 @@ fn stats_never_lowers_keeper_aggression_as_mental_increases() {
 
 #[test]
 fn stats_uses_only_pace_and_mental_to_derive_keeper_aggression() {
-    assert_eq!(stats::keeper_aggression(block(5, 0, 5, 5, 5)), 38.0);
-    assert_eq!(stats::keeper_aggression(block(5, 10, 5, 5, 5)), 38.0);
-    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 0, 5)), 38.0);
-    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 10, 5)), 38.0);
-    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 5, 0)), 38.0);
-    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 5, 10)), 38.0);
+    assert_eq!(stats::keeper_aggression(block(5, 0, 5, 5, 5)), 66.0);
+    assert_eq!(stats::keeper_aggression(block(5, 10, 5, 5, 5)), 66.0);
+    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 0, 5)), 66.0);
+    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 10, 5)), 66.0);
+    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 5, 0)), 66.0);
+    assert_eq!(stats::keeper_aggression(block(5, 5, 5, 5, 10)), 66.0);
 }
 
 #[test]

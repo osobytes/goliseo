@@ -174,6 +174,10 @@ pub struct KeeperBehaviorContext {
     pub advance_eligible: bool,
     /// Whether [`should_contain`] is currently true.
     pub contain_eligible: bool,
+    /// The threat is a genuinely unsupported one-on-one. A breakaway keeper
+    /// commits its full aggression depth; a supported attack only earns an
+    /// approach-scaled advance (see [`arc_target`]).
+    pub in_1v1: bool,
     /// A ground shot has been read.
     pub ground_cue: bool,
     /// A lob has been read.
@@ -286,6 +290,10 @@ fn save_style_edge(edge: &str) -> f64 {
 
 fn engagement_edge(edge: &str) -> f64 {
     tunable_registry::shipped().band_edge("keeper_engagement", edge)
+}
+
+fn intercept_edge(edge: &str) -> f64 {
+    tunable_registry::shipped().band_edge("keeper_intercept", edge)
 }
 
 /// Whether `distance` is close enough for the keeper to smother the ball
@@ -417,6 +425,49 @@ pub fn should_contain(context: &KeeperAdvanceContext) -> bool {
         && (context.attacker_controlled || context.loose_touch)
 }
 
+/// Inputs to [`intercept_race`]. All times are seconds from now; the caller
+/// owns the meet-point choice and the kinematic model behind each time (the
+/// same optimistic straight-line, top-speed model for every runner, so the
+/// race is fair even where it is wrong).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeeperInterceptContext {
+    /// When the ball reaches the claimable meet point.
+    pub claim_time: f64,
+    /// The keeper's own time to that point.
+    pub keeper_time: f64,
+    /// The best-placed opposing outfielder's time to that point, if any
+    /// opponent is on the pitch.
+    pub opponent_time: Option<f64>,
+    /// The best-placed defending outfielder's time to that point, if any.
+    pub teammate_time: Option<f64>,
+}
+
+/// Whether a loose incoming ball is a race the keeper should leave its line
+/// to win. Modelled on SM Strikers' loose-ball chase: a time-of-arrival race
+/// with a teammate veto, not a radius test. Nobody can take the ball before
+/// it arrives, so every runner's effective moment is floored at
+/// `claim_time`; the keeper commits only when it wins that contested moment
+/// by the `win_margin_s` band edge, inside the `chase_horizon_s` horizon,
+/// and no defending outfielder covers it at least as fast.
+#[must_use]
+pub fn intercept_race(context: &KeeperInterceptContext) -> bool {
+    let keeper_claim = context.keeper_time.max(context.claim_time);
+    if keeper_claim > intercept_edge("chase_horizon_s") {
+        return false;
+    }
+    if let Some(teammate) = context.teammate_time
+        && teammate.max(context.claim_time) <= keeper_claim
+    {
+        return false;
+    }
+    match context.opponent_time {
+        None => true,
+        Some(opponent) => {
+            keeper_claim + intercept_edge("win_margin_s") <= opponent.max(context.claim_time)
+        }
+    }
+}
+
 /// Advance the keeper's positioning state machine by one tick.
 #[must_use]
 pub fn behavior(context: &KeeperBehaviorContext) -> KeeperBehaviorDecision {
@@ -426,12 +477,12 @@ pub fn behavior(context: &KeeperBehaviorContext) -> KeeperBehaviorDecision {
         goal: context.goal,
         team: context.team,
         aggression: context.aggression,
-        in_1v1: true,
+        in_1v1: context.in_1v1,
     };
     let base = base_target(&position_context);
     let retreat_target = base;
     let deep_target = depth_target(&position_context, 0.0);
-    let advance_target = depth_target(&position_context, context.aggression.max(0.0));
+    let advance_target = arc_target(&position_context);
     let contain_target = depth_target(
         &position_context,
         context.aggression.max(0.0) * CONTAIN_DEPTH_FRACTION,

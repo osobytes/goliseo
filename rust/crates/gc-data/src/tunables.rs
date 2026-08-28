@@ -1782,19 +1782,48 @@ pub static BAND_SETS: &[BandSet] = &[
     },
     BandSet {
         id: "keeper_engagement",
-        version: "v1",
+        // v2 (#622 follow-up): the futsal re-dimension scaled the claim zone
+        // x1.7167 (KEEPER_BOX_DEPTH 160 -> 275) but left this set at its
+        // 960px-pitch values, so the box's outer band (depth ~215..275) sat
+        // outside the 200px engagement radius and the keeper held its Base
+        // arc against carriers it used to close down, proportionally. Both
+        // edges get the same x1.7167 the sibling box geometry got: the new
+        // box's far corner is ~297px from a line-centred keeper, back inside
+        // the advance edge, restoring "in the claim zone implies engageable".
+        version: "v2",
         desc: "Classifies a threat into contain / advance by how close it is \
                and whether a defender already owns it.",
         edges: &[
             BandEdge {
                 id: "defender_handoff_distance",
-                value: 120.0,
+                value: 206.0,
                 desc: "Inside this the keeper takes the threat over from an engaged defender.",
             },
             BandEdge {
                 id: "advance_threat_distance",
-                value: 200.0,
+                value: 343.0,
                 desc: "Outside this the keeper neither contains nor advances.",
+            },
+        ],
+    },
+    BandSet {
+        id: "keeper_intercept",
+        version: "v1",
+        desc: "Classifies a loose incoming ball as a race the keeper should \
+               leave its line to win (SM Strikers' loose-ball chase: a \
+               time-of-arrival race with a teammate veto, not a radius).",
+        edges: &[
+            BandEdge {
+                id: "win_margin_s",
+                value: 0.15,
+                desc: "The keeper must beat the best-placed opponent to the meet \
+                       point by this many seconds before committing off its line.",
+            },
+            BandEdge {
+                id: "chase_horizon_s",
+                value: 1.4,
+                desc: "Only race balls whose claimable meet point arrives within \
+                       this horizon; later threats stay positional.",
             },
         ],
     },

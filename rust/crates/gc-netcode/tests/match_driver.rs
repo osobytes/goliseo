@@ -1231,13 +1231,29 @@ fn canonical_digest(digest: &str) -> bool {
 /// IS the kickoff scenario changing, exactly the second trigger this
 /// constant's own doc above names.
 ///
+/// Re-recorded again for the keeper rework (part of #490): `stats.rs`'s
+/// `keeper_aggression` derivation rescaled 18..58 -> 31..101 px for the
+/// futsal box, and that derived stat is a serialized `MatchPlayer` field,
+/// so both keepers' values in the constructed kickoff snapshot moved and
+/// the hash moved with them. `2bfc8e9018cecab2` -> `c58d4d413b3e541a`. Like
+/// #490's `keeper_fatigue` addendum above, no simulation output moved to
+/// produce this hash — tick zero carries the derivation's initial value,
+/// which is the thing that was deliberately retuned.
+///
 /// Re-recorded again by the pass-reception rework, the same mechanism as
 /// #489/#490 above: `match_snapshot::VERSION` bumps 14 -> 15 for the two new
 /// `MatchPlayer::receive_target` and `MatchState::stick_latch` fields, both
 /// on the boundary-zero kickoff checkpoint like any other tick and both
 /// idle (`Nil`) there — no pass has been thrown at tick zero, so this is a
 /// SCHEMA move, not a behavioural one. `2bfc8e9018cecab2` -> `0de5d3e5ef9d7a8a`.
-const BOUNDARY_ZERO_BASELINE_HASH: &str = "0de5d3e5ef9d7a8a";
+///
+/// Re-recorded once more when the two re-records above merged: they had
+/// diverged from the same parent (`2bfc8e9018cecab2`) on separate branches
+/// — the keeper rework moving a serialized value, the pass-reception rework
+/// moving the schema — so on the merged tree both apply and neither
+/// branch's hash can be right. Measured from this assertion's own failure
+/// output on the merged tree, per this constant's documented procedure.
+const BOUNDARY_ZERO_BASELINE_HASH: &str = "df1452ffa2d0b3ba";
 
 /// See the module doc: reproduces the `fixture.session("1v1")` scenario
 /// driven through `run_bursty(state, 90, 5)` with neutral samples, and

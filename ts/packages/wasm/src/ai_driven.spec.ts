@@ -101,8 +101,23 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // same two. They AGREE, so this is not #517. Re-run identically after the
 // #622 follow-up above, against a freshly rebuilt `dist/pkg/gc_wasm.cjs`:
 // same wasm pair, same native pair. They still AGREE.
-const NATIVE_FINAL_HASH = "36d1f260e2b1c9b4";
-const NATIVE_SEQUENCE_DIGEST = "54a0f25ab32d86f8";
+//
+// Re-recorded 2026-08-26 for the merge of #628 (the keeper races winnable
+// loose balls; the engagement geometry catches up with the futsal box) with
+// main's pass-reception/first-touch/juke rework: a bot-driven match passes,
+// dribbles, receives and jukes constantly, so either change alone -- let
+// alone both landing on this branch together -- is exactly the class of
+// change #405's note above warns moves this scenario's whole trajectory.
+// Discriminating measurement re-run before these two lines moved -- wasm,
+// `node -e` against the freshly rebuilt `dist/pkg/gc_wasm.cjs`
+// (`runAiDrivenEvidence()`): final `5f29a507aaac1344`, sequence
+// `49d2ce9552bcbbca`; native, via `cargo test -p gc-sim --test
+// ai_driven_evidence` (`ai_driven_evidence::EXPECTED_FINAL_HASH`/
+// `EXPECTED_SEQUENCE_DIGEST`), the same two. They AGREE, so this is not
+// #517 -- the constants above were simply stale (they still carried main's
+// pre-merge values).
+const NATIVE_FINAL_HASH = "5f29a507aaac1344";
+const NATIVE_SEQUENCE_DIGEST = "49d2ce9552bcbbca";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {

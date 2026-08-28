@@ -147,12 +147,15 @@ const BASE_REACH: f64 = 22.0; // dive radius (px) at mental 0
 const REACH_PER_MENTAL: f64 = 6.0; // px per mental point
 const REACH_PER_PACE: f64 = 2.0; // px per pace point (diving range)
 
-// Conservative first-pass positioning depth. Canonical 0..10 stats produce
-// 18..58 px, leaving later fixed-seed calibration to the goalkeeper
-// milestone.
-const BASE_KEEPER_AGGRESSION: f64 = 18.0; // px at pace 0 and mental 0
-const KEEPER_AGGRESSION_PER_PACE: f64 = 2.0; // px per pace point
-const KEEPER_AGGRESSION_PER_MENTAL: f64 = 2.0; // px per mental point
+// Positioning depth. Canonical 0..10 stats produce 31..101 px. The original
+// conservative 18..58 was authored against the 960px pitch and was one of the
+// keeper envelopes the futsal re-dimension (#622, x1.7167) did not scale: a
+// full-aggression advance had shrunk from 36% of the claim zone's depth to
+// 21%, reading as a keeper rooted to its line. These values restore the
+// authored proportion on the 1648px pitch (18/2/2 x 1.7167, rounded).
+const BASE_KEEPER_AGGRESSION: f64 = 31.0; // px at pace 0 and mental 0
+const KEEPER_AGGRESSION_PER_PACE: f64 = 3.5; // px per pace point
+const KEEPER_AGGRESSION_PER_MENTAL: f64 = 3.5; // px per mental point
 
 /// How far the keeper can get a hand to a shot, in pixels.
 #[must_use]
@@ -172,7 +175,7 @@ pub fn keeper_anticipation(s: StatBlock) -> f64 {
     (s.mental as f64 / 10.0).clamp(0.0, 1.0)
 }
 
-/// Positive positioning-depth cap, in pixels; 18..58 for canonical stats.
+/// Positive positioning-depth cap, in pixels; 31..101 for canonical stats.
 #[must_use]
 pub fn keeper_aggression(s: StatBlock) -> f64 {
     BASE_KEEPER_AGGRESSION

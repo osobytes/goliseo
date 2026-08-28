@@ -564,7 +564,17 @@ fn pins_the_live_soccer_tape_digest_without_a_synthetic_combat_segment() {
     // `boundary_hash_lines()[0]` and `boundary_hash_lines()[last]`, and
     // `identity.snapshot_version` 14 -> 15 (f2ab89ab575b4d1a ->
     // 728456d9392e8bee).
-    assert_eq!(rollback_lab::tape_digest(&tape), "728456d9392e8bee");
+    //
+    // And again for PR #628's merge of the keeper race-to-ball/engagement
+    // rework onto main's pass-reception/first-touch-shot (#627)/juke-carry
+    // (#632) reworks: neither parent's independently re-recorded OMP-1
+    // derived half survives the merge (see
+    // `gc-data/src/omp1_determinism.json`'s and `omp1_determinism.rs`'s own
+    // re-record in the same commit), and every derived boundary hash this
+    // digest folds in moved again -- `identity.snapshot_version` did NOT
+    // bump this time (still 15), so this is a behavior-only re-record, the
+    // same shape as #572/#578 above (728456d9392e8bee -> 06c5e527755e470f).
+    assert_eq!(rollback_lab::tape_digest(&tape), "06c5e527755e470f");
 }
 
 #[test]

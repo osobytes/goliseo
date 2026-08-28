@@ -392,11 +392,32 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // note said zero was a smaller surface, not a guarantee, and the
     // rework's faster restarts reintroduce a handful of high-ball edge
     // candidates. `new_only` stays structurally 0.
-    assert_eq!(total.candidates, 16794);
-    assert_eq!(total.agree_true, 4909);
-    assert_eq!(total.agree_false, 11848);
-    assert_eq!(total.disagree_deferred, 26);
-    assert_eq!(total.disagree_height, 11);
+    //
+    // Re-pinned by PR #628 merging this branch's keeper race-to-ball/
+    // engagement rework onto main's pass-reception/first-touch-shot (#627)/
+    // juke-carry (#632) reworks -- the second "measured on the COMBINED
+    // tree" pin, same shape as the #623 merge pin above. Neither parent's
+    // independently re-recorded tally survives: this branch's keeper now
+    // races winnable loose balls and leaves the line under a win-margin
+    // model instead of always retreating, which resolves possession
+    // sequences at the point of the race rather than letting them run on to
+    // a later save judgement. candidates 16794 -> 15364 (-8.5%): fewer
+    // sequences reach a keeper save candidate at all, since a chunk of them
+    // now end in the keeper's favor at the race itself, upstream of this
+    // classifier. Both agree buckets shrink roughly in proportion
+    // (agree_true 4909 -> 4640, agree_false 11848 -> 10691);
+    // `disagree_deferred` holds essentially flat (26 -> 27) while
+    // `disagree_height` falls by roughly half (11 -> 6) -- consistent with
+    // fewer marginal, high-ball edge candidates surviving to be judged at
+    // all, not a new disagreement pattern among the ones that do. `new_only`
+    // stays structurally 0. Re-pinned in the SAME commit as
+    // `gc_data::outfield_ai_baseline`'s re-freeze to v25, per this file's
+    // own coupling rule.
+    assert_eq!(total.candidates, 15364);
+    assert_eq!(total.agree_true, 4640);
+    assert_eq!(total.agree_false, 10691);
+    assert_eq!(total.disagree_deferred, 27);
+    assert_eq!(total.disagree_height, 6);
     assert_eq!(
         total.new_only, 0,
         "structurally impossible per this file's module doc; a nonzero \
@@ -554,7 +575,17 @@ fn shadow_classifier_reproduces_the_frozen_60_seed_counts() {
     // deferred bucket's collapse (255 -> 26 candidates) concentrates the
     // near-resolution matches to 2, and the returned disagree_height
     // candidates surface real disagreement in 3 matches.
-    assert_eq!(matches_with_disagree, 3);
-    assert_eq!(matches_with_deferred, 2);
-    assert_eq!(matches_with_either, 5);
+    //
+    // Re-pinned by PR #628's merge alongside the counts above:
+    // `matches_with_disagree` 3 -> 5 and `matches_with_deferred` 2 -> 3 both
+    // rise even as the raw `disagree_height`/`disagree_deferred` counts stay
+    // roughly flat (6 and 27, barely moved from 11 and 26) -- the same-sized
+    // disagreement volume now spreads across more of the 60 matches instead
+    // of concentrating in as few, consistent with the keeper race-to-ball
+    // rework resolving some possession sequences before they reach a save
+    // candidate at all, thinning out which matches produce candidates in the
+    // first place. `matches_with_either` 5 -> 8 follows from both rising.
+    assert_eq!(matches_with_disagree, 5);
+    assert_eq!(matches_with_deferred, 3);
+    assert_eq!(matches_with_either, 8);
 }
