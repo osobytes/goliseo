@@ -110,14 +110,14 @@ const runAiDrivenEvidence = () => loadSimHost().runAiDrivenEvidence();
 // change #405's note above warns moves this scenario's whole trajectory.
 // Discriminating measurement re-run before these two lines moved -- wasm,
 // `node -e` against the freshly rebuilt `dist/pkg/gc_wasm.cjs`
-// (`runAiDrivenEvidence()`): final `5f29a507aaac1344`, sequence
-// `49d2ce9552bcbbca`; native, via `cargo test -p gc-sim --test
+// (`runAiDrivenEvidence()`): final `0291700ae05c7a77`, sequence
+// `a471ab55610efef3`; native, via `cargo test -p gc-sim --test
 // ai_driven_evidence` (`ai_driven_evidence::EXPECTED_FINAL_HASH`/
 // `EXPECTED_SEQUENCE_DIGEST`), the same two. They AGREE, so this is not
 // #517 -- the constants above were simply stale (they still carried main's
 // pre-merge values).
-const NATIVE_FINAL_HASH = "5f29a507aaac1344";
-const NATIVE_SEQUENCE_DIGEST = "49d2ce9552bcbbca";
+const NATIVE_FINAL_HASH = "0291700ae05c7a77";
+const NATIVE_SEQUENCE_DIGEST = "a471ab55610efef3";
 
 describe("the compiled wasm module against the AI-driven Lua reference", () => {
   it("replays the scenario it claims to, and plays it", () => {
