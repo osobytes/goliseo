@@ -179,6 +179,9 @@ class BrowserWasmSimHost implements SimHostPort {
   step(sample: InputSample): void {
     this.assertLive();
     inputSample.validateSample(sample);
+    // Dev-only: record the local player's input for the tick about to
+    // step, on transitions only -- see `match_debug_log`.
+    matchDebugLog.input(this.session.inputTick, sample);
     const wire = encodeInputFrameWire(this.session.inputTick, this.localSlot, sample);
     this.session.step(wire);
     this.frameCache = undefined;

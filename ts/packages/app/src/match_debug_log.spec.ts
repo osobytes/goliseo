@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import type { frameBufferTypes } from "@gc/render";
 
-import { SAMPLE_EVERY_TICKS, entriesForFrame } from "./match_debug_log.ts";
+import { SAMPLE_EVERY_TICKS, entriesForFrame, inputEntry } from "./match_debug_log.ts";
 
 type RenderFrame = frameBufferTypes.RenderFrame;
 
@@ -132,5 +132,35 @@ describe("match_debug_log.entriesForFrame", () => {
     const lines = entriesForFrame(5, frame, IDS, 5);
     const entry = JSON.parse(lines[0] ?? "") as Record<string, unknown>;
     expect(entry["p"]).toBeNull();
+  });
+});
+
+describe("match_debug_log.inputEntry", () => {
+  it("emits on a held-set transition and decodes the bit names", () => {
+    const sample = { move_x: 0, move_y: -90, held: 8 + 32, edges: 0 };
+    const entry = inputEntry(50, sample, "");
+    expect(entry).toBeDefined();
+    const parsed = JSON.parse(entry?.line ?? "") as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      t: "input",
+      tick: 50,
+      held: ["jockey", "aerial_strike"],
+      move: [0, -90],
+    });
+  });
+
+  it("suppresses a repeat of the same transition key (stick wiggle)", () => {
+    const a = { move_x: 10, move_y: 0, held: 32, edges: 0 };
+    const first = inputEntry(50, a, "");
+    expect(first).toBeDefined();
+    const wiggled = { move_x: 60, move_y: -40, held: 32, edges: 0 };
+    expect(inputEntry(51, wiggled, first?.key ?? "")).toBeUndefined();
+  });
+
+  it("emits again when the stick crosses to neutral", () => {
+    const a = { move_x: 10, move_y: 0, held: 32, edges: 0 };
+    const first = inputEntry(50, a, "");
+    const neutral = { move_x: 0, move_y: 0, held: 32, edges: 0 };
+    expect(inputEntry(51, neutral, first?.key ?? "")).toBeDefined();
   });
 });

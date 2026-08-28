@@ -562,11 +562,34 @@ export interface MatchControlLatches {
   /** ACTION held off the ball last frame -- the jockey stance's previous-frame flag. */
   actionHeldPrev: boolean;
   lobLatch: boolean;
+  /**
+   * Frames the first-touch strike stays armed after ACTION is released off
+   * the ball (#623 tap buffer) -- see [`STRIKE_TAP_BUFFER_FRAMES`].
+   */
+  strikeBufferFrames: number;
 }
+
+/**
+ * How long a released ACTION tap keeps the first-touch strike armed, in
+ * render/input frames (#623). Play-test telemetry (the 2026-08-28 debug
+ * log) showed the natural gesture is a TAP timed at the arriving ball --
+ * three attempts released 50-150 ms BEFORE the arrival tick and fell
+ * through to plain traps, while the one hold that spanned the arrival
+ * produced a clean first touch. Fifteen frames (250 ms) covers the
+ * observed early releases with margin; the buffer only arms the strike
+ * flag, so off an empty flight it expires without any action.
+ */
+export const STRIKE_TAP_BUFFER_FRAMES = 15;
 
 /** A fresh, all-false set of latches. */
 export function newMatchControlLatches(): MatchControlLatches {
-  return { shootHeldPrev: false, passHeldPrev: false, actionHeldPrev: false, lobLatch: false };
+  return {
+    shootHeldPrev: false,
+    passHeldPrev: false,
+    actionHeldPrev: false,
+    lobLatch: false,
+    strikeBufferFrames: 0,
+  };
 }
 
 /** This frame's raw, context-free control polls -- whether ACTION/PLAY/MODIFIER are currently held. */
@@ -619,6 +642,21 @@ export function stepMatchControlLatches(
   const shoot = latches.shootHeldPrev && !held; // fire on release
   const pass = latches.passHeldPrev && !playHeld; // pass fires on release too
 
+  // Tap buffer (#623): releasing ACTION off the ball keeps the strike
+  // armed for a short window, so a tap timed at an arriving pass still
+  // first-touches even when the finger lifts a few frames before the
+  // ball's arrival tick. Re-armed by the release edge, drained one frame
+  // at a time, and cancelled the moment the player carries the ball (a
+  // carrier's ACTION is the shot charge, never a buffered strike).
+  if (carrying) {
+    latches.strikeBufferFrames = 0;
+  } else if (dashEdge) {
+    latches.strikeBufferFrames = STRIKE_TAP_BUFFER_FRAMES;
+  } else if (latches.strikeBufferFrames > 0 && !actionDownOffball) {
+    latches.strikeBufferFrames -= 1;
+  }
+  const strikeArmed = actionDownOffball || (!carrying && latches.strikeBufferFrames > 0);
+
   latches.shootHeldPrev = held;
   latches.passHeldPrev = playHeld;
   latches.actionHeldPrev = actionDownOffball;
@@ -631,8 +669,10 @@ export function stepMatchControlLatches(
       passHeld: playHeld,
       jockey: actionDownOffball, // hold ACTION off the ball: slow shadow stance
       lob,
-      aerialStrike: actionDownOffball,
-      aerialAcrobatic: actionDownOffball && poll.modifierDown,
+      // The tap buffer arms the STRIKE only -- jockey above stays a live
+      // hold, so the shadow stance still releases the instant ACTION does.
+      aerialStrike: strikeArmed,
+      aerialAcrobatic: strikeArmed && poll.modifierDown,
     },
     dashEdge,
   };
@@ -1588,6 +1628,7 @@ export class MatchScreen {
     this.latches.passHeldPrev = false;
     this.latches.actionHeldPrev = false;
     this.latches.lobLatch = false;
+    this.latches.strikeBufferFrames = 0;
     this.switchPending = false;
     // No accumulator to reset here -- the fixed clock (and its
     // carried-over render-time debt) lives entirely in the new host's own
