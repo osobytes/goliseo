@@ -271,3 +271,67 @@ jobs:
 
             - name: Run the complete native and soak rollback matrices
               run: ./scripts/check_rollback_native.sh
+
+    # Posts (and keeps updated) one sticky comment on every pull request with
+    # the fun-signature delta: base vs head fun score, every banded metric's
+    # mean, and band residency. Report-only by design -- the VALUE is never a
+    # gate (#633's dip was a correct trade); the enforced half lives in
+    # check.sh's gate 0f (a moved signature owes a drift-log entry), which the
+    # Gate (static) job already runs. Numbers come from the frozen baseline
+    # RECORD, which the same CI run's baseline test proves equal to the live
+    # simulation -- no extra matches are simulated here.
+    fun-report:
+        name: Fun signature report
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        permissions:
+            contents: read
+            pull-requests: write
+        steps:
+            - name: Check out source (with the base for comparison)
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+              with:
+                  ref: ${{ github.event.pull_request.head.sha }}
+                  fetch-depth: 0
+
+            - name: Render the report
+              id: render
+              run: |
+                  BASE="$(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }})"
+                  git show "$BASE:rust/crates/gc-data/src/outfield_ai_baseline.rs" > /tmp/baseline_base.rs
+                  node scripts/check_fun_signature.mjs report \
+                    --baseline rust/crates/gc-data/src/outfield_ai_baseline.rs \
+                    --baseline-base /tmp/baseline_base.rs \
+                    --bands rust/crates/gc-data/src/tunables.rs > /tmp/fun_report.md
+                  cat /tmp/fun_report.md
+
+            - name: Post or update the sticky comment
+              uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+              with:
+                  script: |
+                      const fs = require("fs");
+                      const body = fs.readFileSync("/tmp/fun_report.md", "utf8");
+                      const marker = "<!-- fun-signature-report -->";
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                        per_page: 100,
+                      });
+                      const mine = comments.find((c) => c.body && c.body.includes(marker));
+                      if (mine) {
+                        await github.rest.issues.updateComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          comment_id: mine.id,
+                          body,
+                        });
+                      } else {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: context.issue.number,
+                          body,
+                        });
+                      }
