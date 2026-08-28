@@ -26,9 +26,37 @@
 // the entry shapes are testable without a browser -- the same pure-core
 // split every screen module uses (AGENTS.md §9).
 
+import { inputSample } from "@gc/input";
+import type { inputSampleTypes } from "@gc/input";
 import type { frameBufferTypes } from "@gc/render";
 
 type RenderFrame = frameBufferTypes.RenderFrame;
+
+// Every held/edge action name, for decoding a sample's bitmasks via
+// `inputSample.packHeld`/`packEdges` -- no duplicate bit table. The
+// `satisfies` record forces this list to stay exhaustive when a name is
+// added to the union.
+const HELD_NAME_SET = {
+  shoot: true,
+  pass: true,
+  sprint: true,
+  jockey: true,
+  lob: true,
+  aerial_strike: true,
+  aerial_acrobatic: true,
+  equipment: true,
+} satisfies Record<inputSampleTypes.HeldActionName, true>;
+const HELD_NAMES = Object.keys(HELD_NAME_SET) as readonly inputSampleTypes.HeldActionName[];
+const EDGE_NAME_SET = {
+  shoot: true,
+  pass: true,
+  switch: true,
+  dash: true,
+  dodge: true,
+  equipment_pressed: true,
+  equipment_released: true,
+} satisfies Record<inputSampleTypes.EdgeActionName, true>;
+const EDGE_NAMES = Object.keys(EDGE_NAME_SET) as readonly inputSampleTypes.EdgeActionName[];
 
 /** Sparse state-sample cadence, in simulation ticks (30 = twice a second). */
 export const SAMPLE_EVERY_TICKS = 30;
@@ -56,6 +84,7 @@ interface LogState {
   lastFlushMs: number;
   lastEventTick: number;
   lastSampleTick: number;
+  lastInputKey: string;
   disabled: boolean;
 }
 
@@ -160,6 +189,7 @@ function begin(meta: MatchDebugMeta): void {
     lastFlushMs: Date.now(),
     lastEventTick: -1,
     lastSampleTick: -SAMPLE_EVERY_TICKS,
+    lastInputKey: "",
     disabled: false,
   };
 }
@@ -183,6 +213,54 @@ function frame(tick: number, decoded: RenderFrame, ids: readonly string[]): void
   maybeFlush(state);
 }
 
+/**
+ * The JSONL line one input sample contributes, or `undefined` when the
+ * held set, the edges, and the stick's zero-ness all match `prevKey` (the
+ * previous line's transition key) -- an analog stick wiggling while
+ * nothing else changes must not flood the log. Pure; the impure shell owns
+ * the key state.
+ */
+export function inputEntry(
+  tick: number,
+  sample: inputSampleTypes.InputSample,
+  prevKey: string,
+): { readonly key: string; readonly line: string } | undefined {
+  const moving = sample.move_x !== 0 || sample.move_y !== 0;
+  const key = `${sample.held}|${sample.edges}|${moving ? 1 : 0}`;
+  if (key === prevKey) {
+    return undefined;
+  }
+  const held = HELD_NAMES.filter((n) => (sample.held & inputSample.packHeld([n])) !== 0);
+  const edges = EDGE_NAMES.filter((n) => (sample.edges & inputSample.packEdges([n])) !== 0);
+  const line = JSON.stringify({
+    t: "input",
+    tick,
+    held,
+    ...(edges.length > 0 && { edges }),
+    move: [sample.move_x, sample.move_y],
+  });
+  return { key, line };
+}
+
+/**
+ * Record the local player's input sample for the tick about to step.
+ * Logged on TRANSITIONS only (held set, edges, stick zero-ness), so a held
+ * button is one line, not sixty a second.
+ */
+function input(tick: number, sample: inputSampleTypes.InputSample): void {
+  const state = current;
+  if (state === undefined || state.disabled) {
+    return;
+  }
+  const entry = inputEntry(tick, sample, state.lastInputKey);
+  if (entry === undefined) {
+    return;
+  }
+  state.lastInputKey = entry.key;
+  state.lines.push(entry.line);
+  maybeFlush(state);
+}
+
 /** Close the current log and flush what remains. */
 function end(tick: number): void {
   const state = current;
@@ -194,4 +272,4 @@ function end(tick: number): void {
   flush(state, true);
 }
 
-export const matchDebugLog = { begin, frame, end };
+export const matchDebugLog = { begin, frame, input, end };
