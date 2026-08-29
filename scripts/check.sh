@@ -1165,6 +1165,48 @@ gate_unstated_knob_shift() {
     return "$failures"
 }
 
+# Gate 0f (owner request, 2026-08-28): the frozen fun signature may not move
+# without a drift-log entry. This mechanizes the ritual
+# docs/design/fun_metrics.md already demands in prose -- it deliberately does
+# NOT gate the fun VALUE (a dip can be a correct trade, as #633's was); the
+# invariant is documentation, not direction. Skips with a note when there is
+# no origin/main to diff against (fresh clone with no fetch) -- CI always has
+# one, so the skip can only relax a local run, never the gate.
+gate_fun_drift_log() {
+    step "fun signature drift-log (a moved frozen baseline owes a docs/design/fun_metrics.md entry)"
+    local base
+    base="$(git -C "$project_root" merge-base HEAD origin/main 2>/dev/null)" || base=""
+    if [ -z "$base" ]; then
+        echo "   ! no origin/main merge-base available -- skipping (CI always has one)"
+        return 0
+    fi
+    local work
+    work="$(mktemp -d)"
+    git -C "$project_root" show "$base:rust/crates/gc-data/src/outfield_ai_baseline.rs" \
+        >"$work/baseline_base.rs" || {
+        fail_msg "could not read the base commit's outfield_ai_baseline.rs"
+        rm -rf "$work"
+        return 1
+    }
+    git -C "$project_root" show "$base:docs/design/fun_metrics.md" >"$work/driftlog_base.md" || {
+        fail_msg "could not read the base commit's fun_metrics.md"
+        rm -rf "$work"
+        return 1
+    }
+    run_in "$project_root" node scripts/check_fun_signature.mjs check \
+        --baseline rust/crates/gc-data/src/outfield_ai_baseline.rs \
+        --baseline-base "$work/baseline_base.rs" \
+        --driftlog docs/design/fun_metrics.md \
+        --driftlog-base "$work/driftlog_base.md"
+    local status=$?
+    rm -rf "$work"
+    if [ "$status" -ne 0 ]; then
+        fail_msg "fun signature drift-log check exited $status"
+        return 1
+    fi
+    return 0
+}
+
 gate_rust_fmt() {
     step "rust: cargo fmt --all --check"
     run_in "$rust_dir" cargo fmt --all --check
@@ -3784,6 +3826,43 @@ ts_format_scenario() {
     return "$failures"
 }
 
+
+# Gate 0f's red demonstration: synthetic baseline/drift-log pairs prove the
+# checker fails when the signature moves without a documentation change, and
+# passes when either nothing moved or the doc moved with it.
+fun_drift_log_scenario() {
+    local dir="$1"
+    local failures=0
+    local checker="$project_root/scripts/check_fun_signature.mjs"
+    printf 'baseline_version: 1,\n    signature: "aaaaaaaaaaaaaaaa",\n' >"$dir/base.rs"
+    printf 'baseline_version: 2,\n    signature: "bbbbbbbbbbbbbbbb",\n' >"$dir/head.rs"
+    printf 'drift log\n' >"$dir/log_same.md"
+    printf 'drift log\nnew entry\n' >"$dir/log_moved.md"
+
+    if node "$checker" check --baseline "$dir/head.rs" --baseline-base "$dir/base.rs" \
+        --driftlog "$dir/log_same.md" --driftlog-base "$dir/log_same.md" >/dev/null 2>&1; then
+        echo "SELF-TEST FAIL: a moved signature with an unchanged drift log must go red"
+        failures=1
+    else
+        echo "ok  a moved fun signature without a drift-log entry goes red"
+    fi
+    if node "$checker" check --baseline "$dir/head.rs" --baseline-base "$dir/base.rs" \
+        --driftlog "$dir/log_moved.md" --driftlog-base "$dir/log_same.md" >/dev/null 2>&1; then
+        echo "ok  a moved fun signature WITH a drift-log entry passes"
+    else
+        echo "SELF-TEST FAIL: a moved signature with a drift-log change must pass"
+        failures=1
+    fi
+    if node "$checker" check --baseline "$dir/base.rs" --baseline-base "$dir/base.rs" \
+        --driftlog "$dir/log_same.md" --driftlog-base "$dir/log_same.md" >/dev/null 2>&1; then
+        echo "ok  an unmoved signature passes regardless of the drift log"
+    else
+        echo "SELF-TEST FAIL: an unmoved signature must pass"
+        failures=1
+    fi
+    return "$failures"
+}
+
 self_test() {
     if ! toolchain_present; then
         echo "   ! cargo/node/pnpm not fully installed -- skipping self-test"
@@ -3826,6 +3905,10 @@ self_test() {
     echo "==> self-test: unstated knob shift audit (gate 0d)"
     mkdir -p "$work/unstated_knob_shift"
     unstated_knob_shift_scenario "$work/unstated_knob_shift" || failures=1
+
+    echo "==> self-test: fun signature drift-log (gate 0f)"
+    mkdir -p "$work/fun_drift_log"
+    fun_drift_log_scenario "$work/fun_drift_log" || failures=1
 
     echo "==> self-test: determinism digest comparison logic"
     digest_drift_scenario || failures=1
@@ -3920,6 +4003,11 @@ main() {
     # feature test quietly declining to state its knob's direction rather than
     # two languages disagreeing (#499).
     run_grouped_stage static "0d unstated knob shift audit" gate_unstated_knob_shift || fail=1
+    # Gate 0f, beside 0d: same static-analysis cost class. The fun signature
+    # (the frozen 60-seed battery gc_data::outfield_ai_baseline records) may
+    # not move without a drift-log entry -- documentation is the invariant,
+    # never the fun value itself (#633's dip was a correct trade).
+    run_grouped_stage static "0f fun signature drift-log" gate_fun_drift_log || fail=1
 
     run_grouped_stage static "1  rust: cargo fmt --check" gate_rust_fmt || fail=1
     run_grouped_stage static "2  rust: cargo clippy --workspace" gate_rust_clippy_workspace || fail=1
